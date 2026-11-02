@@ -9,7 +9,7 @@
 
 *一切正常，就是异常*
 
-[![Release](https://img.shields.io/github/v/release/LaT-SKY/Oddity?include_prereleases&label=release)](https://github.com/LaT-SKY/Oddity/releases)
+[![Release](https://img.shields.io/github/v/release/LaT-SKY/Oddity?label=release)](https://github.com/LaT-SKY/Oddity/releases)
 [![Platform](https://img.shields.io/badge/platform-Linux-informational)](https://github.com/LaT-SKY/Oddity)
 [![在线体验](https://img.shields.io/badge/demo-online-brightgreen)](https://lat-sky.github.io/Oddity/)
 [![License](https://img.shields.io/github/license/LaT-SKY/Oddity)](LICENSE)
