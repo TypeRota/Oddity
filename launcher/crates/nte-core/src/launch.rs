@@ -3,6 +3,21 @@ use std::process::Command;
 
 pub mod background;
 
+pub const OFFICIAL_ARGS: [&str; 2] = ["/launcher", "/directly"];
+
+/// 桌面 Wayland 使用原生驱动, Gamescope 使用它管理的 Xwayland.
+pub fn configure_display(command: &mut Command, wayland_available: bool, gamescope: bool) {
+    let enabled = if wayland_available && !gamescope {
+        "1"
+    } else {
+        "0"
+    };
+    // 两个别名均显式赋值, 防止 Proton 从用户配置中补入相反的值.
+    command
+        .env("PROTON_ENABLE_WAYLAND", enabled)
+        .env("PROTON_USE_WAYLAND", enabled);
+}
+
 /// UE map and extra args observed in NTEGame.log when the launcher starts the game.
 pub const GAME_ARGS: [&str; 2] = [
     "/Game/LoginAndCreate/Map/Updater/Updater_P",
@@ -55,6 +70,30 @@ impl ProtonLaunch {
 mod tests {
     use super::*;
     use crate::testing::TempDir;
+
+    #[test]
+    fn display_backend_follows_the_desktop_and_gamescope() {
+        for (wayland, gamescope, expected) in [
+            (true, false, "1"),
+            (false, false, "0"),
+            (true, true, "0"),
+            (false, true, "0"),
+        ] {
+            let mut command = Command::new("umu-run");
+            command.env("PROTON_ENABLE_WAYLAND", "0");
+            command.env("PROTON_USE_WAYLAND", "1");
+            configure_display(&mut command, wayland, gamescope);
+            let value = |key: &str| command.get_envs().find(|(name, _)| *name == key).unwrap().1;
+            assert_eq!(
+                value("PROTON_ENABLE_WAYLAND"),
+                Some(std::ffi::OsStr::new(expected))
+            );
+            assert_eq!(
+                value("PROTON_USE_WAYLAND"),
+                Some(std::ffi::OsStr::new(expected))
+            );
+        }
+    }
 
     #[test]
     fn umu_launch_carries_prefix_and_game_args() {

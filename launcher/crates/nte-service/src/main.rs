@@ -1923,7 +1923,7 @@ fn launch_impl_inner(
             (
                 "official".to_string(),
                 exe.clone(),
-                vec!["/launcher".to_string(), "/directly".to_string()],
+                nte_core::launch::OFFICIAL_ARGS.map(String::from).to_vec(),
                 exe,
                 None,
                 None,
@@ -2038,8 +2038,12 @@ fn launch_impl_inner(
         .env("pgp_scale_value", "1")
         .env("UMU_LOG", "info")
         .env("PROTON_LOG", "0")
-        .env("PROTON_VERB", "run")
-        .env_remove("PROTON_ENABLE_WAYLAND");
+        .env("PROTON_VERB", "run");
+    nte_core::launch::configure_display(
+        &mut cmd,
+        std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty()),
+        settings.game_mode.gamescope.enabled,
+    );
     for key in [
         "NTE_GAME_EXE",
         "NTE_GAME_CWD",
@@ -2074,7 +2078,7 @@ fn launch_impl_inner(
         // 由官方正常启动按钮完成资源、登录和管道交接.
         cmd.env("NTE_BRIDGE_EXE", win_exe)
             .env("NTE_BRIDGE_CWD", win_cwd)
-            .env("NTE_BRIDGE_ARGS", "/launcher /directly")
+            .env("NTE_BRIDGE_ARGS", nte_core::launch::OFFICIAL_ARGS.join(" "))
             .env(
                 "NTE_HELPER_LOG",
                 windows_path(&log_dir.join("helper-window.log")),

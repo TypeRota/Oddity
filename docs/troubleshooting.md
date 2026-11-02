@@ -104,6 +104,12 @@ Ubuntu 24.04 及更新版本可能通过 AppArmor 限制 user namespace. 优先�
 
 后台启动期间, 首页启动按钮会显示当前阶段, 点击整个按钮可以暂停启动. 暂停后官方后台进程会被清理, 可以重新启动.
 
+### 官方启动器报 GLX BadAlloc 或导致 Xwayland 退出
+
+Wayland 桌面下, Oddity 使用 Proton 的原生 Wayland 驱动启动官方组件及游戏. X11 会话与 Gamescope 使用 X11 驱动. 所选 Proton 需要支持原生 Wayland, 可使用 GE-Proton 11 系列.
+
+若仍出现 `GLXMakeCurrent BadAlloc`、`session helper exited before resource signal` 或 Xwayland 崩溃, 请导出启动日志, 并附上显卡驱动版本、Xwayland 版本和系统崩溃记录. Xwayland 退出可能连带关闭其他 X11 应用, 此时请先保留日志, 避免反复重试.
+
 ### 下载中断或校验失败
 
 重新打开 Oddity 后, 对同一地区和目录重新点击 **检查资源**, 再继续安装或更新, 已经下载的文件会尽量复用.
