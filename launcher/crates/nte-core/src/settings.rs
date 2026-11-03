@@ -25,6 +25,8 @@ pub struct Settings {
     pub minimize_to_tray_on_close: bool,
     pub show_launcher_after_game_exit: bool,
     pub snapshot_success_minutes: u64,
+    /// 自定义预下载缓存目录; 空值使用安装目录内的默认路径.
+    pub preload_root: Option<String>,
 }
 
 impl Default for Settings {
@@ -49,6 +51,7 @@ impl Default for Settings {
             minimize_to_tray_on_close: true,
             show_launcher_after_game_exit: true,
             snapshot_success_minutes: crate::snapshots::DEFAULT_SUCCESS_MINUTES,
+            preload_root: None,
         }
     }
 }

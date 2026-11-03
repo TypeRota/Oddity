@@ -434,7 +434,7 @@ fn virtual_cdn_check_and_download_round_trip() {
         &fixture.config,
         CheckOptions {
             full: false,
-            include_optional: false,
+            optional: nte_core::game::optional::OptionalSelection::None,
         },
     )
     .expect("检查虚拟 CDN");

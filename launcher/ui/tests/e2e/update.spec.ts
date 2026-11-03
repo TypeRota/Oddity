@@ -1,5 +1,59 @@
 import { test, expect } from "@playwright/test";
 
+test("预下载完成保留独立状态", async ({ page }) => {
+  await page.goto("/#update");
+  const update = page.locator("#page-update");
+  const preload = update.locator("#game-preload");
+  await expect(update.locator("#game-download-primary")).toHaveText("检查通过");
+  await preload.click();
+  await expect(
+    update.getByRole("heading", { name: "正在预下载游戏资源" }),
+  ).toBeVisible();
+  await expect(preload).toBeDisabled();
+  await expect(
+    update.getByRole("heading", { name: "资源预下载已完成" }),
+  ).toBeVisible();
+  await expect(update).toContainText("版本更新开放后将复用缓存完成安装");
+  await expect(update.locator("#game-download-primary")).toHaveText("检查资源");
+  await expect(preload).toBeEnabled();
+});
+
+test("可选资源切换即时生效并同步预下载版本", async ({ page }) => {
+  await page.goto("/#update");
+  const update = page.locator("#page-update");
+  const summary = update.locator(".resource-options__summary");
+  await expect(summary).toHaveText("2/4 项 · 3.3 GiB");
+  await expect(update.locator("#game-preload")).toHaveText("资源预下载 1.5.0");
+  await expect(update.locator(".resource-row")).toHaveCount(0);
+  await update.locator(".resource-options__toggle").click();
+  await expect(update.locator("#optional-resource-pakchunk101")).toBeDisabled();
+  await update.locator("#optional-resource-pakchunk103").check();
+  await expect(summary).toHaveText("3/4 项 · 5.0 GiB");
+  await update.locator("#optional-resources-all").click();
+  await expect(summary).toHaveText("4/4 项 · 6.9 GiB");
+  await expect(update.locator("#optional-resources-all")).toHaveText(
+    "取消全选",
+  );
+  await update.locator("#optional-resources-all").click();
+  await expect(summary).toHaveText("2/4 项 · 3.3 GiB");
+});
+
+test("预下载完成后可校验并删除缓存", async ({ page }) => {
+  await page.goto("/#update");
+  const update = page.locator("#page-update");
+  await expect(update.locator("#game-preload")).toHaveText("资源预下载 1.5.0");
+  await update.locator("#game-preload").click();
+  await expect(
+    update.getByRole("heading", { name: "资源预下载已完成" }),
+  ).toBeVisible();
+  await expect(update.locator("#game-preload")).toHaveText("校验预下载");
+  await update.locator("#game-preload-delete").click();
+  await expect(page.getByText("删除 1.5.0 的预下载缓存")).toBeVisible();
+  await page.getByRole("button", { name: "删除", exact: true }).click();
+  await expect(update.locator("#game-preload")).toHaveText("资源预下载 1.5.0");
+  await expect(update.locator("#game-preload-delete")).toHaveCount(0);
+});
+
 test("更新摘要、暂停继续与窄面板布局", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));

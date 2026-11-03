@@ -100,6 +100,13 @@ export const settingsEntries = [
     keywords: "官方 登录 后台 前台 开发",
   },
   {
+    id: "preload-dir",
+    category: "game",
+    label: "预下载资源目录",
+    description: "指定预下载缓存的存放位置, 留空使用安装目录内的默认位置.",
+    keywords: "预下载 缓存 目录 磁盘 位置",
+  },
+  {
     id: "updates",
     category: "game",
     label: "资源自动下载",

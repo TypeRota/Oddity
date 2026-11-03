@@ -11,6 +11,7 @@ import type {
   CheckResult,
   GameStatus,
   DownloadStatus,
+  ResourceCatalog,
   LauncherBackgroundMedia,
   PlaytimeHistory,
   Settings,
@@ -32,6 +33,7 @@ const backend = vi.hoisted(() => ({
   playtimeUnlisten: vi.fn(),
   downloadHandler: (_status: DownloadStatus) => {},
   downloadStatus: {} as DownloadStatus,
+  catalog: {} as ResourceCatalog,
   startStatus: null as DownloadStatus | null,
   startFail: false,
   data: {} as Bootstrap,
@@ -112,6 +114,46 @@ let listeners: [
   boolean | AddEventListenerOptions | undefined,
 ][];
 
+function catalogFixture(): ResourceCatalog {
+  return {
+    distribution: "cn",
+    installRoot: "/game",
+    version: "1.4.16",
+    preloadVersion: "1.5.0",
+    preloadAvailable: true,
+    preloadCompleted: false,
+    preloadCached: false,
+    preloadCachedVersion: "",
+    preloadCachedBytes: 0,
+    resources: [
+      {
+        tag: "pakchunk101",
+        name: "pakchunk101",
+        version: "0.101.18",
+        size: 1_000_000,
+        state: "installed",
+        selected: true,
+      },
+      {
+        tag: "pakchunk102",
+        name: "pakchunk102",
+        version: "0.102.18",
+        size: 2_000_000,
+        state: "absent",
+        selected: false,
+      },
+      {
+        tag: "pakchunk103",
+        name: "pakchunk103",
+        version: "0.103.18",
+        size: 3_000_000,
+        state: "partial",
+        selected: true,
+      },
+    ],
+  };
+}
+
 beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
     drawImage: vi.fn(),
@@ -129,6 +171,9 @@ beforeEach(() => {
   backend.status = session();
   backend.playtimeHistory = { sessions: [], active: null };
   backend.background = { video: null, image: null };
+  // 后台预下载提示默认不打扰常规用例, 由专门的用例验证.
+  localStorage.setItem("nte.preload.dismissed", "cn:1.5.0");
+  backend.catalog = catalogFixture();
   backend.downloadStatus = {
     mode: "check",
     phase: "idle",
@@ -152,6 +197,8 @@ beforeEach(() => {
     fullBytes: 0,
     stage: "",
     remoteVersion: "",
+    optionalTags: [],
+    verify: false,
     pendingFiles: 0,
     diskAvailableBytes: 1024 * 1024 * 1024,
     diskRequiredBytes: 0,
@@ -159,79 +206,98 @@ beforeEach(() => {
   };
   backend.startStatus = structuredClone(backend.downloadStatus);
   backend.startFail = false;
-  backend.invoke
-    .mockReset()
-    .mockImplementation(
-      async (
-        command: string,
-        args?: { settings: Settings; mode: "check" | "apply" | "launcher" },
-      ) => {
-        switch (command) {
-          case "attendance_status":
-            return {
-              accounts: [],
-              preferences: {
-                trigger: "off",
-                time: "08:00",
-                tasks: { ...defaultAttendanceTasks },
-              },
-            };
-          case "launcher_background":
-            return structuredClone(backend.background);
-          case "bootstrap":
-            return structuredClone(backend.data);
-          case "check_update":
-            return structuredClone(backend.result);
-          case "game_status":
-            return structuredClone(backend.status);
-          case "playtime_history":
-            return structuredClone(backend.playtimeHistory);
-          case "game_download_status":
-            return structuredClone(backend.downloadStatus);
-          case "game_download_start": {
-            if (backend.startFail) throw new Error("quick check offline");
-            if (backend.startStatus) {
-              backend.downloadStatus = structuredClone(backend.startStatus);
-              return structuredClone(backend.downloadStatus);
-            }
-            backend.downloadStatus = {
-              ...backend.downloadStatus,
-              mode: args!.mode,
-              phase: "checking",
-              distribution: backend.data.settings.distribution,
-              installRoot:
-                backend.data.settings.distribution === "global"
-                  ? backend.data.settings.globalInstallRoot ||
-                    backend.data.installRoot
-                  : backend.data.settings.installRoot ||
-                    backend.data.installRoot,
-            };
+  backend.invoke.mockReset().mockImplementation(
+    async (
+      command: string,
+      args?: {
+        settings: Settings;
+        mode: "check" | "apply" | "launcher" | "preload";
+      },
+    ) => {
+      switch (command) {
+        case "attendance_status":
+          return {
+            accounts: [],
+            preferences: {
+              trigger: "off",
+              time: "08:00",
+              tasks: { ...defaultAttendanceTasks },
+            },
+          };
+        case "launcher_background":
+          return structuredClone(backend.background);
+        case "bootstrap":
+          return structuredClone(backend.data);
+        case "check_update":
+          return structuredClone(backend.result);
+        case "game_status":
+          return structuredClone(backend.status);
+        case "playtime_history":
+          return structuredClone(backend.playtimeHistory);
+        case "game_download_status":
+          return structuredClone(backend.downloadStatus);
+        case "game_download_start": {
+          if (backend.startFail) throw new Error("quick check offline");
+          if (backend.startStatus) {
+            backend.downloadStatus = structuredClone(backend.startStatus);
             return structuredClone(backend.downloadStatus);
           }
-          case "game_download_cancel":
-            backend.downloadStatus = {
-              ...backend.downloadStatus,
-              phase: "cancelled",
-            };
-            return structuredClone(backend.downloadStatus);
-          case "save_settings":
-            backend.data.settings = { ...args!.settings };
-            backend.data.installRoot =
-              args!.settings.distribution === "global"
-                ? args!.settings.globalInstallRoot || "/games/global"
-                : args!.settings.installRoot || "/game";
-            return structuredClone(backend.data);
-          case "launch_official":
-            backend.status = session({ running: true, pid: 123 });
-            return { pid: 123 };
-          case "close_game":
-            backend.status = session();
-            return structuredClone(backend.status);
-          default:
-            return null;
+          backend.downloadStatus = {
+            ...backend.downloadStatus,
+            mode: args!.mode,
+            phase: "checking",
+            distribution: backend.data.settings.distribution,
+            installRoot:
+              backend.data.settings.distribution === "global"
+                ? backend.data.settings.globalInstallRoot ||
+                  backend.data.installRoot
+                : backend.data.settings.installRoot || backend.data.installRoot,
+          };
+          return structuredClone(backend.downloadStatus);
         }
-      },
-    );
+        case "game_download_cancel":
+          backend.downloadStatus = {
+            ...backend.downloadStatus,
+            phase: "cancelled",
+          };
+          return structuredClone(backend.downloadStatus);
+        case "game_resource_catalog":
+          return structuredClone(backend.catalog);
+        case "game_preload_delete":
+          backend.catalog = {
+            ...backend.catalog,
+            preloadCompleted: false,
+            preloadCached: false,
+            preloadCachedVersion: "",
+            preloadCachedBytes: 0,
+          };
+          return structuredClone(backend.catalog);
+        case "game_resource_select": {
+          const { tags } = args as unknown as { tags: string[] };
+          backend.catalog.resources.forEach((resource) => {
+            if (resource.state === "absent")
+              resource.selected = tags.includes(resource.tag);
+          });
+          return structuredClone(backend.catalog);
+        }
+        case "save_settings":
+          backend.data.settings = { ...args!.settings };
+          backend.data.installRoot =
+            args!.settings.distribution === "global"
+              ? args!.settings.globalInstallRoot || "/games/global"
+              : args!.settings.installRoot || "/game";
+          return structuredClone(backend.data);
+        case "launch_official":
+          backend.status = session({ running: true, pid: 123 });
+          return { pid: 123 };
+        case "close_game":
+          backend.status = session();
+          return structuredClone(backend.status);
+        default:
+          return null;
+      }
+    },
+  );
   backend.isMaximized.mockReset().mockResolvedValue(false);
   backend.onResized
     .mockReset()
@@ -1030,6 +1096,22 @@ describe("更新检查", () => {
     },
   );
 
+  it("检查资源完成后刷新预下载目录", async () => {
+    const c = await boot();
+    await flushPromises();
+    backend.invoke.mockClear();
+    const start = c.startGameDownload("check", false);
+    await flushPromises();
+    backend.downloadHandler({
+      ...backend.downloadStatus,
+      mode: "check",
+      phase: "ready",
+    });
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("game_resource_catalog");
+    await start;
+  });
+
   it("取消响应不能覆盖先收到的终止事件", async () => {
     const c = await boot();
     backend.downloadHandler({
@@ -1156,6 +1238,163 @@ describe("更新检查", () => {
     expect(wrapper!.find("#home-status").attributes("aria-hidden")).toBe(
       "true",
     );
+  });
+
+  it("资源预下载独立展示完成与暂停, 不将未来资源视为当前更新", async () => {
+    const c = await boot();
+    await wrapper!.get("#game-preload").trigger("click");
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("game_download_start", {
+      mode: "preload",
+      full: false,
+    });
+    backend.downloadHandler({
+      ...backend.downloadStatus,
+      mode: "preload",
+      phase: "preloaded",
+      remoteVersion: "2.0",
+      totalFiles: 1,
+      completedFiles: 1,
+      pendingFiles: 0,
+    });
+    await nextTick();
+    expect(c.downloadView.value.title).toBe("资源预下载已完成");
+    expect(c.downloadView.value.progress).toBe(100);
+    expect(c.downloadView.value.detail).toContain("版本更新开放后");
+    expect(c.launchView.value.label).not.toBe("更新游戏");
+    backend.downloadHandler({
+      ...backend.downloadStatus,
+      mode: "preload",
+      phase: "cancelled",
+      pendingFiles: 1,
+    });
+    await nextTick();
+    expect(primaryText()).toBe("继续资源预下载");
+    expect(c.downloadView.value.detail).toContain("下次预下载");
+  });
+
+  it("更新页读取可选资源并提交选择", async () => {
+    const c = await boot();
+    c.showPage("update");
+    await nextTick();
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("game_resource_catalog");
+    expect(c.state.resourceCatalog?.resources.length).toBe(3);
+    expect(c.state.resourceCatalog?.preloadVersion).toBe("1.5.0");
+    expect(wrapper!.get("#game-preload").text()).toBe("资源预下载 1.5.0");
+    await wrapper!.get(".resource-options__toggle").trigger("click");
+
+    const installed = wrapper!.get("#optional-resource-pakchunk101")
+      .element as HTMLInputElement;
+    expect(installed.disabled).toBe(true);
+    expect(installed.checked).toBe(true);
+
+    await wrapper!.get("#optional-resource-pakchunk102").setValue(true);
+    expect(
+      c.state.resourceCatalog?.resources.find(
+        (resource) => resource.tag === "pakchunk102",
+      )?.selected,
+    ).toBe(true);
+    expect(c.state.resourcesSaving).toBe(true);
+    await vi.advanceTimersByTimeAsync(400);
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("game_resource_select", {
+      tags: ["pakchunk101", "pakchunk102", "pakchunk103"],
+    });
+    expect(c.state.resourcesSaving).toBe(false);
+    expect(c.state.resourceCatalog?.resources.length).toBe(3);
+  });
+
+  it("已完成预下载显示校验入口并可删除缓存", async () => {
+    backend.catalog.preloadCompleted = true;
+    backend.catalog.preloadCached = true;
+    backend.catalog.preloadCachedBytes = 2048;
+    const c = await boot();
+    c.showPage("update");
+    await nextTick();
+    await flushPromises();
+    expect(wrapper!.get("#game-preload").text()).toBe("校验预下载");
+    await wrapper!.get("#game-preload-delete").trigger("click");
+    await nextTick();
+    const confirm = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "删除",
+    ) as HTMLButtonElement | undefined;
+    expect(confirm).toBeTruthy();
+    confirm!.click();
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("game_preload_delete");
+    expect(wrapper!.get("#game-preload").text()).toBe("资源预下载 1.5.0");
+    expect(wrapper!.find("#game-preload-delete").exists()).toBe(false);
+  });
+
+  it("缺少预下载公告时隐藏预下载入口但保留缓存清理", async () => {
+    backend.catalog.preloadAvailable = false;
+    backend.catalog.preloadVersion = "";
+    backend.catalog.preloadCached = true;
+    backend.catalog.preloadCachedVersion = "1.5.0";
+    backend.catalog.preloadCachedBytes = 2048;
+    const c = await boot();
+    c.showPage("update");
+    await nextTick();
+    await flushPromises();
+    expect(wrapper!.find("#game-preload").exists()).toBe(false);
+    expect(wrapper!.find("#game-preload-delete").exists()).toBe(true);
+    await wrapper!.get("#game-preload-delete").trigger("click");
+    await nextTick();
+    const confirm = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "删除",
+    ) as HTMLButtonElement | undefined;
+    expect(confirm).toBeTruthy();
+    confirm!.click();
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("game_preload_delete");
+    expect(wrapper!.find("#game-preload-delete").exists()).toBe(false);
+    expect(backend.catalog.preloadCached).toBe(false);
+  });
+
+  it("后台发现预下载公告时提示, 可按版本忽略", async () => {
+    localStorage.removeItem("nte.preload.dismissed");
+    await boot();
+    await flushPromises();
+    expect(noticeMessage()).toContain("1.5.0 资源可预下载");
+    const secondary = document.querySelector(
+      ".notification-action--ghost",
+    ) as HTMLButtonElement | null;
+    expect(secondary).toBeTruthy();
+    expect(secondary!.querySelector("svg")).toBeTruthy();
+    secondary!.click();
+    await flushPromises();
+    expect(localStorage.getItem("nte.preload.dismissed")).toBe("cn:1.5.0");
+  });
+
+  it("可选资源全选与取消全选只调整未安装项", async () => {
+    const c = await boot();
+    c.showPage("update");
+    await nextTick();
+    await flushPromises();
+    await wrapper!.get(".resource-options__toggle").trigger("click");
+    await wrapper!.get("#optional-resources-all").trigger("click");
+    expect(
+      c.state.resourceCatalog?.resources.every((resource) => resource.selected),
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(400);
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenLastCalledWith("game_resource_select", {
+      tags: ["pakchunk101", "pakchunk102", "pakchunk103"],
+    });
+    expect(wrapper!.get("#optional-resources-all").text()).toBe("取消全选");
+
+    await wrapper!.get("#optional-resources-all").trigger("click");
+    expect(
+      c.state.resourceCatalog?.resources
+        .filter((resource) => resource.state === "absent")
+        .every((resource) => !resource.selected),
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(400);
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenLastCalledWith("game_resource_select", {
+      tags: ["pakchunk101", "pakchunk103"],
+    });
   });
 
   it("为国际服保存独立目录并展示可暂停的下载任务", async () => {

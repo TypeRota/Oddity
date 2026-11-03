@@ -3,6 +3,7 @@ import { reactive } from "vue";
 export type NotificationKind = "ok" | "error" | "info";
 interface NotificationAction {
   label: string;
+  icon?: string;
   run: () => void | Promise<unknown>;
 }
 export interface PrimaryNotificationAction extends NotificationAction {

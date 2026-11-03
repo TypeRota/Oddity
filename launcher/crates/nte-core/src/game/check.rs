@@ -6,9 +6,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::game::config::GameUpdateConfig;
 use crate::game::manifest::{
-    parse_diff_list, parse_remote_config, parse_res_list, DiffManifest, GameManifest,
+    parse_diff_list, parse_remote_config, parse_res_list, BaseVersion, DiffManifest, GameManifest,
     LocalManifest, PakEntry, RemoteConfig, ResEntry,
 };
+use crate::game::optional::{self, OptionalSelection};
 use crate::game::plan::{
     balance_plan_choices, chain_upper_bound_nanos, default_processing_lanes, patch_edge_nanos,
     Throughput,
@@ -20,10 +21,10 @@ use crate::{Error, Result};
 
 const SMALL_HASH_LIMIT: u64 = 20 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CheckOptions {
     pub full: bool,
-    pub include_optional: bool,
+    pub optional: OptionalSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +144,8 @@ pub struct UpdatePlan {
     // 应用时记录本轮实际哈希验证过的文件，供后续快速核对。
     pub verified: Vec<UpdateKind>,
     pub max_threads: usize,
+    /// 本轮纳入计划的可选资源及其独立版本.
+    pub optional_versions: Vec<BaseVersion>,
 }
 
 pub(crate) const PATCH_DISK_RESERVE: u64 = 256 * 1024 * 1024;
@@ -189,6 +192,14 @@ pub struct RemoteBundle {
     pub diff: Option<DiffManifest>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PreloadRemote {
+    pub config: GameUpdateConfig,
+    pub bundle: RemoteBundle,
+    /// 发起预下载时正式分支公告的版本.
+    pub current_version: String,
+}
+
 #[derive(Debug, Clone, Default)]
 struct LocalInfo {
     md5: String,
@@ -199,6 +210,45 @@ struct LocalInfo {
 pub fn load_remote(config: &GameUpdateConfig) -> Result<RemoteBundle> {
     let http = HttpClient::new();
     let remote = fetch_config(&http, config)?;
+    load_remote_bundle(&http, config, remote)
+}
+
+/// 预下载配置固定到公告中的版本, 避免读取未来分支的滚动版本.
+pub fn load_preload_remote(config: &GameUpdateConfig) -> Result<Option<PreloadRemote>> {
+    let http = HttpClient::new();
+    let current = fetch_config(&http, config)?;
+    let current_version = current.res_version.clone();
+    let Some(target) = crate::game::preload::target(config, &current) else {
+        return Ok(None);
+    };
+    let branch = target.branch;
+    let version = target.version;
+    let mut future = config.clone();
+    future.branch = branch;
+    let path = format!(
+        "/{}/Version/Windows/version/{}/config.xml",
+        future.branch, version
+    );
+    let remote = fetch_config_at(&http, &future, &path)?;
+    if remote.res_version != version {
+        return Err(Error::Integrity(format!(
+            "preload ResVersion {} != expected {}",
+            remote.res_version, version
+        )));
+    }
+    let bundle = load_remote_bundle(&http, &future, remote)?;
+    Ok(Some(PreloadRemote {
+        config: future,
+        bundle,
+        current_version,
+    }))
+}
+
+fn load_remote_bundle(
+    http: &HttpClient,
+    config: &GameUpdateConfig,
+    remote: RemoteConfig,
+) -> Result<RemoteBundle> {
     let url_path = format!(
         "/{}/Version/Windows/version/{}/ResList.bin.zip",
         config.branch, remote.res_version
@@ -363,25 +413,14 @@ pub fn check_bundle_cancellable_with_estimates(
             }
         }
     }
-    if opts.include_optional {
-        for base in &bundle.manifest.base_versions {
-            for r in &base.res {
-                entries.push((UpdateKind::Res { res: r.clone() }, r.filesize));
-            }
-            for pkg in &base.packages {
-                for pak in &pkg.paks {
-                    for e in &pak.entries {
-                        entries.push((
-                            UpdateKind::PakEntry {
-                                pak_md5: pak.md5.clone(),
-                                pak_size: pak.filesize,
-                                entry: e.clone(),
-                            },
-                            e.size,
-                        ));
-                    }
-                }
-            }
+    let selected = optional::selected_tags(config, bundle, &opts.optional)?;
+    for base in &bundle.manifest.base_versions {
+        if selected.contains(&base.tag) {
+            entries.extend(optional::entries(base).map(|kind| {
+                let size = kind.size();
+                (kind, size)
+            }));
+            plan.optional_versions.push(base.clone());
         }
     }
 
@@ -854,14 +893,22 @@ pub fn join_install_path(root: &Path, rel: &str) -> std::path::PathBuf {
 }
 
 fn fetch_config(http: &HttpClient, config: &GameUpdateConfig) -> Result<RemoteConfig> {
+    let path = format!(
+        "/{}/Version/Windows/config.xml?tValue={}",
+        config.branch,
+        now_ms()
+    );
+    fetch_config_at(http, config, &path)
+}
+
+fn fetch_config_at(
+    http: &HttpClient,
+    config: &GameUpdateConfig,
+    path: &str,
+) -> Result<RemoteConfig> {
     let mut last = None;
     for cdn in &config.cdns {
-        let url = format!(
-            "{}/{}/Version/Windows/config.xml?tValue={}",
-            cdn.trim_end_matches('/'),
-            config.branch,
-            now_ms()
-        );
+        let url = format!("{}{path}", cdn.trim_end_matches('/'));
         match http.fetch_bytes(&url, 2 * 1024 * 1024, Duration::from_secs(30)) {
             Ok(bytes) => match String::from_utf8(bytes)
                 .map_err(|e| Error::Parse(format!("config.xml utf8: {e}")))
@@ -909,6 +956,7 @@ mod tests {
             rules: Vec::new(),
             check_dirs: Vec::new(),
             max_threads: 5,
+            preload_root: None,
         }
     }
 
@@ -1104,7 +1152,7 @@ mod tests {
             ),
             CheckOptions {
                 full: true,
-                include_optional: false,
+                optional: OptionalSelection::None,
             },
         )
         .expect("check");
@@ -1231,7 +1279,7 @@ mod tests {
             ),
             CheckOptions {
                 full: true,
-                include_optional: false,
+                optional: OptionalSelection::None,
             },
         )
         .expect("check");
@@ -1269,22 +1317,34 @@ mod tests {
             packages: Vec::new(),
         });
 
-        // 空路径计入 checked 但不产生条目；可选包默认不检查
+        // 空路径计入 checked 但不产生条目; 默认维护已存在的可选资源.
         let quick = check_bundle(
             &config,
             &bundle(manifest.clone(), None),
             CheckOptions::default(),
         )
         .expect("check");
-        assert_eq!(quick.checked, 2);
+        assert_eq!(quick.checked, 3);
         assert!(quick.items.is_empty(), "{:?}", quick.items);
+
+        let base_only = check_bundle(
+            &config,
+            &bundle(manifest.clone(), None),
+            CheckOptions {
+                optional: OptionalSelection::None,
+                ..Default::default()
+            },
+        )
+        .expect("check");
+        assert_eq!(base_only.checked, 2);
+        assert!(base_only.items.is_empty(), "{:?}", base_only.items);
 
         let with_optional = check_bundle(
             &config,
             &bundle(manifest, None),
             CheckOptions {
                 full: false,
-                include_optional: true,
+                optional: OptionalSelection::All,
             },
         )
         .expect("check");
@@ -2017,7 +2077,7 @@ mod tests {
             &remote,
             CheckOptions {
                 full: true,
-                include_optional: false,
+                optional: OptionalSelection::None,
             },
             &|| {
                 checks.set(checks.get() + 1);
@@ -2027,6 +2087,35 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, Error::Cancelled));
         assert_eq!(checks.get(), 5);
+    }
+
+    #[test]
+    fn configured_selection_survives_optional_catalog_errors() {
+        let dir = TempDir::new("optional-selection-error");
+        let config = config_for(&dir);
+        let mut manifest = manifest_res(Vec::new());
+        manifest.base_versions.push(BaseVersion {
+            version: "0.101.0".to_string(),
+            tag: "pakchunk101".to_string(),
+            res: vec![res("Client/a.pak", "00", 5)],
+            packages: Vec::new(),
+        });
+        let remote = bundle(manifest, None);
+        dir.write(
+            "install/NTELauncher/UserData/Patcher/PatcherSDK/nte-resource-selection.json",
+            b"{",
+        );
+        assert!(
+            optional::selected_tags(&config, &remote, &OptionalSelection::Configured)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(optional::selected_tags(
+            &config,
+            &remote,
+            &OptionalSelection::Tags(vec!["pakchunk101".into()])
+        )
+        .is_err());
     }
 
     #[test]
@@ -2055,6 +2144,71 @@ mod tests {
                     .starts_with("/cdn/publish_ob/Version/Windows/config.xml?tValue=")),
             "{:?}",
             server.targets()
+        );
+    }
+
+    #[test]
+    fn preload_discovery_pins_the_advertised_future_config() {
+        let dir = TempDir::new("preload-remote");
+        let mut config = config_for(&dir);
+        let server = HttpServer::start();
+        config.cdns = vec![server.url("/cdn")];
+        server.route(
+            "/cdn/publish_ob/Version/Windows/config.xml",
+            "<config><ResVersion>1.4.16</ResVersion><PreReleaseBranch>future</PreReleaseBranch><PreReleaseVersion>1.5.0</PreReleaseVersion><PreReleaseStatus>start</PreReleaseStatus></config>",
+        );
+        let manifest = RES_LIST.replace("1.4.16", "1.5.0");
+        let future_config = config_xml(&manifest, None).replace("1.4.16", "1.5.0");
+        server.route(
+            "/cdn/future/Version/Windows/version/1.5.0/config.xml",
+            future_config,
+        );
+        server.route(
+            "/cdn/future/Version/Windows/version/1.5.0/ResList.bin.zip",
+            zip_of(&[(
+                "ResList.bin",
+                pxml::encode(manifest.as_bytes(), "1289").unwrap(),
+            )]),
+        );
+
+        let preload = load_preload_remote(&config).unwrap().unwrap();
+        assert_eq!(preload.config.branch, "future");
+        assert_eq!(preload.config.install_root, config.install_root);
+        assert_eq!(preload.bundle.config.res_version, "1.5.0");
+        assert_eq!(preload.bundle.manifest.version, "1.5.0");
+        assert_eq!(server.hits("/cdn/future/Version/Windows/config.xml"), 0);
+        assert_eq!(
+            server.hits("/cdn/publish_ob/Version/Windows/version/1.4.16/ResList.bin.zip"),
+            0
+        );
+    }
+
+    #[test]
+    fn preload_discovery_handles_unavailable_and_rejects_version_skew() {
+        let dir = TempDir::new("preload-unavailable");
+        let mut config = config_for(&dir);
+        let server = HttpServer::start();
+        config.cdns = vec![server.url("/cdn")];
+        server.route(
+            "/cdn/publish_ob/Version/Windows/config.xml",
+            "<config><ResVersion>1.4.16</ResVersion></config>",
+        );
+        assert!(load_preload_remote(&config).unwrap().is_none());
+        assert_eq!(server.targets().len(), 1);
+
+        server.route(
+            "/cdn/publish_ob/Version/Windows/config.xml",
+            "<config><ResVersion>1.4.16</ResVersion><PreReleaseBranch>future</PreReleaseBranch><PreReleaseVersion>1.5.0</PreReleaseVersion><PreReleaseStatus>start</PreReleaseStatus></config>",
+        );
+        server.route(
+            "/cdn/future/Version/Windows/version/1.5.0/config.xml",
+            "<config><ResVersion>1.5.1</ResVersion></config>",
+        );
+        let error = load_preload_remote(&config).unwrap_err();
+        assert!(error.to_string().contains("!= expected 1.5.0"), "{error}");
+        assert_eq!(
+            server.hits("/cdn/future/Version/Windows/version/1.5.1/ResList.bin.zip"),
+            0
         );
     }
 

@@ -5,6 +5,7 @@ use nte_core::config::LauncherConfig;
 use nte_core::game;
 use nte_core::game::check::CheckOptions;
 use nte_core::game::download::ApplyOptions;
+use nte_core::game::optional::OptionalSelection;
 use nte_core::manifest::Manifest;
 use nte_core::{update, updates, version};
 
@@ -68,8 +69,10 @@ fn main() -> Result<()> {
         "check" => check(&config, args.contains(&"--quick".to_string())),
         "apply" => apply(&config, flag_value(&args, "--only")),
         "doctor" => doctor(&config),
+        "game-resources" => game_resources(&config, &args),
         "game-check" => game_check(&config, &args),
         "game-apply" => game_apply(&config, &args),
+        "game-preload" => game_download(&config, &args, true),
         _ => usage(),
     }
 }
@@ -153,13 +156,85 @@ fn game_config(config: &LauncherConfig) -> Result<game::GameUpdateConfig> {
     })
 }
 
+fn optional_selection(args: &[String]) -> Result<OptionalSelection> {
+    let mut tags = Vec::new();
+    for (index, argument) in args.iter().enumerate() {
+        if argument == "--optional" {
+            let value = args
+                .get(index + 1)
+                .filter(|value| !value.starts_with("--"))
+                .ok_or_else(|| anyhow!("--optional requires a resource tag"))?;
+            tags.push(value.clone());
+        }
+    }
+    if args.iter().any(|arg| arg == "--include-optional") {
+        if !tags.is_empty() {
+            anyhow::bail!("--include-optional cannot be combined with --optional");
+        }
+        Ok(OptionalSelection::All)
+    } else if tags.is_empty() {
+        Ok(OptionalSelection::Configured)
+    } else {
+        Ok(OptionalSelection::Tags(tags))
+    }
+}
+
+fn game_resources(launcher: &LauncherConfig, args: &[String]) -> Result<()> {
+    let mut config = game_config(launcher)?;
+    let bundle = if args.iter().any(|arg| arg == "--preload") {
+        let Some(remote) = game::check::load_preload_remote(&config)? else {
+            println!("[resources] no resource preload available");
+            return Ok(());
+        };
+        config = remote.config;
+        remote.bundle
+    } else {
+        game::check::load_remote(&config)?
+    };
+    let selection = optional_selection(args)?;
+    let clear = args.iter().any(|arg| arg == "--clear-selection");
+    let tags = match selection {
+        OptionalSelection::Configured if clear => Some(Vec::new()),
+        OptionalSelection::Configured => None,
+        OptionalSelection::Tags(tags) if !clear => Some(tags),
+        OptionalSelection::All if !clear => Some(
+            game::optional::catalog(&config, &bundle)?
+                .into_iter()
+                .map(|resource| resource.tag)
+                .collect(),
+        ),
+        _ => anyhow::bail!(
+            "--clear-selection cannot be combined with an optional resource selection"
+        ),
+    };
+    if let Some(tags) = tags {
+        let _lock = nte_core::install_lock::InstallLock::acquire(&config.install_root)?;
+        game::optional::save_selection(&config, &bundle, &tags)?;
+    }
+    println!(
+        "[resources] version={} branch={}",
+        bundle.config.res_version, config.branch
+    );
+    for resource in game::optional::catalog(&config, &bundle)? {
+        println!(
+            "{} {} version={} bytes={} state={}",
+            if resource.selected { "[x]" } else { "[ ]" },
+            resource.tag,
+            resource.version,
+            resource.size,
+            serde_json::to_string(&resource.state)?
+        );
+    }
+    Ok(())
+}
+
 fn game_check(launcher: &LauncherConfig, args: &[String]) -> Result<()> {
     let cfg = game_config(launcher)?;
     let opts = CheckOptions {
         full: args.iter().any(|a| a == "--full"),
-        include_optional: args.iter().any(|a| a == "--include-optional"),
+        optional: optional_selection(args)?,
     };
-    let plan = game::check::check(&cfg, opts).context("check game resources")?;
+    let plan = game::check::check(&cfg, opts.clone()).context("check game resources")?;
     println!(
         "[game] local={} remote={} hash={} branch={} mode={}",
         if plan.local_version.is_empty() {
@@ -224,7 +299,11 @@ fn game_check(launcher: &LauncherConfig, args: &[String]) -> Result<()> {
 }
 
 fn game_apply(launcher: &LauncherConfig, args: &[String]) -> Result<()> {
-    let cfg = game_config(launcher)?;
+    game_download(launcher, args, false)
+}
+
+fn game_download(launcher: &LauncherConfig, args: &[String], preload: bool) -> Result<()> {
+    let mut cfg = game_config(launcher)?;
     let _install_lock = if args.iter().any(|arg| arg == "--dry-run") {
         None
     } else {
@@ -232,28 +311,42 @@ fn game_apply(launcher: &LauncherConfig, args: &[String]) -> Result<()> {
             &cfg.install_root,
         )?)
     };
-    let check_opts = CheckOptions {
-        full: args.iter().any(|a| a == "--full"),
-        include_optional: args.iter().any(|a| a == "--include-optional"),
+    let future_bundle = if preload {
+        let Some(remote) =
+            game::check::load_preload_remote(&cfg).context("discover resource preload")?
+        else {
+            println!("[preload] no resource preload available");
+            return Ok(());
+        };
+        cfg = remote.config;
+        Some(remote.bundle)
+    } else {
+        None
     };
-    let mut plan = game::check::check(&cfg, check_opts).context("check game resources")?;
+    let selection = optional_selection(args)?;
+    let check = |full| {
+        let opts = CheckOptions {
+            full,
+            optional: selection.clone(),
+        };
+        match &future_bundle {
+            Some(bundle) => game::check::check_bundle(&cfg, bundle, opts),
+            None => game::check::check(&cfg, opts),
+        }
+    };
+    let mut plan = check(args.iter().any(|a| a == "--full")).context("check game resources")?;
     if !plan.unverified.is_empty() {
-        plan = game::check::check(
-            &cfg,
-            CheckOptions {
-                full: true,
-                ..check_opts
-            },
-        )
-        .context("verify game resources")?;
+        plan = check(true).context("verify game resources")?;
     }
     let opts = ApplyOptions {
         dry_run: args.iter().any(|a| a == "--dry-run"),
         only: flag_value(args, "--only"),
         force: args.iter().any(|a| a == "--force"),
-        update_ledger: true,
+        update_ledger: !preload,
         probe_cdns: !updates::metered().is_metered(),
+        preload,
     };
+    let operation = if preload { "preload" } else { "apply" };
     let selected: Vec<_> = plan
         .items
         .iter()
@@ -264,12 +357,12 @@ fn game_apply(launcher: &LauncherConfig, args: &[String]) -> Result<()> {
         .collect();
     let selected_bytes: u64 = selected.iter().map(|i| i.download_size).sum();
     if selected.is_empty() && !plan.items.is_empty() {
-        println!("[apply] no files match the selected filter");
+        println!("[{operation}] no files match the selected filter");
         return Ok(());
     }
     if opts.dry_run {
         println!(
-            "[apply] dry-run: {} files, {} bytes",
+            "[{operation}] dry-run: {} files, {} bytes",
             selected.len(),
             selected_bytes
         );
@@ -279,7 +372,7 @@ fn game_apply(launcher: &LauncherConfig, args: &[String]) -> Result<()> {
         return Ok(());
     }
     println!(
-        "[apply] files={} bytes={} branch={}",
+        "[{operation}] files={} bytes={} branch={}",
         selected.len(),
         selected_bytes,
         cfg.branch
@@ -301,7 +394,7 @@ fn game_apply(launcher: &LauncherConfig, args: &[String]) -> Result<()> {
         }
     }
     println!(
-        "[apply] ok={} failed={} skipped={} downloaded={} B",
+        "[{operation}] ok={} failed={} skipped={} downloaded={} B",
         report.results.iter().filter(|r| r.ok).count(),
         report.failed,
         report.skipped,
@@ -312,6 +405,16 @@ fn game_apply(launcher: &LauncherConfig, args: &[String]) -> Result<()> {
     }
     if report.failed > 0 {
         return Err(anyhow!("{} game update file(s) failed", report.failed));
+    }
+    if preload && opts.only.is_none() && !report.cancelled {
+        game::preload::mark_complete(
+            &cfg,
+            &cfg.branch,
+            &plan.remote_version,
+            plan.items.len(),
+            plan.total_bytes(),
+        )
+        .context("write preload completion marker")?;
     }
     Ok(())
 }
@@ -361,7 +464,7 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 fn usage() -> Result<()> {
     println!("nte-cli recovery [diagnose|export <目录>|reset-interface --confirm [--reset-invalid]|stop --confirm|start-compatible]");
     println!("nte-cli attendance [--config <签到配置目录>]\nnte-cli keyring-check");
-    println!("nte-cli <check|apply|doctor|game-check|game-apply> --root <launcher install dir> [--quick] [--full] [--include-optional] [--only <substr>] [--dry-run] [--force]");
+    println!("nte-cli <check|apply|doctor|game-resources|game-check|game-apply|game-preload> --root <launcher install dir> [--quick] [--full] [--optional <tag> ... | --include-optional] [--preload] [--clear-selection] [--only <substr>] [--dry-run] [--force]");
     Ok(())
 }
 

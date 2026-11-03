@@ -23,6 +23,8 @@ use crate::{Error, Result};
 #[derive(Debug, Clone)]
 pub struct ApplyOptions {
     pub dry_run: bool,
+    /// 只下载到独立预下载目录, 不应用补丁或更新安装记录.
+    pub preload: bool,
     pub only: Option<String>,
     pub force: bool,
     pub update_ledger: bool,
@@ -34,6 +36,7 @@ impl Default for ApplyOptions {
     fn default() -> Self {
         Self {
             dry_run: false,
+            preload: false,
             only: None,
             force: false,
             update_ledger: true,
@@ -486,7 +489,29 @@ pub fn apply_plan_observed_full(
     on_result: &mut dyn FnMut(&ApplyResult),
     cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> ApplyReport {
-    let staging = config.patcher_dir.join("tmp").join("nte-native");
+    let mut report = ApplyReport::default();
+    // 并发下载的耗时按任务级活跃墙钟统计, 与默认估计的聚合吞吐口径一致.
+    let download_clock = DownloadClock::new();
+    let preload_base = if opts.preload {
+        match crate::game::preload::prepare_root(config) {
+            Ok(base) => Some(base),
+            Err(error) => {
+                report.failed = 1;
+                report.ledger_error = Some(error.to_string());
+                return finish_timings(report, &download_clock);
+            }
+        }
+    } else {
+        None
+    };
+    let staging = match &preload_base {
+        Some(base) => base
+            .join(&config.branch)
+            .join(&plan.remote_version)
+            .join("nte-native"),
+        None => config.patcher_dir.join("tmp").join("nte-native"),
+    };
+    let staging_base = preload_base.as_deref().unwrap_or(&config.install_root);
     let selected: Vec<&UpdateItem> = plan
         .items
         .iter()
@@ -495,10 +520,6 @@ pub fn apply_plan_observed_full(
             None => true,
         })
         .collect();
-
-    let mut report = ApplyReport::default();
-    // 并发下载的耗时按任务级活跃墙钟统计, 与默认估计的聚合吞吐口径一致.
-    let download_clock = DownloadClock::new();
     if !plan.unverified.is_empty() {
         report.failed = plan.unverified.len();
         report.results = plan
@@ -522,12 +543,17 @@ pub fn apply_plan_observed_full(
             staging.join("Pak"),
         ];
         for path in storage_paths {
-            let valid = path
-                .strip_prefix(&config.install_root)
-                .map_err(|_| Error::Integrity("资源暂存目录超出安装目录".into()))
-                .and_then(|relative| {
-                    crate::paths::ensure_no_symlink(&config.install_root, relative)
-                });
+            let valid = if opts.preload && path.starts_with(&staging) {
+                path.strip_prefix(staging_base)
+                    .map_err(|_| Error::Integrity("预下载暂存目录超出缓存目录".into()))
+                    .and_then(|relative| crate::paths::ensure_no_symlink(staging_base, relative))
+            } else {
+                path.strip_prefix(&config.install_root)
+                    .map_err(|_| Error::Integrity("资源暂存目录超出安装目录".into()))
+                    .and_then(|relative| {
+                        crate::paths::ensure_no_symlink(&config.install_root, relative)
+                    })
+            };
             if let Err(error) = valid {
                 report.failed = 1;
                 report.ledger_error = Some(error.to_string());
@@ -537,7 +563,12 @@ pub fn apply_plan_observed_full(
     }
     if selected.is_empty() {
         report.cancelled = cancelled();
-        if opts.update_ledger && !opts.dry_run && !report.cancelled && !plan.verified.is_empty() {
+        if !opts.preload
+            && opts.update_ledger
+            && !opts.dry_run
+            && !report.cancelled
+            && !plan.verified.is_empty()
+        {
             let verified = plan
                 .verified
                 .iter()
@@ -571,6 +602,9 @@ pub fn apply_plan_observed_full(
     }
 
     let tag_indices = selected_tag_indices(plan, &selected);
+    if !opts.preload {
+        reuse_preload(config, plan, &staging, cancelled);
+    }
     cleanup_stale_parts(&staging, plan);
     let max_threads = if plan.max_threads == 0 {
         config.max_threads
@@ -606,7 +640,7 @@ pub fn apply_plan_observed_full(
     let patch_growth = selected.iter().fold(0u64, |total, item| {
         total.saturating_add(item.patch_disk_growth())
     });
-    let workspace_budget = if selected.iter().any(|item| item.has_patch()) {
+    let workspace_budget = if !opts.preload && selected.iter().any(|item| item.has_patch()) {
         match crate::disk::available_bytes(&staging) {
             Ok(available) => available
                 .saturating_sub(download_bytes)
@@ -679,7 +713,7 @@ pub fn apply_plan_observed_full(
                         report.cancelled = true;
                     } else if result.ok && !result.skipped {
                         completed.push(result.path.clone());
-                        if opts.update_ledger {
+                        if !opts.preload && opts.update_ledger {
                             if let Err(error) = crate::game::ledger::update_after_apply(
                                 config, plan, &completed, false,
                             ) {
@@ -702,7 +736,7 @@ pub fn apply_plan_observed_full(
     report.results.sort_by(|a, b| a.path.cmp(&b.path));
     report.cancelled |= cancelled();
     completed.extend(plan.verified.iter().map(|item| item.path().to_string()));
-    if opts.update_ledger && !completed.is_empty() {
+    if !opts.preload && opts.update_ledger && !completed.is_empty() {
         let bump = !report.cancelled && report.failed == 0;
         match crate::game::ledger::update_after_apply(config, plan, &completed, bump) {
             Ok(()) => report.ledger_error = None,
@@ -834,12 +868,19 @@ fn run_item(
     allow_ranges: bool,
 ) -> Result<()> {
     let relative = crate::paths::relative_path(&item.path)?;
+    let staging_root = if opts.preload {
+        crate::game::preload::root(config)
+            .canonicalize()
+            .unwrap_or_else(|_| crate::game::preload::root(config))
+    } else {
+        config.install_root.clone()
+    };
     let check_paths = || -> Result<()> {
         crate::paths::ensure_no_symlink(&config.install_root, &relative)?;
         let staging_relative = staging
-            .strip_prefix(&config.install_root)
-            .map_err(|_| Error::Integrity("资源暂存目录超出安装目录".into()))?;
-        crate::paths::ensure_no_symlink(&config.install_root, staging_relative)
+            .strip_prefix(&staging_root)
+            .map_err(|_| Error::Integrity("资源暂存目录超出缓存目录".into()))?;
+        crate::paths::ensure_no_symlink(&staging_root, staging_relative)
     };
     check_paths()?;
     let prepared = prepare_item(
@@ -852,6 +893,12 @@ fn run_item(
         progress,
         allow_ranges,
     )?;
+    if opts.preload {
+        if matches!(prepared, Prepared::Full) {
+            download_full(config, item, staging, http, progress, allow_ranges)?;
+        }
+        return Ok(());
+    }
     let mut permit = None;
     let temp = match prepared {
         Prepared::AlreadyCorrect => return Ok(()),
@@ -1190,6 +1237,19 @@ fn remove_patch_temps(staging: &Path, item: &UpdateItem, index: usize) {
     }
 }
 
+fn check_staging_path(config: &GameUpdateConfig, path: &Path) -> Result<()> {
+    let preload = crate::game::preload::root(config);
+    let preload = preload.canonicalize().unwrap_or(preload);
+    let (base, relative) = if let Ok(relative) = path.strip_prefix(&config.install_root) {
+        (config.install_root.as_path(), relative)
+    } else if let Ok(relative) = path.strip_prefix(&preload) {
+        (preload.as_path(), relative)
+    } else {
+        return Err(Error::Integrity("资源暂存目录超出缓存目录".into()));
+    };
+    crate::paths::ensure_no_symlink(base, relative)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn download_to_temp(
     config: &GameUpdateConfig,
@@ -1202,17 +1262,8 @@ fn download_to_temp(
     progress: &Progress<'_>,
     allow_ranges: bool,
 ) -> Result<u64> {
-    let relative = temp
-        .strip_prefix(&config.install_root)
-        .map_err(|_| Error::Integrity("资源暂存目录超出安装目录".into()))?;
-    crate::paths::ensure_no_symlink(&config.install_root, relative)?;
-    let index = range_index_path(temp);
-    crate::paths::ensure_no_symlink(
-        &config.install_root,
-        index
-            .strip_prefix(&config.install_root)
-            .map_err(|_| Error::Integrity("资源暂存目录超出安装目录".into()))?,
-    )?;
+    check_staging_path(config, temp)?;
+    check_staging_path(config, &range_index_path(temp))?;
     if let Some(parent) = temp.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -1317,17 +1368,8 @@ fn download_range_to_temp(
     expected_md5: &str,
     progress: &Progress<'_>,
 ) -> Result<u64> {
-    let relative = temp
-        .strip_prefix(&config.install_root)
-        .map_err(|_| Error::Integrity("资源暂存目录超出安装目录".into()))?;
-    crate::paths::ensure_no_symlink(&config.install_root, relative)?;
-    let index = range_index_path(temp);
-    crate::paths::ensure_no_symlink(
-        &config.install_root,
-        index
-            .strip_prefix(&config.install_root)
-            .map_err(|_| Error::Integrity("资源暂存目录超出安装目录".into()))?,
-    )?;
+    check_staging_path(config, temp)?;
+    check_staging_path(config, &range_index_path(temp))?;
     if let Some(parent) = temp.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -2068,9 +2110,95 @@ fn item_tag_for(path: &str, index: usize) -> String {
     format!("{}-{index}", path_tag(path))
 }
 
+/// 正式版本只复用完整且哈希相符的预下载文件; 原缓存保留供重试.
+fn reuse_preload(
+    config: &GameUpdateConfig,
+    plan: &UpdatePlan,
+    staging: &Path,
+    cancelled: &dyn Fn() -> bool,
+) {
+    let root = crate::game::preload::root(config);
+    let Ok(root) = root.canonicalize() else {
+        return;
+    };
+    let Ok(branches) = fs::read_dir(&root) else {
+        return;
+    };
+    let wanted = plan_staging_paths(staging, plan);
+    for branch in branches.flatten() {
+        let source = branch.path().join(&plan.remote_version).join("nte-native");
+        for target in &wanted {
+            if cancelled() {
+                return;
+            }
+            if target.exists() || target.extension().is_none_or(|e| e != "part") {
+                continue;
+            }
+            let relative = target
+                .strip_prefix(staging)
+                .expect("计划暂存文件位于暂存目录内");
+            let file = source.join(relative);
+            let Ok(source_relative) = file.strip_prefix(&root) else {
+                continue;
+            };
+            if crate::paths::ensure_no_symlink(&root, source_relative).is_err() {
+                continue;
+            }
+            let name = target.file_name().expect("暂存文件名").to_string_lossy();
+            let mut parts = name.split('.');
+            let (Some(md5), Some(size)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            let Ok(size) = size.parse::<u64>() else {
+                continue;
+            };
+            if !fs::metadata(&file).is_ok_and(|m| m.is_file() && m.len() == size) {
+                continue;
+            }
+            if !md5_file_cancellable(&file, cancelled)
+                .is_ok_and(|sum| sum.eq_ignore_ascii_case(md5))
+            {
+                continue;
+            }
+            if fs::create_dir_all(target.parent().expect("暂存目录")).is_ok()
+                && fs::hard_link(&file, target).is_err()
+                && !copy_verified(&file, target, size, md5, cancelled)
+            {
+                let _ = fs::remove_file(target);
+            }
+        }
+    }
+}
+
+/// 跨文件系统无法硬链接时复制到正常暂存目录, 复制后仍按大小和 MD5 复核.
+fn copy_verified(
+    source: &Path,
+    target: &Path,
+    size: u64,
+    md5: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> bool {
+    if cancelled() {
+        return false;
+    }
+    let Ok(mut source) = File::open(source) else {
+        return false;
+    };
+    let Ok(mut output) = File::create(target) else {
+        return false;
+    };
+    if !crate::update::copy_cancellable(&mut source, &mut output, cancelled)
+        .is_ok_and(|copied| copied == size)
+    {
+        return false;
+    }
+    md5_file_cancellable(target, cancelled)
+        .is_ok_and(|sum| sum.eq_ignore_ascii_case(md5) && !cancelled())
+}
+
 /// 保留整份计划的精确暂存路径, 清除过期下载、索引和链产物.
 /// --only 不改变清理范围, 未选中项仍可在下一轮续传.
-fn cleanup_stale_parts(staging: &Path, plan: &UpdatePlan) {
+fn plan_staging_paths(staging: &Path, plan: &UpdatePlan) -> HashSet<PathBuf> {
     let items: Vec<&UpdateItem> = plan.items.iter().collect();
     let tag_indices = selected_tag_indices(plan, &items);
     let mut keep = HashSet::new();
@@ -2096,6 +2224,11 @@ fn cleanup_stale_parts(staging: &Path, plan: &UpdatePlan) {
             keep.insert(chain_temp(staging, item, step, index));
         }
     }
+    keep
+}
+
+fn cleanup_stale_parts(staging: &Path, plan: &UpdatePlan) {
+    let keep = plan_staging_paths(staging, plan);
     for directory in [
         staging.join("Res"),
         staging.join("Patch"),
@@ -2137,6 +2270,7 @@ mod tests {
             rules: Vec::new(),
             check_dirs: Vec::new(),
             max_threads: 5,
+            preload_root: None,
         }
     }
 
@@ -2260,6 +2394,247 @@ mod tests {
             assert_eq!(report.downloaded_bytes, 0);
             assert_eq!(outside.read("victim.bin"), b"kept");
         }
+    }
+
+    #[test]
+    fn preload_keeps_live_files_and_ledger_then_reuses_on_release() {
+        let dir = TempDir::new("preload-release");
+        let server = HttpServer::start();
+        let mut config = config_for(&dir);
+        config.cdns = vec![server.url("/cdn")];
+        let content = b"future payload";
+        let md5 = crate::update::md5_bytes(content);
+        let route = res_path(&md5, content.len() as u64);
+        server.route(&route, content);
+        dir.write("install/data/a.bin", b"current payload");
+        let ledger = config.patcher_dir.join("ResList.xml");
+        fs::create_dir_all(ledger.parent().unwrap()).unwrap();
+        fs::write(&ledger, b"current ledger").unwrap();
+        let plan = plan_of(vec![res_item("data/a.bin", &md5, content.len() as u64)]);
+        let options = ApplyOptions {
+            preload: true,
+            ..Default::default()
+        };
+        let report = apply_plan(&config, &plan, &options);
+        assert_eq!(report.failed, 0, "{:?}", report.results);
+        assert_eq!(report.timings.install_bytes, 0);
+        assert_eq!(dir.read("install/data/a.bin"), b"current payload");
+        assert_eq!(fs::read(&ledger).unwrap(), b"current ledger");
+        let cache = config
+            .patcher_dir
+            .join("preload")
+            .join(BRANCH)
+            .join(&plan.remote_version)
+            .join("nte-native/Res")
+            .join(format!(
+                "{md5}.{}.{}.part",
+                content.len(),
+                item_tag_for("data/a.bin", 0)
+            ));
+        assert_eq!(fs::read(&cache).unwrap(), content);
+        let current = plan_of(vec![res_item("data/unrelated.bin", "abcd", 1)]);
+        cleanup_stale_parts(&config.patcher_dir.join("tmp/nte-native"), &current);
+        assert!(cache.is_file());
+        let resumed = apply_plan(&config, &plan, &options);
+        assert_eq!(resumed.failed, 0);
+        assert_eq!(server.hits(&route), 1);
+        // 发版后的分支可不同, 只复用当前版本和内容标识完全相同的文件.
+        config.branch = "released_branch".into();
+        let report = apply_plan(&config, &plan, &ApplyOptions::default());
+        assert_eq!(report.failed, 0, "{:?}", report.results);
+        assert_eq!(dir.read("install/data/a.bin"), content);
+        assert_eq!(server.hits(&route), 1);
+        assert!(cache.is_file());
+    }
+
+    #[test]
+    fn cancelling_cross_filesystem_reuse_removes_partial_copy_and_preserves_source() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = TempDir::new("preload-cancel-copy");
+        let cache_root = tempfile::tempdir_in("/dev/shm").unwrap();
+        if fs::metadata(cache_root.path()).unwrap().dev() == fs::metadata(dir.path()).unwrap().dev()
+        {
+            return;
+        }
+        let mut config = config_for(&dir);
+        config.preload_root = Some(cache_root.path().to_path_buf());
+        let content = vec![23; 3 * 1024 * 1024];
+        let md5 = crate::update::md5_bytes(&content);
+        let plan = plan_of(vec![res_item("data/a.bin", &md5, content.len() as u64)]);
+        let target = res_temp(&config, "data/a.bin", &md5, content.len() as u64, 0);
+        let cache = cache_root
+            .path()
+            .join(BRANCH)
+            .join(&plan.remote_version)
+            .join("nte-native/Res")
+            .join(target.file_name().unwrap());
+        fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        fs::write(&cache, &content).unwrap();
+        dir.write("install/data/a.bin", b"current payload");
+        let stop = AtomicBool::new(false);
+        let report = apply_plan_observed(
+            &config,
+            &plan,
+            &ApplyOptions::default(),
+            &mut |_| {},
+            &mut |_, _| {},
+            &|| {
+                if target
+                    .metadata()
+                    .is_ok_and(|meta| meta.len() >= 1024 * 1024)
+                {
+                    stop.store(true, Ordering::Relaxed);
+                }
+                stop.load(Ordering::Relaxed)
+            },
+        );
+        assert!(report.cancelled);
+        assert!(!target.exists());
+        assert_eq!(fs::read(&cache).unwrap(), content);
+        assert_eq!(dir.read("install/data/a.bin"), b"current payload");
+        assert!(!config.patcher_dir.join("ResList.xml").exists());
+    }
+
+    #[test]
+    fn preload_cache_on_another_filesystem_is_copied() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = TempDir::new("preload-cross-fs");
+        let shm = std::path::Path::new("/dev/shm");
+        if !shm.is_dir()
+            || fs::metadata(shm).map(|m| m.dev()).ok()
+                == fs::metadata(dir.path()).map(|m| m.dev()).ok()
+        {
+            return;
+        }
+        let cache_root = shm.join(format!(
+            "oddity-preload-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(cache_root.clone());
+
+        let server = HttpServer::start();
+        let mut config = config_for(&dir);
+        config.cdns = vec![server.url("/cdn")];
+        let content = b"cross filesystem payload";
+        let md5 = crate::update::md5_bytes(content);
+        let route = res_path(&md5, content.len() as u64);
+        server.route(&route, content);
+        dir.write("install/data/a.bin", b"current payload");
+        let plan = plan_of(vec![res_item("data/a.bin", &md5, content.len() as u64)]);
+        let cache = cache_root
+            .join(BRANCH)
+            .join(&plan.remote_version)
+            .join("nte-native/Res")
+            .join(format!(
+                "{md5}.{}.{}.part",
+                content.len(),
+                item_tag_for("data/a.bin", 0)
+            ));
+        fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        fs::write(&cache, content).unwrap();
+        config.preload_root = Some(cache_root);
+        config.branch = "released_branch".into();
+        let report = apply_plan(&config, &plan, &ApplyOptions::default());
+        assert_eq!(report.failed, 0, "{:?}", report.results);
+        assert_eq!(dir.read("install/data/a.bin"), content);
+        assert_eq!(server.hits(&route), 0);
+    }
+
+    #[test]
+    fn preload_defers_patch_application_until_release() {
+        let dir = TempDir::new("preload-patch");
+        let server = HttpServer::start();
+        let mut config = config_for(&dir);
+        config.cdns = vec![server.url("/cdn")];
+        let patch = include_bytes!("../../tests/fixtures/reusable-game.hdiff");
+        let patch_md5 = crate::update::md5_bytes(patch);
+        let old = b"version one: reusable game bytes\n";
+        let new = b"version two: reusable game bytes!\n";
+        dir.write("install/data/a.bin", old);
+        let route = res_path(&patch_md5, patch.len() as u64);
+        server.route(&route, patch);
+        let plan = plan_of(vec![patch_item(
+            "data/a.bin",
+            &crate::update::md5_bytes(old),
+            old.len() as u64,
+            &crate::update::md5_bytes(new),
+            new.len() as u64,
+            &[(&patch_md5, patch.len() as u64)],
+        )]);
+        let report = apply_plan(
+            &config,
+            &plan,
+            &ApplyOptions {
+                preload: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(report.failed, 0, "{:?}", report.results);
+        assert_eq!(report.timings.apply_bytes, 0);
+        assert_eq!(report.timings.install_bytes, 0);
+        assert_eq!(dir.read("install/data/a.bin"), old);
+        assert!(!config.patcher_dir.join("ResList.xml").exists());
+        assert_eq!(server.hits(&route), 1);
+        config.branch = "released_branch".into();
+        let report = apply_plan(&config, &plan, &ApplyOptions::default());
+        assert_eq!(report.failed, 0, "{:?}", report.results);
+        assert_eq!(dir.read("install/data/a.bin"), new);
+        assert_eq!(server.hits(&route), 1);
+        assert_eq!(report.timings.apply_bytes, new.len() as u64);
+    }
+
+    #[test]
+    fn preload_pak_cache_is_verified_again_before_release() {
+        let dir = TempDir::new("preload-pak");
+        let server = HttpServer::start();
+        let mut config = config_for(&dir);
+        config.cdns = vec![server.url("/cdn")];
+        let pak: Vec<u8> = (0..=255u8).collect();
+        let bytes = &pak[10..40];
+        let md5 = crate::update::md5_bytes(bytes);
+        let route = res_path(&"aa".repeat(16), pak.len() as u64);
+        server.route(&route, &pak);
+        let plan = plan_of(vec![pak_item(
+            "data/a.bin",
+            &md5,
+            10,
+            bytes.len() as u64,
+            pak.len() as u64,
+        )]);
+        let options = ApplyOptions {
+            preload: true,
+            ..Default::default()
+        };
+        let report = apply_plan(&config, &plan, &options);
+        assert_eq!(report.failed, 0, "{:?}", report.results);
+        assert!(!dir.is_file("install/data/a.bin"));
+        let cache = config
+            .patcher_dir
+            .join("preload")
+            .join(BRANCH)
+            .join(&plan.remote_version)
+            .join("nte-native/Pak")
+            .join(format!(
+                "{md5}.{}.{}.part",
+                bytes.len(),
+                item_tag_for("data/a.bin", 0)
+            ));
+        fs::write(&cache, vec![0; bytes.len()]).unwrap();
+        let report = apply_plan(&config, &plan, &ApplyOptions::default());
+        assert_eq!(report.failed, 0, "{:?}", report.results);
+        assert_eq!(dir.read("install/data/a.bin"), bytes);
+        assert_eq!(server.hits(&route), 2);
+        assert!(server.ranges().iter().all(|range| range == "bytes=10-39"));
     }
 
     #[test]

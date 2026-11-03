@@ -13,6 +13,7 @@ import type {
   LaunchStage,
   GameStatus,
   DownloadStatus,
+  ResourceCatalog,
   BulletinFeed,
   LauncherBackgroundMedia,
   PlaytimeHistory,
@@ -30,7 +31,11 @@ import {
   listenIntegrityState,
 } from "./api";
 import { DEMO_NOTICE_KEY, isDemo } from "./demo";
-import { notify, resetNotifications } from "./notifications";
+import {
+  notify,
+  dismissNotification,
+  resetNotifications,
+} from "./notifications";
 export { notify, notifications } from "./notifications";
 import { latestSession, formatPlaytime } from "./playtime";
 import { settingsNavigation, type SettingsCategory } from "./settingsCatalog";
@@ -43,8 +48,12 @@ let bulletinRequest = 0;
 const BULLETIN_CACHE_TTL_MS = 15 * 60 * 1000;
 const disposers: (() => void)[] = [];
 let downloadRevision = 0;
+// 本轮检查结束后刷新预下载目录.
+let checkRefreshPending = false;
 let bootstrapRevision = 0;
-const downloadStarting = ref<"check" | "apply" | "launcher" | null>(null);
+const downloadStarting = ref<"check" | "apply" | "launcher" | "preload" | null>(
+  null,
+);
 export const runtimeEnvironmentBusy = ref(false);
 export const runtimeEnvironmentError = ref("");
 // 文本输入防抖, 失焦和开关类控件立即保存。
@@ -439,6 +448,7 @@ export const form = reactive({
   minimizeToTrayOnClose: true,
   showLauncherAfterGameExit: true,
   snapshotSuccessMinutes: 1,
+  preloadRoot: "",
 });
 
 type GamePhase = "idle" | "launching" | "running" | "closing";
@@ -446,6 +456,10 @@ export const state = reactive<{
   bootstrap: Bootstrap | null;
   check: CheckResult | null;
   download: DownloadStatus | null;
+  resourceCatalog: ResourceCatalog | null;
+  resourcesLoading: boolean;
+  resourcesSaving: boolean;
+  resourcesError: string;
   bulletins: BulletinFeed | null;
   bulletinsLoading: boolean;
   page: string;
@@ -458,6 +472,10 @@ export const state = reactive<{
   bootstrap: null,
   check: null,
   download: null,
+  resourceCatalog: null,
+  resourcesLoading: false,
+  resourcesSaving: false,
+  resourcesError: "",
   bulletins: null,
   bulletinsLoading: false,
   page: "home",
@@ -561,8 +579,10 @@ export function downloadBusy() {
   );
 }
 
-function downloadWritesFiles(mode?: "check" | "apply" | "launcher" | null) {
-  return mode === "apply" || mode === "launcher";
+function downloadWritesFiles(
+  mode?: "check" | "apply" | "launcher" | "preload" | null,
+) {
+  return mode === "apply" || mode === "launcher" || mode === "preload";
 }
 
 function downloadBlocksLaunch() {
@@ -638,17 +658,38 @@ export const downloadView = computed(() => {
   const status = state.download;
   const titles: Record<string, string> = {
     idle: "尚未检查游戏资源",
-    checking: "正在检查游戏资源",
+    checking:
+      status?.mode === "preload"
+        ? status.verify
+          ? "正在校验预下载"
+          : "正在检查资源预下载"
+        : "正在检查游戏资源",
     "needs-install": "需要安装启动器文件",
     "needs-update": "发现待下载的游戏资源",
     "needs-verify": "存在尚未验证的游戏资源",
     launcher: "正在下载启动器文件",
-    game: "正在下载游戏资源",
+    game:
+      status?.mode === "preload"
+        ? status.verify
+          ? "正在校验预下载"
+          : "正在预下载游戏资源"
+        : "正在下载游戏资源",
     ready: "游戏资源已就绪",
-    cancelled: status?.mode === "check" ? "资源检查已取消" : "下载已暂停",
+    preloaded:
+      status?.verify && !status.downloadedBytes
+        ? "预下载校验完成"
+        : "资源预下载已完成",
+    "preload-unavailable": "当前暂无资源预下载",
+    cancelled:
+      status?.mode === "check"
+        ? "资源检查已取消"
+        : status?.mode === "preload"
+          ? "资源预下载已暂停"
+          : "下载已暂停",
     failed: "操作失败",
   };
   const phase = status?.phase || "idle";
+  const verify = Boolean(status?.mode === "preload" && status.verify);
   const totalBytes = status?.totalBytes || 0;
   const downloadedBytes = status?.downloadedBytes || 0;
   const fileProgress = status?.totalFiles
@@ -661,23 +702,36 @@ export const downloadView = computed(() => {
   const byteProgress = totalBytes
     ? Math.round((downloadedBytes / totalBytes) * 100)
     : fileProgress;
-  const stageText = DOWNLOAD_STAGE_LABELS[status?.stage || ""] || "";
+  const stageText =
+    verify && ["download", "verify"].includes(status?.stage || "")
+      ? "校验"
+      : DOWNLOAD_STAGE_LABELS[status?.stage || ""] || "";
   const autoText = status?.autoWaiting
     ? AUTO_WAITING_LABELS[status.autoWaiting] || ""
     : "";
   const launcherScope = phase === "needs-install" || phase === "launcher";
   return {
     title: titles[phase],
-    progress: phase === "ready" ? 100 : Math.min(99, byteProgress),
-    downloadedText:
-      totalBytes > 0 && downloadedBytes <= totalBytes
+    progress: ["ready", "preloaded"].includes(phase)
+      ? 100
+      : Math.min(99, verify ? fileProgress : byteProgress),
+    downloadedText: verify
+      ? `${status?.completedFiles ?? 0} / ${status?.totalFiles ?? 0} 个文件`
+      : totalBytes > 0 && downloadedBytes <= totalBytes
         ? `${formatSize(downloadedBytes)} / ${formatSize(totalBytes)}`
         : formatSize(downloadedBytes),
-    sizeText: totalBytes
-      ? `${launcherScope ? "启动器文件" : "本次需下载"} ${formatSize(totalBytes)}`
-      : "",
+    sizeText:
+      !verify && totalBytes
+        ? `${
+            launcherScope
+              ? "启动器文件"
+              : status?.mode === "preload"
+                ? "预下载"
+                : "本次需下载"
+          } ${formatSize(totalBytes)}`
+        : "",
     splitText:
-      status && status.patchBytes > 0
+      !verify && status && status.patchBytes > 0
         ? status.fullBytes > 0
           ? `补丁 ${formatSize(status.patchBytes)} / 完整文件 ${formatSize(status.fullBytes)}`
           : `补丁 ${formatSize(status.patchBytes)}`
@@ -687,21 +741,29 @@ export const downloadView = computed(() => {
     detail:
       status?.error ||
       autoText ||
-      (status?.unverifiedFiles
-        ? `${status.unverifiedFiles} 个文件尚未验证, 请完整校验或安装修复`
-        : phase === "checking"
-          ? "正在读取官方清单并核对本地文件"
-          : phase === "ready"
-            ? "资源检查完成, 可以启动游戏"
-            : phase === "cancelled"
-              ? status?.mode === "check"
-                ? "可重新检查游戏资源"
-                : "未完成的文件将在下次安装或更新时继续"
-              : phase === "needs-install"
-                ? "启动器文件尚未安装, 完成后将继续检查游戏资源"
-                : status?.pendingFiles
-                  ? `${status.pendingFiles} 个文件待处理`
-                  : "选择地区和安装目录后检查资源"),
+      (phase === "preloaded"
+        ? status?.verify && !status.downloadedBytes
+          ? "预下载资源完整."
+          : "预下载资源已校验, 版本更新开放后将复用缓存完成安装"
+        : phase === "preload-unavailable"
+          ? "官方暂未开放当前地区的资源预下载"
+          : status?.unverifiedFiles
+            ? `${status.unverifiedFiles} 个文件尚未验证, 请完整校验或安装修复`
+            : phase === "checking"
+              ? "正在读取官方清单并核对本地文件"
+              : phase === "ready"
+                ? "资源检查完成, 可以启动游戏"
+                : phase === "cancelled"
+                  ? status?.mode === "check"
+                    ? "可重新检查游戏资源"
+                    : status?.mode === "preload"
+                      ? "未完成的资源将在下次预下载时继续"
+                      : "未完成的文件将在下次安装或更新时继续"
+                  : phase === "needs-install"
+                    ? "启动器文件尚未安装, 完成后将继续检查游戏资源"
+                    : status?.pendingFiles
+                      ? `${status.pendingFiles} 个文件待处理`
+                      : "选择地区和安装目录后检查资源"),
   };
 });
 export const homeDownloadNotice = computed(() => {
@@ -1292,7 +1354,16 @@ function applyBootstrap(
   ) {
     state.check = null;
     state.download = null;
+    state.resourceCatalog = null;
+    state.resourcesError = "";
     ui.updateError = false;
+  }
+  if (
+    previous &&
+    (previous.preloadRoot || "") !== (data.settings.preloadRoot || "")
+  ) {
+    state.resourceCatalog = null;
+    state.resourcesError = "";
   }
 
   const ready = isReady(data);
@@ -1346,6 +1417,7 @@ function applyBootstrap(
   form.minimizeToTrayOnClose = settings.minimizeToTrayOnClose ?? true;
   form.showLauncherAfterGameExit = settings.showLauncherAfterGameExit ?? true;
   form.snapshotSuccessMinutes = settings.snapshotSuccessMinutes ?? 1;
+  form.preloadRoot = settings.preloadRoot || "";
   // 记录表单当前对应的持久化状态, 自动保存时只提交真正的修改。
   lastSavedSettings = JSON.stringify(currentSettings());
   void nextTick(syncScrollEdges);
@@ -1426,6 +1498,17 @@ function applyDownloadStatus(status: DownloadStatus) {
       key: "auto-download-start",
     });
   }
+  if (
+    sameDistribution &&
+    status.mode === "preload" &&
+    status.phase === "preloaded" &&
+    previous !== "preloaded"
+  ) {
+    dismissPreloadNotice();
+    if (status.downloadedBytes > 0)
+      notify("资源预下载已完成.", "ok", 5000, { key: "preload-done" });
+    void loadResourceCatalog(true);
+  }
   // launcher 模式只更新启动器文件, 结束后要重新检查启动器并刷新版本信息.
   const launcherUpdateFinished =
     status.mode === "launcher" &&
@@ -1459,6 +1542,18 @@ function applyDownloadStatus(status: DownloadStatus) {
         status.phase === "cancelled" || status.phase === "failed",
         true,
       );
+    if (status.mode === "apply") void loadResourceCatalog(true);
+  }
+  if (
+    checkRefreshPending &&
+    status.mode === "check" &&
+    ["ready", "needs-update", "needs-verify", "cancelled", "failed"].includes(
+      status.phase,
+    )
+  ) {
+    checkRefreshPending = false;
+    // 检查游戏资源时同步刷新预下载公告与缓存状态.
+    void loadResourceCatalog(true);
   }
 }
 
@@ -1481,23 +1576,311 @@ function pollDownloadStatus() {
   schedule(poll, 250);
 }
 
+let resourceCatalogRevision = 0;
+let optionalSelectionTimer = 0;
+let optionalSelectionTags: string[] | null = null;
+let optionalSelectionRevision = 0;
+
+// 后端总是读取已保存的设置, 表单尚未提交时先不读取目录.
+function formMatchesSavedSettings() {
+  const data = state.bootstrap;
+  if (!data || data.settings.distribution !== form.distribution) return false;
+  const saved =
+    form.distribution === "cn"
+      ? data.settings.installRoot
+      : data.settings.globalInstallRoot;
+  return (
+    normalizedRoot(saved || data.installRoot) ===
+    normalizedRoot(currentInstallRoot())
+  );
+}
+
+export const resourceCatalogMatches = computed(() => {
+  const catalog = state.resourceCatalog;
+  return (
+    catalog !== null &&
+    catalog.distribution === form.distribution &&
+    normalizedRoot(catalog.installRoot) === normalizedRoot(currentInstallRoot())
+  );
+});
+
+export async function loadResourceCatalog(force = false) {
+  if (state.resourcesLoading) return;
+  if (!force && resourceCatalogMatches.value) return;
+  if (!state.bootstrap?.launcherRoot || !formMatchesSavedSettings()) return;
+  const revision = ++resourceCatalogRevision;
+  const epoch = generation;
+  const distribution = form.distribution;
+  const root = normalizedRoot(currentInstallRoot());
+  state.resourcesLoading = true;
+  state.resourcesError = "";
+  try {
+    const catalog = await invoke("game_resource_catalog");
+    if (
+      epoch !== generation ||
+      revision !== resourceCatalogRevision ||
+      !catalog ||
+      catalog.distribution !== distribution ||
+      normalizedRoot(catalog.installRoot) !== root
+    )
+      return;
+    state.resourceCatalog = catalog;
+    maybeNotifyPreload();
+  } catch (error) {
+    if (epoch !== generation || revision !== resourceCatalogRevision) return;
+    state.resourceCatalog = null;
+    state.resourcesError =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    if (epoch === generation && revision === resourceCatalogRevision)
+      state.resourcesLoading = false;
+  }
+}
+
+function queueOptionalSelectionSave() {
+  state.resourcesSaving = true;
+  if (optionalSelectionTimer) window.clearTimeout(optionalSelectionTimer);
+  // 连续切换只在停顿后提交一次, 期间界面保持乐观状态.
+  optionalSelectionTimer = schedule(() => {
+    optionalSelectionTimer = 0;
+    void flushOptionalSelection();
+  }, 320);
+}
+
+async function flushOptionalSelection() {
+  const tags = optionalSelectionTags;
+  if (!tags) return;
+  const revision = optionalSelectionRevision;
+  const epoch = generation;
+  try {
+    const next = await invoke("game_resource_select", { tags });
+    if (epoch !== generation || revision !== optionalSelectionRevision) return;
+    if (
+      next &&
+      next.distribution === form.distribution &&
+      normalizedRoot(next.installRoot) === normalizedRoot(currentInstallRoot())
+    ) {
+      state.resourceCatalog = next;
+      refreshPlanAfterOptionalSelection();
+    }
+  } catch (error) {
+    if (epoch !== generation || revision !== optionalSelectionRevision) return;
+    state.resourcesError =
+      error instanceof Error ? error.message : String(error);
+    notify(state.resourcesError, "error", 6500);
+    optionalSelectionTags = null;
+    void loadResourceCatalog(true);
+  } finally {
+    if (epoch === generation && revision === optionalSelectionRevision)
+      state.resourcesSaving = false;
+  }
+}
+
+// 所选资源改变计划内容; 已结束的预下载和暂停的下载保留自己的状态.
+function refreshPlanAfterOptionalSelection() {
+  const phase = state.download?.phase;
+  if (!phase || downloadBusy()) return;
+  if (
+    !["ready", "needs-install", "needs-update", "needs-verify"].includes(phase)
+  )
+    return;
+  void startGameDownload("check", false, true);
+}
+
+export function selectOptionalResource(tag: string, selected: boolean) {
+  const catalog = state.resourceCatalog;
+  if (
+    !catalog ||
+    !resourceCatalogMatches.value ||
+    state.resourcesLoading ||
+    downloadBusy() ||
+    state.game !== "idle"
+  )
+    return;
+  const resource = catalog.resources.find((item) => item.tag === tag);
+  if (
+    !resource ||
+    resource.state !== "absent" ||
+    resource.selected === selected
+  )
+    return;
+  resource.selected = selected;
+  optionalSelectionTags = catalog.resources
+    .filter((item) => item.selected)
+    .map((item) => item.tag);
+  optionalSelectionRevision++;
+  state.resourcesError = "";
+  queueOptionalSelectionSave();
+}
+
+const PRELOAD_DISMISSED_KEY = "nte.preload.dismissed";
+let preloadNoticeId: number | null = null;
+
+function preloadDismissedKey(distribution: string, version: string) {
+  return `${distribution}:${version}`;
+}
+
+function dismissedPreloadVersion() {
+  try {
+    return localStorage.getItem(PRELOAD_DISMISSED_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function dismissPreloadNotice() {
+  if (preloadNoticeId === null) return;
+  dismissNotification(preloadNoticeId);
+  preloadNoticeId = null;
+}
+
+export function dismissPreloadVersion(
+  version = state.resourceCatalog?.preloadVersion,
+  distribution = state.resourceCatalog?.distribution,
+) {
+  if (!version || !distribution) return;
+  try {
+    localStorage.setItem(
+      PRELOAD_DISMISSED_KEY,
+      preloadDismissedKey(distribution, version),
+    );
+  } catch {}
+  dismissPreloadNotice();
+}
+
+// 后台发现预下载公告时提示一次; 玩家已忽略的版本不再打扰.
+function maybeNotifyPreload() {
+  if (!isDesktop()) {
+    dismissPreloadNotice();
+    return;
+  }
+  const catalog = state.resourceCatalog;
+  if (!catalog || !catalog.preloadVersion) {
+    dismissPreloadNotice();
+    return;
+  }
+  if (
+    !catalog.preloadAvailable ||
+    catalog.preloadCompleted ||
+    catalog.distribution !== form.distribution ||
+    state.page === "update"
+  ) {
+    dismissPreloadNotice();
+    return;
+  }
+  if (downloadBusy() || state.game !== "idle") return;
+  if (
+    dismissedPreloadVersion() ===
+    preloadDismissedKey(catalog.distribution, catalog.preloadVersion)
+  )
+    return;
+  preloadNoticeId = notify(
+    `${catalog.preloadVersion} 资源可预下载.`,
+    "info",
+    0,
+    {
+      key: "preload-available",
+      title: "资源预下载",
+      primary: {
+        label: "查看更新",
+        icon: "i-download-simple",
+        run: () => showPage("update"),
+      },
+      secondary: {
+        label: "此版本不再显示",
+        icon: "i-minus",
+        run: () =>
+          dismissPreloadVersion(catalog.preloadVersion, catalog.distribution),
+      },
+    },
+  );
+}
+
+async function checkPreloadAvailability(force = false) {
+  // 浏览器预览不展示后台预下载提示.
+  if (!isDesktop() || !state.bootstrap?.launcherRoot) return;
+  await loadResourceCatalog(force);
+  maybeNotifyPreload();
+}
+
+// 长时间运行时定期刷新公告; 正在更新页操作或下载时不打断.
+function schedulePreloadRefresh() {
+  schedule(
+    () => {
+      if (
+        isDesktop() &&
+        state.bootstrap?.launcherRoot &&
+        state.page !== "update" &&
+        !downloadBusy() &&
+        !state.resourcesSaving
+      )
+        void checkPreloadAvailability(true);
+      schedulePreloadRefresh();
+    },
+    30 * 60 * 1000,
+  );
+}
+
+export async function deletePreloadResources() {
+  if (downloadBusy() || state.resourcesSaving) return;
+  const epoch = generation;
+  try {
+    const catalog = await invoke("game_preload_delete");
+    if (epoch !== generation || !catalog) return;
+    state.resourceCatalog = catalog;
+    dismissPreloadNotice();
+    notify("预下载资源已删除.", "ok", 4000, { key: "preload-delete" });
+  } catch (error) {
+    if (epoch === generation) notify(String(error), "error", 6500);
+  }
+}
+
+export function toggleAllOptionalResources() {
+  const catalog = state.resourceCatalog;
+  if (
+    !catalog ||
+    !resourceCatalogMatches.value ||
+    state.resourcesLoading ||
+    downloadBusy() ||
+    state.game !== "idle"
+  )
+    return;
+  const selectable = catalog.resources.filter(
+    (item) => item.state === "absent",
+  );
+  if (!selectable.length) return;
+  const select = selectable.some((item) => !item.selected);
+  selectable.forEach((item) => {
+    item.selected = select;
+  });
+  optionalSelectionTags = catalog.resources
+    .filter((item) => item.selected)
+    .map((item) => item.tag);
+  optionalSelectionRevision++;
+  state.resourcesError = "";
+  queueOptionalSelectionSave();
+}
+
 export async function startGameDownload(
-  mode: "check" | "apply" | "launcher",
+  mode: "check" | "apply" | "launcher" | "preload",
   full = false,
   silent = false,
 ) {
   if (runtimeEnvironmentBusy.value || downloadBusy()) return;
   const epoch = generation;
   downloadStarting.value = mode;
+  if (mode === "preload") dismissPreloadNotice();
   try {
     if (!silent && !(await saveSettings(silent))) return;
     if (epoch !== generation) return;
+    if (mode === "check") checkRefreshPending = true;
     const revision = downloadRevision;
     const status = await invoke("game_download_start", { mode, full });
     if (epoch !== generation) return;
     if (revision === downloadRevision) applyDownloadStatus(status);
     pollDownloadStatus();
   } catch (error) {
+    if (mode === "check") checkRefreshPending = false;
     if (epoch === generation && !silent)
       notify(
         error instanceof Error ? error.message : String(error),
@@ -1946,6 +2329,7 @@ function currentSettings(): Settings {
     minimizeToTrayOnClose: form.minimizeToTrayOnClose,
     showLauncherAfterGameExit: form.showLauncherAfterGameExit,
     snapshotSuccessMinutes: form.snapshotSuccessMinutes,
+    preloadRoot: form.preloadRoot.trim() || null,
   };
 }
 
@@ -2250,6 +2634,7 @@ export function showPage(name: string | undefined, syncHash = true) {
     return;
   const changed = state.page !== name;
   state.page = name;
+  if (name === "update") dismissPreloadNotice();
   if (name === "records") void loadPlaytimeIfStale();
   // 封面与播放起点一致, 返回主页时不恢复到缩放动画的中途。
   if (changed) applyHeroMedia(state.heroMedia);
@@ -2380,6 +2765,7 @@ async function watchWindowShape() {
 
 export async function init() {
   const epoch = ++generation;
+  checkRefreshPending = false;
   // 子组件先挂载时发起的读取属于上一代, 在此重新加载当前状态。
   attendance.loading = false;
   void loadAttendance();
@@ -2448,6 +2834,10 @@ export async function init() {
 
   void loadDownloadStatus();
   void fetchBulletins();
+  whenIntroDone(() => {
+    void checkPreloadAvailability();
+    schedulePreloadRefresh();
+  });
 
   startIntro();
 
@@ -2489,7 +2879,12 @@ export function dispose() {
   autoSaveTimer = null;
   installationRefreshing = false;
   installationRefreshPending = false;
+  checkRefreshPending = false;
   pendingCheck = null;
+  resourceCatalogRevision++;
+  optionalSelectionTimer = 0;
+  optionalSelectionTags = null;
+  optionalSelectionRevision++;
   saveStatusTimer = 0;
   lastSavedSettings = "";
   saveChain = Promise.resolve(true);
@@ -2523,6 +2918,10 @@ export function dispose() {
     bootstrap: null,
     check: null,
     download: null,
+    resourceCatalog: null,
+    resourcesLoading: false,
+    resourcesSaving: false,
+    resourcesError: "",
     bulletins: null,
     bulletinsLoading: false,
     page: "home",

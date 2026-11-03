@@ -28,6 +28,7 @@ fn config(dir: &TempDir, server: &HttpServer) -> GameUpdateConfig {
         rules: Vec::new(),
         check_dirs: Vec::new(),
         max_threads: 1,
+        preload_root: None,
     }
 }
 

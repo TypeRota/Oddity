@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { motion, AnimatePresence, useSpring } from "motion-v";
-import { computed, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import BaseButton from "../components/BaseButton.vue";
+import BaseModal from "../components/BaseModal.vue";
 import BaseView from "../components/BaseView.vue";
 import {
   useControlMotion,
@@ -23,7 +24,10 @@ import {
   queueSettingsSave,
   settingsPathsLocked,
   runtimeEnvironmentBusy,
+  resourceCatalogMatches,
+  deletePreloadResources,
 } from "../core/controller";
+import OptionalResources from "../components/OptionalResources.vue";
 import type { DownloadPhase } from "../types/launcher";
 
 const { surface, reduced } = useControlMotion();
@@ -125,6 +129,7 @@ const stateDetail = computed(() =>
 const stateIcon = computed(() => {
   switch (displayPhase.value) {
     case "ready":
+    case "preloaded":
       return "i-check-circle";
     case "failed":
       return "i-warning-circle";
@@ -181,7 +186,14 @@ const primary = computed(() => {
     case "game":
       return {
         kind: "apply" as const,
-        label: installed.value ? "正在更新游戏" : "正在安装游戏",
+        label:
+          state.download?.mode === "preload"
+            ? state.download.verify
+              ? "正在校验预下载"
+              : "正在预下载资源"
+            : installed.value
+              ? "正在更新游戏"
+              : "正在安装游戏",
         icon: "i-download-simple",
         busy: true,
       };
@@ -195,6 +207,13 @@ const primary = computed(() => {
         busy: false,
       };
     case "cancelled":
+      if (state.download?.mode === "preload")
+        return {
+          kind: "preload" as const,
+          label: "继续资源预下载",
+          icon: "i-download-simple",
+          busy: false,
+        };
       if (state.download?.mode === "check")
         return {
           kind: "check" as const,
@@ -234,7 +253,9 @@ const primary = computed(() => {
 
 function runPrimary() {
   if (primary.value.busy || primaryDisabled.value) return;
-  if (primary.value.kind === "apply")
+  if (primary.value.kind === "preload")
+    void startGameDownload("preload", false);
+  else if (primary.value.kind === "apply")
     void startGameDownload("apply", needsFullRepair.value);
   else void startGameDownload("check", false);
 }
@@ -244,9 +265,43 @@ function updateLauncherFiles() {
   void startGameDownload("launcher", false);
 }
 
+const preloadCatalog = computed(() =>
+  resourceCatalogMatches.value ? state.resourceCatalog : null,
+);
+const preloadAvailable = computed(() =>
+  Boolean(preloadCatalog.value?.preloadAvailable),
+);
+const preloadLabel = computed(() => {
+  const catalog = preloadCatalog.value;
+  if (catalog?.preloadCompleted) return "校验预下载";
+  const version = catalog?.preloadVersion || "";
+  return version ? `资源预下载 ${version}` : "资源预下载";
+});
+const preloadDeleteVersion = computed(
+  () =>
+    preloadCatalog.value?.preloadCachedVersion ||
+    preloadCatalog.value?.preloadVersion ||
+    "",
+);
+const canDeletePreload = computed(
+  () => Boolean(preloadCatalog.value?.preloadCached) && !active.value,
+);
+const deleteOpen = ref(false);
+const deleting = ref(false);
+async function confirmDeletePreload() {
+  deleting.value = true;
+  try {
+    await deletePreloadResources();
+    deleteOpen.value = false;
+  } finally {
+    deleting.value = false;
+  }
+}
 const primaryDisabled = computed(
   () =>
-    active.value || (state.game !== "idle" && primary.value.kind === "apply"),
+    active.value ||
+    state.resourcesSaving ||
+    (state.game !== "idle" && primary.value.kind !== "check"),
 );
 const showProgress = computed(
   () =>
@@ -254,7 +309,9 @@ const showProgress = computed(
     statusVisible.value &&
     state.download !== null &&
     phase.value !== "checking" &&
-    (active.value || state.download.pendingFiles > 0),
+    (active.value ||
+      state.download.pendingFiles > 0 ||
+      phase.value === "preloaded"),
 );
 // 检查完成但尚未开始时只展示体积摘要，不显示 0% 进度条。
 const transferActive = computed(
@@ -399,10 +456,16 @@ const isActive = computed(() => state.page === "update");
               </div>
             </div>
             <div v-if="transferActive" class="download-progress__meta">
-              <span
-                >{{ state.download.completedFiles }} /
-                {{ state.download.totalFiles }} 个文件已完成</span
-              ><span>已下载 {{ downloadView.downloadedText }}</span>
+              <span v-if="state.download.verify"
+                >已校验 {{ state.download.completedFiles }} /
+                {{ state.download.totalFiles }} 个文件</span
+              >
+              <template v-else>
+                <span
+                  >{{ state.download.completedFiles }} /
+                  {{ state.download.totalFiles }} 个文件已完成</span
+                ><span>已下载 {{ downloadView.downloadedText }}</span>
+              </template>
             </div>
             <p
               v-if="transferActive && downloadView.stageText"
@@ -433,7 +496,18 @@ const isActive = computed(() => state.page === "update");
               当前文件 {{ formatSize(state.download.currentFileBytes) }}
             </p>
             <p v-if="state.download.remoteVersion">
-              目标游戏版本 {{ state.download.remoteVersion }}
+              {{
+                state.download.mode === "preload"
+                  ? "预下载版本"
+                  : "目标游戏版本"
+              }}
+              {{ state.download.remoteVersion }}
+            </p>
+            <p
+              v-if="state.download.optionalTags.length"
+              :title="state.download.optionalTags.join(', ')"
+            >
+              可选资源 {{ state.download.optionalTags.length }} 项
             </p>
           </motion.div>
         </AnimatePresence>
@@ -442,7 +516,11 @@ const isActive = computed(() => state.page === "update");
             id="game-download-primary"
             :data-pad-primary="cancellable ? undefined : ''"
             :data-pad-action="
-              primary.kind === 'apply' ? '更新游戏' : '快速检查'
+              primary.kind === 'preload'
+                ? '资源预下载'
+                : primary.kind === 'apply'
+                  ? '更新游戏'
+                  : '快速检查'
             "
             :variant="displayPhase === 'ready' ? 'secondary' : 'primary'"
             :icon="primary.icon"
@@ -455,20 +533,49 @@ const isActive = computed(() => state.page === "update");
           >
           <BaseButton
             variant="ghost"
-            :disabled="active"
+            :disabled="active || state.resourcesSaving"
             @click="startGameDownload('check', true)"
             >完整校验</BaseButton
+          >
+          <BaseButton
+            v-if="preloadAvailable"
+            id="game-preload"
+            variant="ghost"
+            :disabled="
+              active ||
+              !launcherInstalled ||
+              state.game !== 'idle' ||
+              state.resourcesSaving
+            "
+            @click="startGameDownload('preload', false)"
+            >{{ preloadLabel }}</BaseButton
+          >
+          <BaseButton
+            v-if="canDeletePreload"
+            id="game-preload-delete"
+            variant="ghost"
+            :disabled="active || state.resourcesSaving"
+            @click="deleteOpen = true"
+            >删除预下载</BaseButton
           >
           <BaseButton
             v-if="cancellable"
             variant="ghost"
             data-pad-primary
             :data-pad-action="
-              state.download?.phase === 'checking' ? '取消检查' : '暂停下载'
+              state.download?.phase === 'checking'
+                ? '取消检查'
+                : state.download?.mode === 'preload'
+                  ? '暂停预下载'
+                  : '暂停下载'
             "
             @click="cancelGameDownload"
             >{{
-              state.download?.phase === "checking" ? "取消检查" : "暂停下载"
+              state.download?.phase === "checking"
+                ? "取消检查"
+                : state.download?.mode === "preload"
+                  ? "暂停预下载"
+                  : "暂停下载"
             }}</BaseButton
           >
         </div>
@@ -491,6 +598,7 @@ const isActive = computed(() => state.page === "update");
             资源来自当前地区的官方 CDN. 未完成的文件可继续下载.
           </p>
         </div>
+        <OptionalResources />
       </section>
       <section
         class="update-card update-launcher"
@@ -563,5 +671,36 @@ const isActive = computed(() => state.page === "update");
         </div>
       </section>
     </div>
+    <BaseModal
+      :open="deleteOpen"
+      title="删除预下载资源"
+      @update:open="
+        (value) => {
+          if (!value) deleteOpen = false;
+        }
+      "
+    >
+      <div class="preload-delete">
+        <p>
+          删除 {{ preloadDeleteVersion }} 的预下载缓存 ({{
+            formatSize(preloadCatalog?.preloadCachedBytes || 0)
+          }})? 游戏文件不受影响.
+        </p>
+        <div class="update-actions">
+          <BaseButton
+            variant="danger"
+            :busy="deleting"
+            @click="confirmDeletePreload"
+            >删除</BaseButton
+          >
+          <BaseButton
+            variant="ghost"
+            :disabled="deleting"
+            @click="deleteOpen = false"
+            >取消</BaseButton
+          >
+        </div>
+      </div>
+    </BaseModal>
   </motion.section>
 </template>

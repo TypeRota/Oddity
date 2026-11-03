@@ -176,6 +176,14 @@ fn run(app: ServiceHandle, stop: &AtomicBool) {
         let root = install_root(&settings).display().to_string();
         let same_target =
             status.distribution == settings.distribution.as_str() && status.install_root == root;
+        // 手动预下载的结果保留一个检查周期, 便于查看完成状态或继续下载.
+        if same_target
+            && status.mode == "preload"
+            && status.checked_at > 0
+            && now.saturating_sub(status.checked_at) < CHECK_INTERVAL_MS
+        {
+            continue;
+        }
         let recent = matches!(
             status.phase.as_str(),
             "ready" | "needs-install" | "needs-update" | "needs-verify"
@@ -452,6 +460,28 @@ mod tests {
     fn halt(stop: &AtomicBool) {
         stop.store(true, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(50));
+    }
+
+    #[test]
+    fn manual_preload_results_survive_automatic_update_ticks() {
+        let dir = TempDir::new("preload-result");
+        let root = installed_root(&dir);
+        let app = test_app(test_settings(&root));
+        ready_status(&app, &root);
+        set_status(&app, |status| {
+            status.mode = "preload".into();
+            status.phase = "preloaded".into();
+        });
+        let stop = start(&app);
+        for phase in ["preloaded", "preload-unavailable", "cancelled", "failed"] {
+            set_status(&app, |status| status.phase = phase.into());
+            std::thread::sleep(Duration::from_millis(50));
+            let status = download_status(&app);
+            assert_eq!(status.mode, "preload");
+            assert_eq!(status.phase, phase);
+            assert!(status.auto_waiting.is_empty());
+        }
+        halt(&stop);
     }
 
     #[test]

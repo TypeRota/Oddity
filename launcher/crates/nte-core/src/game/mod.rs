@@ -8,8 +8,10 @@ pub mod config;
 pub mod download;
 pub mod ledger;
 pub mod manifest;
+pub mod optional;
 pub mod patch;
 pub mod plan;
+pub mod preload;
 pub mod pxml;
 
 pub use check::{CheckOptions, UpdateItem, UpdateKind, UpdatePlan};

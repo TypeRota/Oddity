@@ -160,6 +160,186 @@ impl Fixture {
 }
 
 #[test]
+fn preload_marker_errors_are_returned_before_publishing_completion() {
+    for download in [false, true] {
+        let fixture = Fixture::new(Distribution::Cn, true);
+        let root = fixture.dir.join("NTELauncher");
+        let mut config = game::GameUpdateConfig::load(&root, 1289).unwrap();
+        config.branch = "future".into();
+        let content = b"future bytes";
+        let hash = md5_bytes(content);
+        fixture.server.route(
+            format!("/future/Res/{}/{hash}.{}", &hash[..1], content.len()),
+            content,
+        );
+        let mut plan = game::UpdatePlan {
+            remote_version: "2.0".into(),
+            ..Default::default()
+        };
+        if download {
+            let res = game::manifest::ResEntry {
+                filename: DATA.into(),
+                filesize: content.len() as u64,
+                md5: hash.clone(),
+                ..Default::default()
+            };
+            plan.items.push(game::UpdateItem {
+                path: DATA.into(),
+                size: res.filesize,
+                md5: hash,
+                reason: game::check::UpdateReason::Size,
+                kind: game::UpdateKind::Res { res },
+                patches: vec![],
+                download_size: content.len() as u64,
+            });
+        }
+        // 目录占据标记文件名, 稳定复现最终写入失败.
+        std::fs::create_dir_all(game::preload::root(&config).join("future/2.0/complete.json"))
+            .unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        prepare_task(
+            &fixture.app.state,
+            &fixture.app.downloads,
+            "preload",
+            false,
+            "manual",
+            &cancel,
+        )
+        .unwrap();
+        let error = apply_game_plan(
+            &fixture.app,
+            &fixture.settings,
+            &cancel,
+            &root,
+            &config,
+            &plan,
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("写入预下载完成记录失败"), "{error}");
+        assert_ne!(fixture.status().phase, "preloaded");
+        assert!(game::preload::completion(&config, "future", "2.0").is_none());
+        assert_eq!(std::fs::read(fixture.dir.join(DATA)).unwrap(), fixture.data);
+    }
+}
+
+#[test]
+fn preload_disk_budget_uses_the_custom_cache_filesystem() {
+    let fixture = Fixture::new(Distribution::Cn, true);
+    let cache_root =
+        std::path::Path::new("/dev/shm").join(format!("oddity-disk-test-{}", std::process::id()));
+    let mut settings = fixture.settings.clone();
+    settings.preload_root = Some(cache_root.display().to_string());
+    *fixture.app.state.settings.lock().unwrap() = settings.clone();
+    let cancel = Arc::new(AtomicBool::new(false));
+    prepare_task(
+        &fixture.app.state,
+        &fixture.app.downloads,
+        "preload",
+        false,
+        "manual",
+        &cancel,
+    )
+    .unwrap();
+    let root = fixture.dir.join("NTELauncher");
+    let plan = game::UpdatePlan::default();
+    let before = disk::available_bytes(&cache_root).unwrap();
+    publish_game_plan(&fixture.app, &settings, &root, &plan);
+    let reported = fixture.status().disk_available_bytes.unwrap();
+    let after = disk::available_bytes(&cache_root).unwrap();
+    assert!((before.min(after)..=before.max(after)).contains(&reported));
+    publish_cancelled(&fixture.app);
+    let reported = fixture.status().disk_available_bytes.unwrap();
+    let final_space = disk::available_bytes(&cache_root).unwrap();
+    assert!((after.min(final_space)..=after.max(final_space)).contains(&reported));
+}
+
+#[test]
+fn preload_uses_existing_launcher_and_preserves_live_resources() {
+    let fixture = Fixture::new(Distribution::Cn, true);
+    fixture.ledger();
+    let root = fixture.dir.join("NTELauncher");
+    let ledger = root.join("UserData/Patcher/PatcherSDK/ResList.xml");
+    let old_ledger = std::fs::read(&ledger).unwrap();
+    let old_exe = std::fs::read(fixture.dir.join(EXE)).unwrap();
+    let future = b"future game resource";
+    let hash = md5_bytes(future);
+    let list = format!("<ResList version=\"2.0\" tag=\"baseTag\"><Res filename=\"{DATA}\" md5=\"{hash}\" filesize=\"{}\"/></ResList>", future.len());
+    fixture.server.route("/test/Version/Windows/config.xml", "<config><ResVersion>1.0</ResVersion><PreReleaseBranch>future</PreReleaseBranch><PreReleaseVersion>2.0</PreReleaseVersion><PreReleaseStatus>start</PreReleaseStatus></config>");
+    fixture.server.route(
+        "/future/Version/Windows/version/2.0/config.xml",
+        format!(
+            "<config><ResVersion>2.0</ResVersion><listHash>{}</listHash></config>",
+            md5_bytes(list.as_bytes())
+        ),
+    );
+    fixture.server.route(
+        "/future/Version/Windows/version/2.0/ResList.bin.zip",
+        zip(
+            "ResList.bin",
+            &game::pxml::encode(list.as_bytes(), "1289").unwrap(),
+        ),
+    );
+    fixture.server.route(
+        format!("/future/Res/{}/{}.{}", &hash[..1], hash, future.len()),
+        future,
+    );
+    let cancel = Arc::new(AtomicBool::new(false));
+    prepare_task(
+        &fixture.app.state,
+        &fixture.app.downloads,
+        "preload",
+        false,
+        "manual",
+        &cancel,
+    )
+    .unwrap();
+    // 此入口若执行启动器更新, 会访问未配置的官方启动器服务并失败.
+    run_task(&fixture.app, &fixture.settings, "preload", false, &cancel).unwrap();
+    let status = fixture.status();
+    assert_eq!(status.mode, "preload");
+    assert_eq!(status.phase, "preloaded");
+    assert_eq!(status.remote_version, "2.0");
+    assert_eq!(status.pending_files, 0);
+    assert_eq!(std::fs::read(&ledger).unwrap(), old_ledger);
+    assert_eq!(std::fs::read(fixture.dir.join(EXE)).unwrap(), old_exe);
+    assert_eq!(std::fs::read(fixture.dir.join(DATA)).unwrap(), fixture.data);
+
+    fixture.server.route(
+        "/test/Version/Windows/config.xml",
+        "<config><ResVersion>1.0</ResVersion></config>",
+    );
+    prepare_task(
+        &fixture.app.state,
+        &fixture.app.downloads,
+        "preload",
+        false,
+        "manual",
+        &cancel,
+    )
+    .unwrap();
+    run_task(&fixture.app, &fixture.settings, "preload", false, &cancel).unwrap();
+    // 公告消失后仍按缓存中较新的版本校验.
+    assert_eq!(fixture.status().phase, "preloaded");
+    assert_eq!(fixture.status().pending_files, 0);
+
+    game_preload_delete(fixture.app.clone()).unwrap();
+    prepare_task(
+        &fixture.app.state,
+        &fixture.app.downloads,
+        "preload",
+        false,
+        "manual",
+        &cancel,
+    )
+    .unwrap();
+    run_task(&fixture.app, &fixture.settings, "preload", false, &cancel).unwrap();
+    // 缓存清理后没有公告或缓存目标, 预下载不可用.
+    assert_eq!(fixture.status().phase, "preload-unavailable");
+    assert_eq!(std::fs::read(&ledger).unwrap(), old_ledger);
+}
+
+#[test]
 fn installs_from_an_empty_directory_for_both_regions() {
     for distribution in [Distribution::Cn, Distribution::Global] {
         let fixture = Fixture::new(distribution, false);
@@ -602,4 +782,288 @@ fn installation_lock_blocks_gui_before_contacting_the_cdn() {
     )
     .unwrap_err();
     assert!(error.contains("其他任务"), "{error}");
+}
+#[test]
+fn resource_catalog_saves_selection_and_records_optional_tags() {
+    let fixture = Fixture::new(Distribution::Cn, true);
+    fixture.ledger();
+    let tag = "pakchunk104";
+    let path = "Client/WindowsNoEditor/HT/Content/TagPatchPaks/pakchunk104-Windows.pak";
+    let bytes = b"optional resource";
+    let hash = md5_bytes(bytes);
+    let exe = b"fixture game executable";
+    let list = format!(
+        "<ResList version=\"1.0\" tag=\"baseTag\"><Res filename=\"{EXE}\" md5=\"{}\" filesize=\"{}\"/><Res filename=\"{DATA}\" md5=\"{}\" filesize=\"{}\"/><BaseVersion version=\"0.104.0\" tag=\"{tag}\"><ResList><Res filename=\"{path}\" md5=\"{hash}\" filesize=\"{}\"/></ResList></BaseVersion></ResList>",
+        md5_bytes(exe),
+        exe.len(),
+        md5_bytes(&fixture.data),
+        fixture.data.len(),
+        bytes.len()
+    );
+    fixture.server.route(
+        "/test/Version/Windows/config.xml",
+        format!(
+            "<Config><ResVersion>1.0</ResVersion><Hash>hash</Hash><listHash>{}</listHash><PreReleaseBranch>future</PreReleaseBranch><PreReleaseVersion>2.0</PreReleaseVersion><PreReleaseStatus>start</PreReleaseStatus></Config>",
+            md5_bytes(list.as_bytes())
+        ),
+    );
+    fixture.server.route(
+        "/test/Version/Windows/version/1.0/ResList.bin.zip",
+        zip(
+            "ResList.bin",
+            &game::pxml::encode(list.as_bytes(), "1289").unwrap(),
+        ),
+    );
+    fixture.server.route(
+        format!("/test/Res/{}/{}.{}", &hash[..1], hash, bytes.len()),
+        bytes,
+    );
+
+    let catalog = game_resource_catalog(fixture.app.clone()).unwrap();
+    assert_eq!(catalog.version, "1.0");
+    assert_eq!(catalog.preload_version, "2.0");
+    assert_eq!(catalog.resources.len(), 1);
+    assert_eq!(catalog.resources[0].tag, tag);
+    assert_eq!(
+        catalog.resources[0].state,
+        game::optional::ResourceState::Absent
+    );
+    assert!(!catalog.resources[0].selected);
+
+    let selected = game_resource_select(fixture.app.clone(), vec![tag.to_string()]).unwrap();
+    assert!(selected.resources[0].selected);
+    assert!(fixture
+        .dir
+        .join("NTELauncher/UserData/Patcher/PatcherSDK/nte-resource-selection.json")
+        .is_file());
+    let error = game_resource_select(fixture.app.clone(), vec!["pakchunk999".into()]).unwrap_err();
+    assert!(error.contains("未知的可选资源"), "{error}");
+
+    fixture.app.state.game.lock().unwrap().starting = true;
+    let error = game_resource_select(fixture.app.clone(), vec![tag.to_string()]).unwrap_err();
+    assert!(error.contains("游戏正在运行"), "{error}");
+    fixture.app.state.game.lock().unwrap().starting = false;
+
+    assert!(!fixture.dir.join(path).exists());
+    fixture.run("apply", false, false).unwrap();
+    assert_eq!(fixture.status().phase, "ready");
+    assert_eq!(fixture.dir.read(path), bytes);
+
+    let config = game::GameUpdateConfig::load(&fixture.dir.join("NTELauncher"), 1289).unwrap();
+    let ledger = game::check::load_local_ledger(&config).unwrap().unwrap();
+    let record = ledger
+        .base_versions
+        .iter()
+        .find(|record| record.tag == tag)
+        .expect("可选资源记录");
+    assert_eq!(record.version, "0.104.0");
+    assert!(record
+        .res
+        .iter()
+        .any(|entry| entry.filename == path && entry.md5 == hash));
+    assert!(ledger.res.iter().all(|entry| entry.filename != path));
+}
+#[test]
+fn preload_includes_selected_optional_resources_without_touching_live_files() {
+    let fixture = Fixture::new(Distribution::Cn, true);
+    fixture.ledger();
+    let tag = "pakchunk104";
+    let path = "Client/WindowsNoEditor/HT/Content/TagPatchPaks/pakchunk104-Windows.pak";
+    let current = b"current optional";
+    let future = b"future optional";
+    let future_base = b"future base data";
+    let current_hash = md5_bytes(current);
+    let future_hash = md5_bytes(future);
+    let future_base_hash = md5_bytes(future_base);
+    let exe = b"fixture game executable";
+
+    let current_list = format!(
+        "<ResList version=\"1.0\" tag=\"baseTag\"><Res filename=\"{EXE}\" md5=\"{}\" filesize=\"{}\"/><Res filename=\"{DATA}\" md5=\"{}\" filesize=\"{}\"/><BaseVersion version=\"0.104.0\" tag=\"{tag}\"><ResList><Res filename=\"{path}\" md5=\"{current_hash}\" filesize=\"{}\"/></ResList></BaseVersion></ResList>",
+        md5_bytes(exe),
+        exe.len(),
+        md5_bytes(&fixture.data),
+        fixture.data.len(),
+        current.len()
+    );
+    let future_list = format!(
+        "<ResList version=\"2.0\" tag=\"baseTag\"><Res filename=\"{DATA}\" md5=\"{future_base_hash}\" filesize=\"{}\"/><BaseVersion version=\"0.104.0\" tag=\"{tag}\"><ResList><Res filename=\"{path}\" md5=\"{future_hash}\" filesize=\"{}\"/></ResList></BaseVersion></ResList>",
+        future_base.len(),
+        future.len()
+    );
+    fixture.server.route(
+        "/test/Version/Windows/config.xml",
+        format!(
+            "<Config><ResVersion>1.0</ResVersion><Hash>hash</Hash><listHash>{}</listHash><PreReleaseBranch>future</PreReleaseBranch><PreReleaseVersion>2.0</PreReleaseVersion><PreReleaseStatus>start</PreReleaseStatus></Config>",
+            md5_bytes(current_list.as_bytes())
+        ),
+    );
+    fixture.server.route(
+        "/test/Version/Windows/version/1.0/ResList.bin.zip",
+        zip(
+            "ResList.bin",
+            &game::pxml::encode(current_list.as_bytes(), "1289").unwrap(),
+        ),
+    );
+    fixture.server.route(
+        "/future/Version/Windows/version/2.0/config.xml",
+        format!(
+            "<config><ResVersion>2.0</ResVersion><listHash>{}</listHash></config>",
+            md5_bytes(future_list.as_bytes())
+        ),
+    );
+    fixture.server.route(
+        "/future/Version/Windows/version/2.0/ResList.bin.zip",
+        zip(
+            "ResList.bin",
+            &game::pxml::encode(future_list.as_bytes(), "1289").unwrap(),
+        ),
+    );
+    for bytes in [future_base.as_slice(), future.as_slice()] {
+        let hash = md5_bytes(bytes);
+        fixture.server.route(
+            format!("/future/Res/{}/{}.{}", &hash[..1], hash, bytes.len()),
+            bytes,
+        );
+    }
+
+    let cache_root = TempDir::new("preload-cache-root");
+    let custom_root = cache_root.path().to_path_buf();
+    let mut fixture = fixture;
+    fixture.settings.preload_root = Some(custom_root.display().to_string());
+    fixture.app.state.settings.lock().unwrap().preload_root =
+        Some(custom_root.display().to_string());
+
+    let catalog = game_resource_catalog(fixture.app.clone()).unwrap();
+    assert_eq!(catalog.resources.len(), 1);
+    assert!(!catalog.resources[0].selected);
+    assert!(!catalog.preload_completed);
+    game_resource_select(fixture.app.clone(), vec![tag.to_string()]).unwrap();
+
+    let ledger = fixture
+        .dir
+        .join("NTELauncher/UserData/Patcher/PatcherSDK/ResList.xml");
+    let old_ledger = std::fs::read(&ledger).unwrap();
+    let old_data = std::fs::read(fixture.dir.join(DATA)).unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    prepare_task(
+        &fixture.app.state,
+        &fixture.app.downloads,
+        "preload",
+        false,
+        "manual",
+        &cancel,
+    )
+    .unwrap();
+    run_task(&fixture.app, &fixture.settings, "preload", false, &cancel).unwrap();
+
+    let status = fixture.status();
+    assert_eq!(status.mode, "preload");
+    assert_eq!(status.phase, "preloaded");
+    assert_eq!(status.total_files, 2);
+    assert_eq!(status.pending_files, 0);
+    assert_eq!(std::fs::read(&ledger).unwrap(), old_ledger);
+    assert_eq!(std::fs::read(fixture.dir.join(DATA)).unwrap(), old_data);
+    assert!(!fixture.dir.join(path).exists());
+
+    let staging = custom_root.join("future/2.0/nte-native");
+    let mut downloaded = Vec::new();
+    collect_files(&staging, &mut downloaded);
+    downloaded.sort();
+    assert_eq!(downloaded.len(), 2, "{downloaded:?}");
+    let contents: Vec<_> = downloaded
+        .iter()
+        .map(|file| std::fs::read(file).unwrap())
+        .collect();
+    assert!(contents.iter().any(|bytes| bytes == future_base));
+    assert!(contents.iter().any(|bytes| bytes == future));
+
+    let catalog = game_resource_catalog(fixture.app.clone()).unwrap();
+    assert!(catalog.preload_available);
+    assert!(catalog.preload_completed);
+    assert!(catalog.preload_cached);
+    assert_eq!(catalog.preload_cached_version, "2.0");
+    assert!(catalog.preload_cached_bytes > 0);
+
+    // 已完成时再次预下载只做校验, 不进入下载阶段.
+    prepare_task(
+        &fixture.app.state,
+        &fixture.app.downloads,
+        "preload",
+        false,
+        "manual",
+        &cancel,
+    )
+    .unwrap();
+    run_task(&fixture.app, &fixture.settings, "preload", false, &cancel).unwrap();
+    assert_eq!(fixture.status().phase, "preloaded");
+    assert_eq!(fixture.status().pending_files, 0);
+
+    let deleted = game_preload_delete(fixture.app.clone()).unwrap();
+    assert!(!deleted.preload_completed);
+    assert!(!deleted.preload_cached);
+    assert!(!staging.exists());
+    assert_eq!(std::fs::read(&ledger).unwrap(), old_ledger);
+    assert_eq!(std::fs::read(fixture.dir.join(DATA)).unwrap(), old_data);
+
+    // 公告消失后仍按缓存中较新的版本校验和清理.
+    prepare_task(
+        &fixture.app.state,
+        &fixture.app.downloads,
+        "preload",
+        false,
+        "manual",
+        &cancel,
+    )
+    .unwrap();
+    run_task(&fixture.app, &fixture.settings, "preload", false, &cancel).unwrap();
+    assert!(staging.exists());
+    fixture.server.route(
+        "/test/Version/Windows/config.xml",
+        format!(
+            "<Config><ResVersion>1.0</ResVersion><Hash>hash</Hash><listHash>{}</listHash></Config>",
+            md5_bytes(current_list.as_bytes())
+        ),
+    );
+    let orphan = game_resource_catalog(fixture.app.clone()).unwrap();
+    assert!(orphan.preload_available);
+    assert_eq!(orphan.preload_version, "2.0");
+    assert!(orphan.preload_completed);
+    assert!(orphan.preload_cached);
+    assert_eq!(orphan.preload_cached_version, "2.0");
+
+    // 公告消失后仍按缓存版本校验.
+    prepare_task(
+        &fixture.app.state,
+        &fixture.app.downloads,
+        "preload",
+        false,
+        "manual",
+        &cancel,
+    )
+    .unwrap();
+    run_task(&fixture.app, &fixture.settings, "preload", false, &cancel).unwrap();
+    assert_eq!(fixture.status().phase, "preloaded");
+    assert_eq!(fixture.status().pending_files, 0);
+    assert!(staging.exists());
+
+    let deleted = game_preload_delete(fixture.app.clone()).unwrap();
+    assert!(!deleted.preload_available);
+    assert!(!deleted.preload_cached);
+    assert!(!staging.exists());
+    assert_eq!(std::fs::read(&ledger).unwrap(), old_ledger);
+    assert_eq!(std::fs::read(fixture.dir.join(DATA)).unwrap(), old_data);
+}
+
+fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, out);
+        } else if path.is_file() {
+            out.push(path);
+        }
+    }
 }

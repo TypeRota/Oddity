@@ -56,7 +56,11 @@ const focused = ref(false);
       :disabled="item.busy"
       :while-press="reduced ? {} : { scale: 0.95 }"
       @click="runNotificationAction(item.id, 'secondary')"
-      >{{ item.secondary.label }}</motion.button
     >
+      <svg v-if="item.secondary.icon" class="icon" aria-hidden="true">
+        <use :href="`#${item.secondary.icon}`" />
+      </svg>
+      <span>{{ item.secondary.label }}</span>
+    </motion.button>
   </motion.div>
 </template>
