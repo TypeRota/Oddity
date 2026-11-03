@@ -154,6 +154,8 @@ export interface Settings {
   minimizeToTrayOnClose: boolean;
   showLauncherAfterGameExit: boolean;
   snapshotSuccessMinutes: number;
+  /** 自定义预下载缓存目录, 空值使用安装目录内的默认路径. */
+  preloadRoot: string | null;
 }
 export interface PlaytimeSession {
   startedAt: number;
@@ -285,10 +287,33 @@ export type DownloadPhase =
   | "launcher"
   | "game"
   | "ready"
+  | "preloaded"
+  | "preload-unavailable"
   | "cancelled"
   | "failed";
+export interface OptionalResource {
+  tag: string;
+  name: string;
+  version: string;
+  size: number;
+  state: "absent" | "partial" | "installed";
+  selected: boolean;
+}
+export interface ResourceCatalog {
+  distribution: "cn" | "global";
+  installRoot: string;
+  version: string;
+  /** 公告中的未来版本, 空字符串表示当前没有资源预下载. */
+  preloadVersion: string;
+  preloadAvailable: boolean;
+  preloadCompleted: boolean;
+  preloadCached: boolean;
+  preloadCachedVersion: string;
+  preloadCachedBytes: number;
+  resources: OptionalResource[];
+}
 export interface DownloadStatus {
-  mode: "check" | "apply";
+  mode: "check" | "apply" | "launcher" | "preload";
   phase: DownloadPhase;
   /** manual 或 auto, 用于区分手动与自动任务. */
   origin: "manual" | "auto";
@@ -314,6 +339,9 @@ export interface DownloadStatus {
   fullBytes: number;
   stage: string;
   remoteVersion: string;
+  optionalTags: string[];
+  /** 当前预下载任务是在校验已完成的缓存. */
+  verify: boolean;
   pendingFiles: number;
   /** 检查时安装目录所在文件系统的可用空间, 读取失败时为 null. */
   diskAvailableBytes: number | null;
@@ -449,6 +477,9 @@ export interface Commands {
   game_mode_tuning_info: GameModeTuning;
   game_mode_tuning_apply: GameModeTuning;
   game_mode_gpu_apply: GpuInfo;
+  game_resource_catalog: ResourceCatalog;
+  game_resource_select: ResourceCatalog;
+  game_preload_delete: ResourceCatalog;
   game_download_status: DownloadStatus;
   game_download_start: DownloadStatus;
   game_download_cancel: DownloadStatus;
@@ -519,8 +550,14 @@ export interface CommandArgs {
   game_mode_tuning_info: undefined;
   game_mode_tuning_apply: { config: GameModeTuning };
   game_mode_gpu_apply: { config: GpuConfig };
+  game_resource_catalog: undefined;
+  game_resource_select: { tags: string[] };
+  game_preload_delete: undefined;
   game_download_status: undefined;
-  game_download_start: { mode: "check" | "apply"; full: boolean };
+  game_download_start: {
+    mode: "check" | "apply" | "launcher" | "preload";
+    full: boolean;
+  };
   game_download_cancel: undefined;
   close_game: undefined;
   win_minimize: undefined;

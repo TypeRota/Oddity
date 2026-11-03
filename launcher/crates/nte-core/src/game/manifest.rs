@@ -97,6 +97,13 @@ pub struct RemoteConfig {
     pub tag: String,
     pub max_threads: usize,
     pub base_versions: Vec<BaseVersionInfo>,
+    pub preload: Option<PreloadConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreloadConfig {
+    pub branch: String,
+    pub version: String,
 }
 
 fn attrs(e: &BytesStart<'_>) -> BTreeMap<String, String> {
@@ -365,6 +372,9 @@ pub fn parse_remote_config(xml: &str) -> Result<RemoteConfig> {
     let mut text_tag: Option<String> = None;
     let mut text = String::new();
     let mut in_base = false;
+    let mut preload_branch = String::new();
+    let mut preload_version = String::new();
+    let mut preload_status = String::new();
 
     loop {
         match reader.read_event() {
@@ -382,7 +392,8 @@ pub fn parse_remote_config(xml: &str) -> Result<RemoteConfig> {
                         });
                     }
                     "ResVersion" | "Hash" | "ResSize" | "Tag" | "listHash" | "diffHash"
-                    | "maxThreadCnt" => {
+                    | "maxThreadCnt" | "PreReleaseBranch" | "PreReleaseVersion"
+                    | "PreReleaseStatus" => {
                         text_tag = Some(name.clone());
                         text.clear();
                     }
@@ -430,6 +441,9 @@ pub fn parse_remote_config(xml: &str) -> Result<RemoteConfig> {
                             "listHash" => out.list_hash = value,
                             "diffHash" => out.diff_hash = value,
                             "maxThreadCnt" => out.max_threads = value.parse().unwrap_or(5).max(1),
+                            "PreReleaseBranch" => preload_branch = value,
+                            "PreReleaseVersion" => preload_version = value,
+                            "PreReleaseStatus" => preload_status = value,
                             _ => {}
                         }
                         text_tag = None;
@@ -445,6 +459,24 @@ pub fn parse_remote_config(xml: &str) -> Result<RemoteConfig> {
 
     if out.res_version.is_empty() {
         return Err(Error::Parse("config.xml has no ResVersion".into()));
+    }
+    if (preload_status.is_empty() || preload_status.eq_ignore_ascii_case("start"))
+        && !preload_branch.is_empty()
+        && !preload_version.is_empty()
+    {
+        // 预下载地址直接拼接这两个字段, 在配置边界限定为单个路径段.
+        for (name, value) in [
+            ("PreReleaseBranch", &preload_branch),
+            ("PreReleaseVersion", &preload_version),
+        ] {
+            if !crate::paths::valid_segment(value) {
+                return Err(Error::Parse(format!("config.xml has invalid {name}")));
+            }
+        }
+        out.preload = Some(PreloadConfig {
+            branch: preload_branch,
+            version: preload_version,
+        });
     }
     Ok(out)
 }
@@ -609,5 +641,68 @@ mod tests {
         assert!(error.to_string().contains("no ResVersion"), "{error}");
         let error = parse_remote_config("<Config><ResVersion>1</ResVersion").expect_err("xml");
         assert!(error.to_string().contains("config.xml"), "{error}");
+    }
+
+    #[test]
+    fn remote_config_advertises_available_preloads() {
+        for status in ["stop", "finish", "unknown"] {
+            let xml = format!(
+                "<config><ResVersion>1.4.16</ResVersion><PreReleaseBranch>PC_150</PreReleaseBranch><PreReleaseVersion>1.5.0</PreReleaseVersion><PreReleaseStatus>{status}</PreReleaseStatus></config>"
+            );
+            assert!(parse_remote_config(&xml).unwrap().preload.is_none());
+        }
+        let xml = "<config><ResVersion>1.4.16</ResVersion><PreReleaseBranch> PC_150 </PreReleaseBranch><PreReleaseVersion>1.5.0</PreReleaseVersion><PreReleaseStatus>start</PreReleaseStatus></config>";
+        assert_eq!(
+            parse_remote_config(xml).unwrap().preload,
+            Some(PreloadConfig {
+                branch: "PC_150".into(),
+                version: "1.5.0".into(),
+            })
+        );
+        assert!(
+            parse_remote_config("<config><ResVersion>1</ResVersion></config>")
+                .unwrap()
+                .preload
+                .is_none()
+        );
+        for status in ["", "START", "start"] {
+            let xml = format!("<config><ResVersion>1</ResVersion><PreReleaseBranch>PC_150</PreReleaseBranch><PreReleaseVersion>1.5.0</PreReleaseVersion><PreReleaseStatus>{status}</PreReleaseStatus></config>");
+            assert!(parse_remote_config(&xml).unwrap().preload.is_some());
+        }
+        for metadata in [
+            "<PreReleaseBranch>PC_150</PreReleaseBranch>",
+            "<PreReleaseVersion>1.5.0</PreReleaseVersion>",
+        ] {
+            let xml = format!("<config><ResVersion>1</ResVersion>{metadata}<PreReleaseStatus>start</PreReleaseStatus></config>");
+            assert!(parse_remote_config(&xml).unwrap().preload.is_none());
+        }
+    }
+
+    #[test]
+    fn remote_config_rejects_unsafe_preload_paths() {
+        for field in ["PreReleaseBranch", "PreReleaseVersion"] {
+            for value in [
+                ".",
+                "..",
+                "../future",
+                "next/version",
+                "x?y",
+                "x%2fy",
+                "x\\y",
+            ] {
+                let mut branch = "PC_150";
+                let mut version = "1.5.0";
+                if field == "PreReleaseBranch" {
+                    branch = value;
+                } else {
+                    version = value;
+                }
+                let xml = format!(
+                    "<config><ResVersion>1</ResVersion><PreReleaseBranch>{branch}</PreReleaseBranch><PreReleaseVersion>{version}</PreReleaseVersion><PreReleaseStatus>start</PreReleaseStatus></config>"
+                );
+                let error = parse_remote_config(&xml).unwrap_err();
+                assert!(error.to_string().contains(field), "{error}");
+            }
+        }
     }
 }

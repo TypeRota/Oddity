@@ -38,6 +38,7 @@ export const settings: Settings = {
   minimizeToTrayOnClose: true,
   showLauncherAfterGameExit: true,
   snapshotSuccessMinutes: 1,
+  preloadRoot: null,
 };
 export const bootstrap = (overrides: Partial<Bootstrap> = {}): Bootstrap => ({
   ok: true,

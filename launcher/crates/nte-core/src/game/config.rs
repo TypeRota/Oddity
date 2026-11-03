@@ -24,6 +24,8 @@ pub struct GameUpdateConfig {
     pub rules: Vec<CheckRule>,
     pub check_dirs: Vec<String>,
     pub max_threads: usize,
+    /// 自定义预下载缓存根目录; 为空时使用 patcher_dir/preload.
+    pub preload_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,6 +146,7 @@ impl GameUpdateConfig {
             rules,
             check_dirs: path_json.check_dir_list,
             max_threads: 5,
+            preload_root: None,
         })
     }
 

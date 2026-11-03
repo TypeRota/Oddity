@@ -719,6 +719,24 @@ const integritySummary = computed(() => {
                       @change="queueSettingsSave(0)" /></SettingRow
                 ></SettingGroup>
                 <SettingGroup title="资源更新">
+                  <div
+                    class="settings-path"
+                    data-setting="preload-dir"
+                    tabindex="-1"
+                  >
+                    <DirectoryField
+                      id="set-preload-root"
+                      v-model="form.preloadRoot"
+                      label="预下载资源目录"
+                      placeholder="~/Games/OddityPreload"
+                      :disabled="settingsPathsLocked"
+                      @input="queueSettingsSave()"
+                      @change="queueSettingsSave(0)"
+                    />
+                    <p class="field__hint">
+                      留空时使用安装目录内的默认缓存路径.
+                    </p>
+                  </div>
                   <SettingRow
                     data-setting="updates"
                     tabindex="-1"

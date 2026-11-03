@@ -187,6 +187,38 @@ describe("浏览器命令桥接", () => {
     expect(statuses.length).toBe(before);
   });
 
+  it("预览资源任务发布预下载目录字段并支持删除", async () => {
+    const { invoke } = await import("../../src/core/api");
+    await invoke("game_download_start", { mode: "apply", full: false });
+    await vi.advanceTimersByTimeAsync(1500);
+    const applied = await invoke("game_download_status");
+    expect(applied.phase).toBe("ready");
+    expect(applied.remoteVersion).toBe("1.4.17");
+    expect(applied.verify).toBe(false);
+
+    const initialRequest = invoke("game_resource_catalog");
+    await vi.advanceTimersByTimeAsync(200);
+    const initial = await initialRequest;
+    expect(initial.preloadAvailable).toBe(true);
+    expect(initial.preloadCompleted).toBe(false);
+    expect(initial.preloadCached).toBe(false);
+
+    await invoke("game_download_start", { mode: "preload", full: false });
+    await vi.advanceTimersByTimeAsync(1500);
+    const completedRequest = invoke("game_resource_catalog");
+    await vi.advanceTimersByTimeAsync(200);
+    const completed = await completedRequest;
+    expect(completed.preloadCompleted).toBe(true);
+    expect(completed.preloadCached).toBe(true);
+    expect(completed.preloadCachedVersion).toBe("1.5.0");
+    expect(completed.preloadCachedBytes).toBeGreaterThan(0);
+
+    const cleared = await invoke("game_preload_delete");
+    expect(cleared.preloadCompleted).toBe(false);
+    expect(cleared.preloadCached).toBe(false);
+    expect(cleared.preloadCachedVersion).toBe("");
+  });
+
   it("使用默认路径并返回互不共享的启动快照", async () => {
     const { invoke, listenGameState } = await import("../../src/core/api");
     const first = await invoke("bootstrap");

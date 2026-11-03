@@ -550,6 +550,64 @@ fn game_check_fails_without_a_patcher_config() {
 }
 
 #[test]
+fn game_preload_dry_run_and_download_leave_live_resources_unchanged() {
+    let server = HttpServer::start();
+    let install = game_install("game-preload");
+    rewrite_cdn(&install.launcher_root, &server.url("/cdn"));
+    let launcher = install.launcher("https://cdn.test/Version.ini");
+    server.route("/cdn/publish_ob/Version/Windows/config.xml", "<config><ResVersion>1.4.16</ResVersion><PreReleaseBranch>future</PreReleaseBranch><PreReleaseVersion>2.0</PreReleaseVersion><PreReleaseStatus>start</PreReleaseStatus></config>");
+    let bytes = b"future content";
+    let hash = nte_core::update::md5_bytes(bytes);
+    let list = format!("<ResList version=\"2.0\" tag=\"baseTag\"><Res filename=\"data/game.bin\" md5=\"{hash}\" filesize=\"{}\"/></ResList>", bytes.len());
+    server.route(
+        "/cdn/future/Version/Windows/version/2.0/config.xml",
+        game_config_xml("2.0", &list, None),
+    );
+    server.route(
+        "/cdn/future/Version/Windows/version/2.0/ResList.bin.zip",
+        res_zip(&list, None),
+    );
+    let path = format!("/cdn/future/Res/{}/{}.{}", &hash[..1], hash, bytes.len());
+    server.route(&path, bytes);
+    install.resource("data/game.bin", b"current game");
+    game_download(&launcher, &["--dry-run".into()], true).unwrap();
+    assert!(!server.targets().contains(&path));
+    assert!(!install
+        .launcher_root
+        .join("UserData/Patcher/PatcherSDK/preload")
+        .exists());
+    game_download(&launcher, &[], true).unwrap();
+    assert_eq!(
+        fs::read(install.resource_path("data/game.bin")).unwrap(),
+        b"current game"
+    );
+    assert!(!install
+        .launcher_root
+        .join("UserData/Patcher/PatcherSDK/ResList.xml")
+        .exists());
+    assert_eq!(
+        server
+            .targets()
+            .iter()
+            .filter(|target| *target == &path)
+            .count(),
+        1
+    );
+    let marker = install
+        .launcher_root
+        .join("UserData/Patcher/PatcherSDK/preload/future/2.0/complete.json");
+    fs::remove_file(&marker).unwrap();
+    fs::create_dir(&marker).unwrap();
+    let error = game_download(&launcher, &[], true).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("write preload completion marker"),
+        "{error}"
+    );
+}
+
+#[test]
 fn game_apply_dry_run_and_filters() {
     let server = HttpServer::start();
     let install = game_install("game-apply-dry");

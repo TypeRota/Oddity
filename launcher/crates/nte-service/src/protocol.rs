@@ -119,6 +119,41 @@ pub async fn dispatch(app: ServiceHandle, command: String, args: Value) -> Resul
                 .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,
         )
         .map_err(|e| json!(e.to_string())),
+        "game_resource_catalog" => serde_json::to_value(
+            crate::service::spawn_blocking(move || {
+                crate::download_commands::game_resource_catalog(app)
+            })
+            .await
+            .map_err(|e| json!(e.to_string()))?
+            .map_err(|e| json!(e))?,
+        )
+        .map_err(|e| json!(e.to_string())),
+        "game_preload_delete" => serde_json::to_value(
+            crate::service::spawn_blocking(move || {
+                crate::download_commands::game_preload_delete(app)
+            })
+            .await
+            .map_err(|e| json!(e.to_string()))?
+            .map_err(|e| json!(e))?,
+        )
+        .map_err(|e| json!(e.to_string())),
+        "game_resource_select" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                tags: Vec<String>,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            serde_json::to_value(
+                crate::service::spawn_blocking(move || {
+                    crate::download_commands::game_resource_select(app, args.tags)
+                })
+                .await
+                .map_err(|e| json!(e.to_string()))?
+                .map_err(|e| json!(e))?,
+            )
+            .map_err(|e| json!(e.to_string()))
+        }
         "game_download_status" => serde_json::to_value(
             crate::download_commands::game_download_status(&app.downloads),
         )

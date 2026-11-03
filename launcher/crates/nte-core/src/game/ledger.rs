@@ -1,10 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::time::UNIX_EPOCH;
 
 use crate::game::check::{join_install_path, ledger_key, UpdateKind, UpdatePlan};
 use crate::game::config::GameUpdateConfig;
-use crate::game::manifest::{GameManifest, ResEntry};
+use crate::game::manifest::{BaseVersion, GameManifest, ResEntry};
+use crate::game::optional;
 use crate::game::pxml;
 use crate::{Error, Result};
 
@@ -42,6 +43,7 @@ pub fn update_after_apply(
         output.sync_all()?;
     }
     let mut manifest = local.unwrap_or_else(GameManifest::default);
+    let owners = optional_owners(plan);
     let completed: BTreeSet<_> = successful_paths.iter().map(String::as_str).collect();
     if bump_version
         && plan.unverified.is_empty()
@@ -88,8 +90,10 @@ pub fn update_after_apply(
             check,
             blocks,
         };
-        upsert(&mut manifest, fresh);
+        let tag = owners.get(&ledger_key(path)).map(String::as_str);
+        upsert(&mut manifest, tag, fresh);
     }
+    settle_optional_versions(&mut manifest, plan);
 
     let xml = serialize(&manifest);
     let encoded = pxml::encode(xml.as_bytes(), &config.app_id)?;
@@ -104,33 +108,112 @@ pub fn update_after_apply(
     Ok(())
 }
 
-fn upsert(manifest: &mut GameManifest, fresh: ResEntry) {
+/// 计划中可选资源的文件路径到所属 tag.
+fn optional_owners(plan: &UpdatePlan) -> BTreeMap<String, String> {
+    let mut owners = BTreeMap::new();
+    for base in &plan.optional_versions {
+        for kind in optional::entries(base) {
+            owners.insert(ledger_key(kind.path()), base.tag.clone());
+        }
+    }
+    owners
+}
+
+fn upsert(manifest: &mut GameManifest, planned_tag: Option<&str>, fresh: ResEntry) {
     let key = ledger_key(&fresh.filename);
-    let mut found = false;
-    let mut update = |entry: &mut ResEntry| {
-        if ledger_key(&entry.filename) != key {
-            return true;
-        }
-        if found {
-            return false;
-        }
-        *entry = fresh.clone();
-        found = true;
-        true
-    };
-    // 同一路径仅保留一个权威记录, 根记录优先。
-    manifest.res.retain_mut(&mut update);
+    let root_has = manifest
+        .res
+        .iter()
+        .any(|entry| ledger_key(&entry.filename) == key);
+    // 没有计划归属时沿用文件原来的记录位置, 根记录优先。
+    let existing_tag = manifest
+        .base_versions
+        .iter()
+        .find(|base| base_contains(base, &key))
+        .map(|base| base.tag.clone());
+    manifest
+        .res
+        .retain(|entry| ledger_key(&entry.filename) != key);
+    remove_pak_entries(&mut manifest.packages, &key);
     for base in &mut manifest.base_versions {
-        base.res.retain_mut(&mut update);
-        for package in &mut base.packages {
-            for pak in &mut package.paks {
-                pak.entries.retain(|entry| ledger_key(&entry.name) != key);
-            }
+        base.res.retain(|entry| ledger_key(&entry.filename) != key);
+        remove_pak_entries(&mut base.packages, &key);
+    }
+    let tag = planned_tag
+        .map(str::to_string)
+        .or(if root_has { None } else { existing_tag });
+    let Some(tag) = tag else {
+        manifest.res.push(fresh);
+        return;
+    };
+    let index = manifest
+        .base_versions
+        .iter()
+        .position(|base| base.tag == tag);
+    let base = match index {
+        Some(index) => &mut manifest.base_versions[index],
+        None => {
+            manifest.base_versions.push(BaseVersion {
+                tag,
+                ..Default::default()
+            });
+            manifest.base_versions.last_mut().expect("刚加入的记录")
+        }
+    };
+    base.res.push(fresh);
+}
+
+fn remove_pak_entries(packages: &mut [crate::game::manifest::Package], key: &str) {
+    for package in packages {
+        for pak in &mut package.paks {
+            pak.entries.retain(|entry| ledger_key(&entry.name) != key);
         }
     }
-    if !found {
-        manifest.res.push(fresh);
+}
+
+fn base_contains(base: &BaseVersion, key: &str) -> bool {
+    base.res
+        .iter()
+        .any(|entry| ledger_key(&entry.filename) == key)
+        || base
+            .packages
+            .iter()
+            .flat_map(|package| &package.paks)
+            .flat_map(|pak| &pak.entries)
+            .any(|entry| ledger_key(&entry.name) == key)
+}
+
+/// 只有整个 tag 的文件都与远端一致时才推进它的版本.
+fn settle_optional_versions(manifest: &mut GameManifest, plan: &UpdatePlan) {
+    for base in &plan.optional_versions {
+        let Some(record) = manifest
+            .base_versions
+            .iter_mut()
+            .find(|record| record.tag == base.tag)
+        else {
+            continue;
+        };
+        if optional::entries(base).all(|kind| record_contains(record, &kind)) {
+            record.version = base.version.clone();
+        }
     }
+}
+
+fn record_contains(record: &BaseVersion, kind: &UpdateKind) -> bool {
+    let key = ledger_key(kind.path());
+    let matches = |name: &str, md5: &str, size: u64| {
+        ledger_key(name) == key && size == kind.size() && md5.eq_ignore_ascii_case(kind.md5())
+    };
+    record
+        .res
+        .iter()
+        .any(|entry| matches(&entry.filename, &entry.md5, entry.filesize))
+        || record
+            .packages
+            .iter()
+            .flat_map(|package| &package.paks)
+            .flat_map(|pak| &pak.entries)
+            .any(|entry| matches(&entry.name, &entry.md5, entry.size))
 }
 
 fn serialize(m: &GameManifest) -> String {
@@ -220,6 +303,7 @@ mod tests {
             rules: Vec::new(),
             check_dirs: Vec::new(),
             max_threads: 5,
+            preload_root: None,
         }
     }
 
@@ -298,7 +382,7 @@ mod tests {
             &bundle,
             CheckOptions {
                 full: true,
-                include_optional: false,
+                optional: crate::game::optional::OptionalSelection::None,
             },
         )
         .unwrap();
@@ -557,6 +641,98 @@ mod tests {
         )
         .unwrap();
         assert!(plan.items.is_empty());
+    }
+
+    fn base_version(tag: &str, version: &str, files: &[(&str, &str, u64)]) -> BaseVersion {
+        BaseVersion {
+            tag: tag.to_string(),
+            version: version.to_string(),
+            res: files
+                .iter()
+                .map(|(path, md5, size)| ResEntry {
+                    filename: (*path).to_string(),
+                    filesize: *size,
+                    md5: (*md5).to_string(),
+                    ..Default::default()
+                })
+                .collect(),
+            packages: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn optional_files_are_recorded_under_their_tag() {
+        let dir = TempDir::new("ledger-optional");
+        let config = config_for(&dir);
+        let first = "Client/Content/TagPatchPaks/pakchunk103-Windows.pak";
+        let second = "Client/Content/TagPatchPaks/pakchunk103-Windows_0_P.pak";
+        let first_md5 = crate::update::md5_bytes(b"first");
+        let second_md5 = crate::update::md5_bytes(b"second");
+        dir.write(format!("install/{first}"), b"first");
+        dir.write(format!("install/{second}"), b"second");
+        // 旧版本把可选文件记录在根节点, 安装后应迁入对应 tag.
+        write_ledger(
+            &config,
+            &format!(
+                "<ResList version=\"1.4.18\" tag=\"baseTag\"><Res filename=\"{first}\" md5=\"00\" filesize=\"5\"/></ResList>"
+            ),
+        );
+        let mut plan = plan_with(vec![
+            res_item(first, &first_md5, 5, false, Vec::new()),
+            res_item(second, &second_md5, 6, false, Vec::new()),
+        ]);
+        plan.optional_versions = vec![base_version(
+            "pakchunk103",
+            "0.103.18",
+            &[(first, &first_md5, 5), (second, &second_md5, 6)],
+        )];
+        update_after_apply(
+            &config,
+            &plan,
+            &[first.to_string(), second.to_string()],
+            true,
+        )
+        .expect("update");
+
+        let manifest = read_ledger(&config);
+        assert!(manifest.res.is_empty());
+        assert_eq!(manifest.base_versions.len(), 1);
+        let record = &manifest.base_versions[0];
+        assert_eq!(record.tag, "pakchunk103");
+        assert_eq!(record.version, "0.103.18");
+        assert_eq!(record.res.len(), 2);
+    }
+
+    #[test]
+    fn incomplete_optional_tag_keeps_its_version_unset() {
+        let dir = TempDir::new("ledger-optional-partial");
+        let config = config_for(&dir);
+        let first = "Client/Content/TagPatchPaks/pakchunk104-Windows.pak";
+        let second = "Client/Content/TagPatchPaks/pakchunk104-Windows_0_P.pak";
+        let first_md5 = crate::update::md5_bytes(b"first");
+        let second_md5 = crate::update::md5_bytes(b"second");
+        dir.write(format!("install/{first}"), b"first");
+        write_ledger(
+            &config,
+            "<ResList version=\"1.4.18\" tag=\"baseTag\"><Res filename=\"data/present.bin\" md5=\"00\" filesize=\"1\"/></ResList>",
+        );
+        let mut plan = plan_with(vec![
+            res_item(first, &first_md5, 5, false, Vec::new()),
+            res_item(second, &second_md5, 6, false, Vec::new()),
+        ]);
+        plan.optional_versions = vec![base_version(
+            "pakchunk104",
+            "0.104.18",
+            &[(first, &first_md5, 5), (second, &second_md5, 6)],
+        )];
+        update_after_apply(&config, &plan, &[first.to_string()], true).expect("update");
+
+        let manifest = read_ledger(&config);
+        assert_eq!(manifest.version, "1.4.18");
+        assert_eq!(manifest.base_versions.len(), 1);
+        assert_eq!(manifest.base_versions[0].tag, "pakchunk104");
+        assert!(manifest.base_versions[0].version.is_empty());
+        assert_eq!(manifest.base_versions[0].res.len(), 1);
     }
 
     #[test]

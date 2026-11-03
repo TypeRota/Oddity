@@ -68,7 +68,7 @@ Nix 和 Gentoo 用户分别参阅 [Nix 指南](nix.md)和 [Gentoo 指南](gentoo
 下载安装包时同时下载 `SHA256SUMS` 与 `SHA256SUMS.sigstore.json`, 然后验证签名 (需要 [cosign](https://docs.sigstore.dev/cosign/installation/) 3.x):
 
 ```bash
-tag=oddity-v0.1.1
+tag=oddity-v0.1.2
 cosign verify-blob \
   --bundle SHA256SUMS.sigstore.json \
   --certificate-identity "https://github.com/LaT-SKY/Oddity/.github/workflows/release.yml@refs/tags/$tag" \
@@ -87,8 +87,8 @@ sha256sum -c --ignore-missing SHA256SUMS
 也可以使用 [GitHub CLI](https://cli.github.com/) 直接验证文件属于对应的不可变 Release (需要 2.79 或更高版本):
 
 ```bash
-tag=oddity-v0.1.1
-gh release verify-asset --repo LaT-SKY/Oddity "$tag" ./oddity_0.1.1_amd64.deb
+tag=oddity-v0.1.2
+gh release verify-asset --repo LaT-SKY/Oddity "$tag" ./oddity_0.1.2_amd64.deb
 ```
 
 `gh release verify-asset` 只说明文件摘要与指定 Release 证明中的附件一致; `cosign` 验证 `SHA256SUMS` 由本仓库的发布 workflow 在对应 release tag 上签名, 再由 `sha256sum` 验证安装包摘要与这份签名清单一致. 这些步骤只确认 Release 归属和摘要匹配, 不证明安装包由发布 workflow 构建, 也不证明内容安全.
@@ -202,7 +202,8 @@ Proton 运行环境保存 Windows 环境和登录状态. 在 **设置 → 运行
 
 1. 打开 **更新**, 点击 **检查资源**.
 2. 按提示点击 **安装游戏** 或 **更新游戏**. 首次安装会先处理启动器文件, 再处理游戏资源.
-3. 完成后回到 **启动**, 点击 **启动游戏**.
+3. 启动器文件单独有更新时, 可在 **启动器文件** 卡片点击 **更新启动器文件**.
+4. 完成后回到 **启动**, 点击 **启动游戏**.
 
 ![更新界面](assets/launcher-update.png)
 
@@ -218,11 +219,17 @@ Proton 运行环境保存 Windows 环境和登录状态. 在 **设置 → 运行
 | **前台启动** | 显示官方窗口, 需要在该窗口中点击启动游戏. |
 | **直接启动** | 跳过官方登录, 目前在界面中标为开发中. |
 
-若后台启动出现异常或提示官方组件版本尚未验证, 请改用 **前台启动**.
+若后台启动出现异常, 请改用 **前台启动**.
 
 游戏退出后默认重新显示 Oddity, 可以在设置中关闭 **游戏退出后打开启动器**. 开启 **关闭窗口时最小化到托盘** 后, 关闭主窗口不会退出 Oddity, 可以从托盘菜单重新打开.
 
 需要从应用菜单, 桌面快捷方式或 Steam 直接启动时, 见[外部启动入口](external-launch.md).
+
+## 可选资源与预下载
+
+更新页的“可选资源”区域可以逐项选择尚未安装的资源包. 已有或部分安装的包会随版本更新维护; 取消选择不会卸载已有文件. 目录体积表示整包文件大小, 本轮实际下载量由资源检查和补丁计划决定.
+
+预下载完成只表示未来资源缓存已准备好. 正式更新仍会重新核对正式清单和本地文件, 复用匹配缓存并完成安装. 自定义缓存位于其他磁盘时, 预下载空间提示读取缓存盘; 正式安装的跨盘复制支持暂停, 仍需要安装盘暂存空间.
 
 ## 公告
 

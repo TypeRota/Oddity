@@ -157,6 +157,7 @@
   background: var(--notice-primary);
 }
 .notification-action--ghost {
+  gap: 6px;
   color: var(--notice-text);
   background: var(--notice-hover);
 }

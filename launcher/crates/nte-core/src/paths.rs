@@ -65,6 +65,16 @@ impl Drop for TemporaryFile {
     }
 }
 
+/// 预下载分支/版本等单段路径只允许字母数字和 ._-, 且不能是 . 或 ...
+pub(crate) fn valid_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+}
+
 pub(crate) fn relative_path(value: &str) -> Result<PathBuf> {
     let normalized = value.trim_start_matches('/').replace('\\', "/");
     let mut path = PathBuf::new();

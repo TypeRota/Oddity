@@ -13,6 +13,8 @@ import type {
   LaunchProgress,
   LaunchStage,
   DownloadStatus,
+  ResourceCatalog,
+  OptionalResource,
   Commands,
   CommandArgs,
   PreviewPaths,
@@ -201,6 +203,7 @@ const mock: Bootstrap = {
     minimizeToTrayOnClose: true,
     showLauncherAfterGameExit: true,
     snapshotSuccessMinutes: 1,
+    preloadRoot: null,
   },
   integrity: {
     state: "verified",
@@ -289,8 +292,8 @@ function previewSnapshotComparison(
       key: "launcher.version",
       section: "启动器",
       label: "Oddity 版本",
-      baseline: "0.1.1",
-      current: "0.1.1",
+      baseline: "0.1.2",
+      current: "0.1.2",
       status: "same",
     },
     {
@@ -717,11 +720,69 @@ const mockDownload: DownloadStatus = {
   fullBytes: 0,
   stage: "",
   remoteVersion: "",
+  optionalTags: [],
+  verify: false,
   pendingFiles: 0,
   diskAvailableBytes: 256 * 1024 ** 3,
   diskRequiredBytes: 0,
   error: "",
 };
+
+const previewOptionalResources: OptionalResource[] = [
+  {
+    tag: "pakchunk101",
+    name: "pakchunk101",
+    version: "0.101.18",
+    size: 1_793_007_011,
+    state: "installed",
+    selected: true,
+  },
+  {
+    tag: "pakchunk102",
+    name: "pakchunk102",
+    version: "0.102.18",
+    size: 1_752_625_939,
+    state: "installed",
+    selected: true,
+  },
+  {
+    tag: "pakchunk103",
+    name: "pakchunk103",
+    version: "0.103.18",
+    size: 1_836_921_904,
+    state: "absent",
+    selected: false,
+  },
+  {
+    tag: "pakchunk104",
+    name: "pakchunk104",
+    version: "0.104.18",
+    size: 2_008_643_453,
+    state: "absent",
+    selected: false,
+  },
+];
+
+let previewPreloadCompleted = false;
+
+function previewCatalog(): ResourceCatalog {
+  return clone({
+    distribution: mock.settings.distribution,
+    installRoot:
+      mock.settings.distribution === "global"
+        ? mock.settings.globalInstallRoot ||
+          "~/Games/Neverness To Everness Global"
+        : mock.settings.installRoot || preview.installRoot,
+    version: "1.4.16",
+    preloadVersion: "1.5.0",
+    preloadAvailable: true,
+    preloadCompleted: previewPreloadCompleted,
+    preloadCached: previewPreloadCompleted,
+    preloadCachedVersion: previewPreloadCompleted ? "1.5.0" : "",
+    preloadCachedBytes: previewPreloadCompleted ? 11_752_693_396 : 0,
+    resources: previewOptionalResources,
+  });
+}
 
 export async function invoke<C extends keyof Commands>(
   command: C,
@@ -1018,6 +1079,45 @@ async function previewInvoke(
     case "gamepad_profile_load":
     case "gamepad_profile_save":
       throw new Error("请在 Oddity 桌面应用中导入或导出反馈配置.");
+    case "game_resource_catalog":
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      return previewCatalog();
+    case "game_preload_delete":
+      previewPreloadCompleted = false;
+      Object.assign(mockDownload, {
+        mode: "check",
+        phase: "idle",
+        verify: false,
+        remoteVersion: "",
+        optionalTags: [],
+        currentFile: "",
+        currentFileBytes: 0,
+        completedFiles: 0,
+        totalFiles: 0,
+        downloadedBytes: 0,
+        totalBytes: 0,
+        patchFiles: 0,
+        patchBytes: 0,
+        fullFiles: 0,
+        fullBytes: 0,
+        pendingFiles: 0,
+        diskRequiredBytes: 0,
+        stage: "",
+        error: "",
+      });
+      return previewCatalog();
+    case "game_resource_select": {
+      const { tags } = args as CommandArgs["game_resource_select"];
+      const known = new Set(previewOptionalResources.map((item) => item.tag));
+      const unknown = tags.find((tag) => !known.has(tag));
+      if (unknown) throw new Error(`未知的可选资源: ${unknown}`);
+      previewOptionalResources.forEach((resource) => {
+        if (resource.state === "absent")
+          resource.selected = tags.includes(resource.tag);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 160));
+      return previewCatalog();
+    }
     case "game_download_status":
       return clone(mockDownload);
     case "game_download_start": {
@@ -1042,6 +1142,7 @@ async function previewInvoke(
           fullBytes: 0,
           stage: "",
           remoteVersion: "",
+          optionalTags: [],
           pendingFiles: 0,
           diskRequiredBytes: 0,
           error: "",
@@ -1052,6 +1153,7 @@ async function previewInvoke(
       }
       Object.assign(mockDownload, {
         mode,
+        verify: mode === "preload" && previewPreloadCompleted,
         full: full || (mockDownload.full && mockDownload.phase !== "ready"),
         unverifiedFiles: 0,
         phase: mode === "check" ? "needs-update" : "game",
@@ -1060,6 +1162,9 @@ async function previewInvoke(
         currentFile:
           mode === "check" ? "" : "Client/WindowsNoEditor/example.pak",
         currentFileBytes: mode === "check" ? 0 : 6_000_000,
+        optionalTags: previewOptionalResources
+          .filter((resource) => resource.selected)
+          .map((resource) => resource.tag),
         completedFiles: 0,
         totalFiles: 2,
         downloadedBytes: 0,
@@ -1069,25 +1174,24 @@ async function previewInvoke(
         fullFiles: 1,
         fullBytes: 2_000_000,
         stage: mode === "check" ? "" : "download",
-        remoteVersion: "1.4.17",
+        remoteVersion: mode === "preload" ? "1.5.0" : "1.4.17",
         pendingFiles: 2,
         diskRequiredBytes: 18_000_000,
         error: "",
       });
-      if (mode === "apply") {
-        window.setTimeout(
-          () =>
-            Object.assign(mockDownload, {
-              phase: "ready",
-              completedFiles: 2,
-              downloadedBytes: 12_000_000,
-              pendingFiles: 0,
-              currentFile: "",
-              currentFileBytes: 0,
-              stage: "",
-            }),
-          1400,
-        );
+      if (mode !== "check") {
+        window.setTimeout(() => {
+          if (mode === "preload") previewPreloadCompleted = true;
+          Object.assign(mockDownload, {
+            phase: mode === "preload" ? "preloaded" : "ready",
+            completedFiles: 2,
+            downloadedBytes: 12_000_000,
+            pendingFiles: 0,
+            currentFile: "",
+            currentFileBytes: 0,
+            stage: "",
+          });
+        }, 1400);
       }
       return clone(mockDownload);
     }

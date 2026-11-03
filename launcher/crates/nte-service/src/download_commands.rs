@@ -9,6 +9,7 @@ use serde::Serialize;
 use nte_core::config::LauncherConfig;
 use nte_core::game::check::CheckOptions;
 use nte_core::game::download::ApplyOptions;
+use nte_core::game::optional::OptionalSelection;
 use nte_core::game::plan::{StageTimings, Throughput};
 use nte_core::throttle::RateLimiter;
 use nte_core::{disk, game, install, update, updates};
@@ -42,10 +43,14 @@ pub struct DownloadStatus {
     full_bytes: u64,
     stage: String,
     remote_version: String,
+    /// 本次计划包含的可选资源 tag.
+    optional_tags: Vec<String>,
+    /// 当前预下载任务是在校验已完成的缓存.
+    verify: bool,
     pub(crate) pending_files: usize,
     /// 最近一次资源检查完成的时间 (Unix 毫秒), 0 表示尚未检查.
     pub(crate) checked_at: u64,
-    /// 检查时安装目录所在文件系统的可用字节, 读取失败时为空.
+    /// 本轮写入目标所在文件系统的可用字节, 读取失败时为空.
     pub(crate) disk_available_bytes: Option<u64>,
     /// 当前计划预计额外占用的字节.
     pub(crate) disk_required_bytes: u64,
@@ -76,6 +81,8 @@ impl Default for DownloadStatus {
             full_bytes: 0,
             stage: String::new(),
             remote_version: String::new(),
+            optional_tags: Vec::new(),
+            verify: false,
             pending_files: 0,
             checked_at: 0,
             disk_available_bytes: None,
@@ -83,6 +90,176 @@ impl Default for DownloadStatus {
             error: String::new(),
         }
     }
+}
+
+fn preload_root_for(settings: &Settings, install_root: &Path) -> std::path::PathBuf {
+    let configured = settings
+        .preload_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(crate::expand_path);
+    match configured {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => install_root.join(path),
+        None => install_root
+            .join(settings.distribution.launcher_dir())
+            .join("UserData")
+            .join("Patcher")
+            .join("PatcherSDK")
+            .join("preload"),
+    }
+}
+
+fn apply_preload_root(config: &mut game::GameUpdateConfig, settings: &Settings) {
+    config.preload_root = Some(preload_root_for(settings, &config.install_root));
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceCatalog {
+    distribution: String,
+    install_root: String,
+    /// 当前正式资源版本.
+    version: String,
+    /// 公告中的未来版本, 空字符串表示当前没有资源预下载.
+    preload_version: String,
+    /// 公告版本仍晚于当前正式版本, 可以执行预下载.
+    preload_available: bool,
+    /// 公告版本的预下载缓存是否已完成.
+    preload_completed: bool,
+    /// 缓存根下是否存在可删除的预下载缓存.
+    preload_cached: bool,
+    /// 删除按钮对应的缓存版本.
+    preload_cached_version: String,
+    /// 缓存目录当前占用的字节数.
+    preload_cached_bytes: u64,
+    resources: Vec<game::optional::OptionalResource>,
+}
+
+fn launcher_root_for(settings: &Settings) -> std::path::PathBuf {
+    if crate::configured_install_root(settings).is_none() {
+        crate::detect_launcher_root(settings).unwrap_or_else(|| {
+            selected_install_root(settings).join(settings.distribution.launcher_dir())
+        })
+    } else {
+        selected_install_root(settings).join(settings.distribution.launcher_dir())
+    }
+}
+
+fn load_catalog_context(
+    app: &ServiceHandle,
+) -> Result<(Settings, game::GameUpdateConfig, game::check::RemoteBundle), String> {
+    let settings = app
+        .state
+        .settings
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+    let root = launcher_root_for(&settings);
+    let launcher =
+        LauncherConfig::load(&root).map_err(|error| format!("读取现有启动器配置失败: {error}"))?;
+    let mut config = game::GameUpdateConfig::load(&root, launcher.game_id)
+        .map_err(|error| format!("读取游戏资源配置失败: {error}"))?;
+    apply_preload_root(&mut config, &settings);
+    let bundle = game::check::load_remote(&config)
+        .map_err(|error| format!("读取可选资源目录失败: {error}"))?;
+    Ok((settings, config, bundle))
+}
+
+fn preload_target(
+    config: &game::GameUpdateConfig,
+    bundle: &game::check::RemoteBundle,
+) -> Option<(String, String)> {
+    game::preload::target(config, &bundle.config).map(|target| (target.branch, target.version))
+}
+
+fn catalog_payload(
+    settings: &Settings,
+    config: &game::GameUpdateConfig,
+    bundle: &game::check::RemoteBundle,
+) -> Result<ResourceCatalog, String> {
+    let target = preload_target(config, bundle);
+    let announced_version = bundle
+        .config
+        .preload
+        .as_ref()
+        .map(|preload| preload.version.clone())
+        .unwrap_or_default();
+    let preload_version = target
+        .as_ref()
+        .map(|(_, version)| version.clone())
+        .unwrap_or(announced_version);
+    let preload_available = target.is_some();
+    let preload_completed = target.as_ref().is_some_and(|(branch, version)| {
+        game::preload::completion(config, branch, version).is_some()
+    });
+    let announced_cache = bundle.config.preload.as_ref().and_then(|preload| {
+        let bytes = game::preload::cache_bytes(config, &preload.branch, &preload.version);
+        (bytes > 0).then(|| (preload.version.clone(), bytes))
+    });
+    let cached = announced_cache.or_else(|| {
+        game::preload::cached_version(config).map(|cached| (cached.version, cached.bytes))
+    });
+    let (preload_cached_version, preload_cached_bytes) = cached.unwrap_or((String::new(), 0));
+    Ok(ResourceCatalog {
+        distribution: settings.distribution.as_str().into(),
+        install_root: config.install_root.display().to_string(),
+        version: bundle.config.res_version.clone(),
+        preload_version,
+        preload_available,
+        preload_completed,
+        preload_cached: preload_cached_bytes > 0,
+        preload_cached_version,
+        preload_cached_bytes,
+        resources: game::optional::catalog(config, bundle)
+            .map_err(|error| format!("读取可选资源状态失败: {error}"))?,
+    })
+}
+
+/// 列举当前版本的目录, 同时给出公告中的预下载版本. 所选 tag 在核心边界校验.
+pub fn game_resource_catalog(app: ServiceHandle) -> Result<ResourceCatalog, String> {
+    let (settings, config, bundle) = load_catalog_context(&app)?;
+    catalog_payload(&settings, &config, &bundle)
+}
+
+pub fn game_resource_select(
+    app: ServiceHandle,
+    tags: Vec<String>,
+) -> Result<ResourceCatalog, String> {
+    let (settings, config, bundle) = load_catalog_context(&app)?;
+    {
+        let inner = app
+            .downloads
+            .inner
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if busy(&inner.status.phase) {
+            return Err("游戏资源任务正在进行, 暂时无法修改可选资源".into());
+        }
+    }
+    let _install_lock = nte_core::install_lock::InstallLock::acquire(&config.install_root)
+        .map_err(|error| error.to_string())?;
+    {
+        // 拿到安装锁后再确认一次, 避免与刚启动的任务交错.
+        let inner = app
+            .downloads
+            .inner
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if busy(&inner.status.phase) {
+            return Err("游戏资源任务正在进行, 暂时无法修改可选资源".into());
+        }
+    }
+    {
+        let game = app.state.game.lock().map_err(|error| error.to_string())?;
+        if game.starting || game.session.as_ref().is_some_and(session_alive) {
+            return Err("游戏正在运行, 暂时无法修改可选资源".into());
+        }
+    }
+    game::optional::save_selection(&config, &bundle, &tags)
+        .map_err(|error| format!("保存可选资源失败: {error}"))?;
+    catalog_payload(&settings, &config, &bundle)
 }
 
 #[derive(Default)]
@@ -103,8 +280,17 @@ pub(crate) fn busy(phase: &str) -> bool {
     matches!(phase, "checking" | "launcher" | "game")
 }
 
+pub(crate) fn writes_launcher_files(mode: &str) -> bool {
+    mode == "apply" || mode == "launcher"
+}
+
+/// 启动器更新是写操作, 单靠大小比对会漏掉同尺寸的内容变更.
+fn launcher_plan_full(mode: &str, requested: bool) -> bool {
+    requested || mode == "launcher"
+}
+
 pub(crate) fn blocks_changes(status: &DownloadStatus) -> bool {
-    busy(&status.phase) && status.mode == "apply"
+    busy(&status.phase) && status.mode != "check"
 }
 
 fn now_ms() -> u64 {
@@ -144,14 +330,27 @@ fn publish_bytes(app: &ServiceHandle, bytes: u64) {
     let _ = app.emit("game-download-state", status);
 }
 
-fn refresh_disk_available(status: &mut DownloadStatus) {
-    status.disk_available_bytes = disk::available_bytes(Path::new(&status.install_root)).ok();
+fn refresh_disk_available(app: &ServiceHandle, status: &mut DownloadStatus) {
+    let root = Path::new(&status.install_root);
+    let path = if status.mode == "preload" {
+        let Ok(settings) = app.state.settings.lock() else {
+            status.disk_available_bytes = None;
+            return;
+        };
+        preload_root_for(&settings, root)
+    } else {
+        root.to_path_buf()
+    };
+    status.disk_available_bytes = disk::available_bytes(&path).ok();
 }
 
 fn publish_cancelled(app: &ServiceHandle) {
     publish(app, |status| {
-        refresh_disk_available(status);
+        refresh_disk_available(app, status);
         status.phase = "cancelled".into();
+        if status.mode == "preload" {
+            status.checked_at = now_ms();
+        }
     });
 }
 
@@ -198,8 +397,9 @@ fn check_game(
 ) -> Result<game::UpdatePlan, String> {
     let config =
         LauncherConfig::load(root).map_err(|error| format!("读取启动器配置失败: {error}"))?;
-    let game_config = game::GameUpdateConfig::load(root, config.game_id)
+    let mut game_config = game::GameUpdateConfig::load(root, config.game_id)
         .map_err(|error| format!("读取游戏资源配置失败: {error}"))?;
+    apply_preload_root(&mut game_config, settings);
     // 锁只用于复制估计, 资源检查可能持续数秒, 不能持锁等待。
     let throughput = app
         .downloads
@@ -213,12 +413,22 @@ fn check_game(
         &game_config,
         CheckOptions {
             full,
-            include_optional: false,
+            optional: OptionalSelection::Configured,
         },
         Some(&throughput),
         &|| cancel.load(Ordering::Relaxed),
     )
     .map_err(|error| format!("检查游戏资源失败: {error}"))?;
+    publish_game_plan(app, settings, root, &plan);
+    Ok(plan)
+}
+
+fn publish_game_plan(
+    app: &ServiceHandle,
+    settings: &Settings,
+    root: &Path,
+    plan: &game::UpdatePlan,
+) {
     let patch_files = plan.items.iter().filter(|item| item.has_patch()).count();
     let patch_bytes: u64 = plan
         .items
@@ -228,10 +438,20 @@ fn check_game(
         .sum();
     let total_bytes = plan.total_bytes();
     let disk_available_bytes = disk::available_bytes(root).ok();
+    let preload_available_bytes = disk::available_bytes(&preload_root_for(
+        settings,
+        root.parent().expect("启动器目录属于安装目录"),
+    ))
+    .ok();
     let disk_required_bytes = plan.required_disk_bytes();
     publish(app, |status| {
         status.distribution = settings.distribution.as_str().into();
         status.remote_version = plan.remote_version.clone();
+        status.optional_tags = plan
+            .optional_versions
+            .iter()
+            .map(|base| base.tag.clone())
+            .collect();
         status.unverified_files = plan.unverified.len();
         status.pending_files = plan.items.len();
         status.total_bytes = total_bytes;
@@ -240,11 +460,18 @@ fn check_game(
         status.patch_bytes = patch_bytes;
         status.full_files = plan.items.len().saturating_sub(patch_files);
         status.full_bytes = total_bytes.saturating_sub(patch_bytes);
-        status.disk_available_bytes = disk_available_bytes;
-        status.disk_required_bytes = disk_required_bytes;
+        status.disk_available_bytes = if status.mode == "preload" {
+            preload_available_bytes
+        } else {
+            disk_available_bytes
+        };
+        status.disk_required_bytes = if status.mode == "preload" {
+            total_bytes
+        } else {
+            disk_required_bytes
+        };
         status.checked_at = now_ms();
     });
-    Ok(plan)
 }
 
 fn run_task(
@@ -255,7 +482,7 @@ fn run_task(
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     let install_root = selected_install_root(settings);
-    let _install_lock = if mode == "apply" {
+    let _install_lock = if mode != "check" {
         Some(
             nte_core::install_lock::InstallLock::acquire(&install_root)
                 .map_err(|error| error.to_string())?,
@@ -263,12 +490,86 @@ fn run_task(
     } else {
         None
     };
-    let launcher_plan =
-        install::plan_launcher_cancellable(settings.distribution, &install_root, full, &|| {
-            cancel.load(Ordering::Relaxed)
-        })
-        .map_err(|error| format!("检查启动器文件失败: {error}"))?;
+    if mode == "preload" {
+        return run_preload_task(app, settings, full, cancel);
+    }
+    let launcher_plan = install::plan_launcher_cancellable(
+        settings.distribution,
+        &install_root,
+        launcher_plan_full(mode, full),
+        &|| cancel.load(Ordering::Relaxed),
+    )
+    .map_err(|error| format!("检查启动器文件失败: {error}"))?;
+    // 启动器文件总是完整校验; 游戏资源沿用请求或上一轮保留的校验深度.
     run_plan(app, settings, mode, full, cancel, launcher_plan)
+}
+
+fn run_preload_task(
+    app: &ServiceHandle,
+    settings: &Settings,
+    full: bool,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let root = selected_install_root(settings).join(settings.distribution.launcher_dir());
+    let launcher =
+        LauncherConfig::load(&root).map_err(|error| format!("读取现有启动器配置失败: {error}"))?;
+    let mut config = game::GameUpdateConfig::load(&root, launcher.game_id)
+        .map_err(|error| format!("读取游戏资源配置失败: {error}"))?;
+    apply_preload_root(&mut config, settings);
+    let preload = game::check::load_preload_remote(&config)
+        .map_err(|error| format!("检查资源预下载失败: {error}"))?;
+    if cancel.load(Ordering::Relaxed) {
+        publish_cancelled(app);
+        return Ok(());
+    }
+    let Some(preload) = preload else {
+        publish(app, |status| {
+            status.phase = "preload-unavailable".into();
+            status.checked_at = now_ms();
+        });
+        return Ok(());
+    };
+    // 正式版本已经追平公告后不再执行预下载.
+    if nte_core::version::compare(&preload.bundle.config.res_version, &preload.current_version)
+        != std::cmp::Ordering::Greater
+    {
+        publish(app, |status| {
+            status.phase = "preload-unavailable".into();
+            status.checked_at = now_ms();
+        });
+        return Ok(());
+    }
+    let completed = game::preload::completion(
+        &preload.config,
+        &preload.config.branch,
+        &preload.bundle.config.res_version,
+    )
+    .is_some();
+    publish(app, |status| status.verify = completed);
+    let mut options = CheckOptions {
+        full,
+        optional: OptionalSelection::Configured,
+    };
+    let mut plan = game::check::check_bundle_cancellable(
+        &preload.config,
+        &preload.bundle,
+        options.clone(),
+        &|| cancel.load(Ordering::Relaxed),
+    )
+    .map_err(|error| format!("规划资源预下载失败: {error}"))?;
+    if !plan.unverified.is_empty() {
+        options.full = true;
+        publish(app, |status| status.full = true);
+        plan = game::check::check_bundle_cancellable(
+            &preload.config,
+            &preload.bundle,
+            options,
+            &|| cancel.load(Ordering::Relaxed),
+        )
+        .map_err(|error| format!("校验预下载基础资源失败: {error}"))?;
+    }
+    publish_game_plan(app, settings, &root, &plan);
+    apply_game_plan(app, settings, cancel, &root, &preload.config, &plan, true)
 }
 
 /// 启动器文件大多是几十到几百 KiB 的 ZIP, 逐个下载会被握手和首字节
@@ -382,7 +683,7 @@ fn run_plan(
         publish(app, |status| status.phase = "needs-install".into());
         return Ok(());
     }
-    if mode == "apply" && !launcher_plan.files.is_empty() {
+    if writes_launcher_files(mode) && !launcher_plan.files.is_empty() {
         publish(app, |status| status.phase = "launcher".into());
         install_launcher_files(
             app,
@@ -424,7 +725,7 @@ fn run_plan(
     if plan.items.is_empty() && game_exe_for(&launcher_plan.root).is_none() {
         return Err("资源清单未发现待下载文件，但本地缺少 HTGame.exe".into());
     }
-    if mode == "check" {
+    if mode == "check" || mode == "launcher" {
         publish(app, |status| {
             status.phase = if !plan.unverified.is_empty() {
                 "needs-verify"
@@ -439,8 +740,130 @@ fn run_plan(
     }
     let launcher_config = LauncherConfig::load(&launcher_plan.root)
         .map_err(|error| format!("读取启动器配置失败: {error}"))?;
-    let game_config = game::GameUpdateConfig::load(&launcher_plan.root, launcher_config.game_id)
-        .map_err(|error| format!("读取游戏资源配置失败: {error}"))?;
+    let mut game_config =
+        game::GameUpdateConfig::load(&launcher_plan.root, launcher_config.game_id)
+            .map_err(|error| format!("读取游戏资源配置失败: {error}"))?;
+    apply_preload_root(&mut game_config, settings);
+    apply_game_plan(
+        app,
+        settings,
+        cancel,
+        &launcher_plan.root,
+        &game_config,
+        &plan,
+        false,
+    )
+}
+
+/// 删除公告版本的预下载缓存; 正式游戏文件和安装记录不受影响.
+pub fn game_preload_delete(app: ServiceHandle) -> Result<ResourceCatalog, String> {
+    let (settings, config, bundle) = load_catalog_context(&app)?;
+    let target = match bundle.config.preload.as_ref() {
+        Some(preload)
+            if game::preload::cache_bytes(&config, &preload.branch, &preload.version) > 0 =>
+        {
+            (preload.branch.clone(), preload.version.clone())
+        }
+        _ => {
+            let cached = game::preload::cached_version(&config)
+                .ok_or_else(|| "当前没有可删除的资源预下载".to_string())?;
+            (cached.branch, cached.version)
+        }
+    };
+    {
+        let inner = app
+            .downloads
+            .inner
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if busy(&inner.status.phase) {
+            return Err("游戏资源任务正在进行, 暂时无法删除资源预下载".into());
+        }
+    }
+    let _install_lock = nte_core::install_lock::InstallLock::acquire(&config.install_root)
+        .map_err(|error| error.to_string())?;
+    {
+        let inner = app
+            .downloads
+            .inner
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if busy(&inner.status.phase) {
+            return Err("游戏资源任务正在进行, 暂时无法删除资源预下载".into());
+        }
+    }
+    game::preload::delete(&config, &target.0, &target.1)
+        .map_err(|error| format!("删除资源预下载失败: {error}"))?;
+    publish(&app, |status| {
+        if status.mode == "preload"
+            && !busy(&status.phase)
+            && matches!(
+                status.phase.as_str(),
+                "preloaded" | "preload-unavailable" | "cancelled" | "failed" | "idle"
+            )
+        {
+            status.phase = "idle".into();
+            status.full = false;
+            status.pending_files = 0;
+            status.total_files = 0;
+            status.total_bytes = 0;
+            status.downloaded_bytes = 0;
+            status.completed_files = 0;
+            status.patch_files = 0;
+            status.patch_bytes = 0;
+            status.full_files = 0;
+            status.full_bytes = 0;
+            status.remote_version.clear();
+            status.current_file.clear();
+            status.current_file_bytes = 0;
+            status.stage.clear();
+            status.optional_tags.clear();
+            status.verify = false;
+            status.checked_at = 0;
+            status.error.clear();
+        }
+    });
+    catalog_payload(&settings, &config, &bundle)
+}
+
+fn mark_preload_complete(
+    config: &game::GameUpdateConfig,
+    plan: &game::UpdatePlan,
+) -> Result<(), String> {
+    game::preload::mark_complete(
+        config,
+        &config.branch,
+        &plan.remote_version,
+        plan.items.len(),
+        plan.total_bytes(),
+    )
+    .map_err(|error| format!("写入预下载完成记录失败: {error}"))
+}
+
+fn apply_game_plan(
+    app: &ServiceHandle,
+    settings: &Settings,
+    cancel: &AtomicBool,
+    root: &Path,
+    game_config: &game::GameUpdateConfig,
+    plan: &game::UpdatePlan,
+    preload: bool,
+) -> Result<(), String> {
+    // 预下载没有待下载文件时只校验缓存, 不进入下载阶段.
+    if preload && plan.items.is_empty() {
+        mark_preload_complete(game_config, plan)?;
+        publish(app, |status| {
+            status.phase = "preloaded".into();
+            status.completed_files = status.total_files;
+            status.pending_files = 0;
+            status.auto_waiting.clear();
+            status.checked_at = now_ms();
+            status.current_file.clear();
+            status.current_file_bytes = 0;
+            status.stage.clear();
+        });
+        return Ok(());
+    }
     publish(app, |status| {
         status.phase = "game".into();
         status.completed_files = 0;
@@ -488,11 +911,12 @@ fn run_plan(
     };
     let apply_options = ApplyOptions {
         probe_cdns: !updates::metered().is_metered(),
+        preload,
         ..ApplyOptions::default()
     };
     let report = game::download::apply_plan_observed_full(
-        &game_config,
-        &plan,
+        game_config,
+        plan,
         &apply_options,
         settings.updates.limit_bytes_per_second,
         &mut on_file,
@@ -529,11 +953,14 @@ fn run_plan(
     if let Some(error) = report.ledger_error {
         return Err(format!("写入游戏资源记录失败: {error}"));
     }
-    if game_exe_for(&launcher_plan.root).is_none() {
+    if !preload && game_exe_for(root).is_none() {
         return Err("资源下载已结束，但未找到游戏可执行文件".into());
     }
+    if preload {
+        mark_preload_complete(game_config, plan)?;
+    }
     publish(app, |status| {
-        status.phase = "ready".into();
+        status.phase = if preload { "preloaded" } else { "ready" }.into();
         status.completed_files = status.total_files;
         status.pending_files = 0;
         status.auto_waiting.clear();
@@ -561,7 +988,7 @@ fn prepare_task(
     origin: &str,
     cancel: &Arc<AtomicBool>,
 ) -> Result<(DownloadStatus, Settings, bool), String> {
-    if mode != "check" && mode != "apply" {
+    if !["check", "apply", "launcher", "preload"].contains(&mode) {
         return Err("无效的游戏资源操作".into());
     }
     let (status, settings, full) = {
@@ -593,14 +1020,23 @@ fn prepare_task(
             if game.environment_busy {
                 return Err("运行环境任务正在进行, 暂时无法检查或更新资源".into());
             }
-            if mode == "apply"
+            if mode != "check"
                 && (game.starting || game.session.as_ref().is_some_and(session_alive))
             {
-                return Err("游戏正在运行，无法修改游戏文件".into());
+                return Err(if mode == "preload" {
+                    "游戏正在运行, 请退出游戏后开始资源预下载"
+                } else {
+                    "游戏正在运行, 无法修改游戏文件"
+                }
+                .into());
             }
         }
         let install_root = selected_install_root(&settings);
-        let disk_available_bytes = disk::available_bytes(&install_root).ok();
+        let disk_available_bytes = if mode == "preload" {
+            disk::available_bytes(&preload_root_for(&settings, &install_root)).ok()
+        } else {
+            disk::available_bytes(&install_root).ok()
+        };
         let installed = install_root
             .join(settings.distribution.launcher_dir())
             .join("UserData/Patcher/PatcherSDK/ResList.xml")
@@ -608,6 +1044,7 @@ fn prepare_task(
         let install_root = install_root.display().to_string();
         let full = full
             || (inner.status.full
+                && (inner.status.mode == "preload") == (mode == "preload")
                 && inner.status.phase != "ready"
                 && inner.status.distribution == settings.distribution.as_str()
                 && inner.status.install_root == install_root);
@@ -651,9 +1088,12 @@ pub(crate) fn start_task(
                 eprintln!("资源任务失败: {error}");
             }
             publish(&app, |status| {
-                refresh_disk_available(status);
+                refresh_disk_available(&app, status);
                 status.phase = if cancelled { "cancelled" } else { "failed" }.into();
                 status.error = if cancelled { String::new() } else { error };
+                if status.mode == "preload" {
+                    status.checked_at = now_ms();
+                }
                 status.stage.clear();
             });
         }
