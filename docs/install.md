@@ -68,7 +68,7 @@ Nix 和 Gentoo 用户分别参阅 [Nix 指南](nix.md)和 [Gentoo 指南](gentoo
 下载安装包时同时下载 `SHA256SUMS` 与 `SHA256SUMS.sigstore.json`, 然后验证签名 (需要 [cosign](https://docs.sigstore.dev/cosign/installation/) 3.x):
 
 ```bash
-tag=oddity-v0.1.0
+tag=oddity-v0.1.1
 cosign verify-blob \
   --bundle SHA256SUMS.sigstore.json \
   --certificate-identity "https://github.com/LaT-SKY/Oddity/.github/workflows/release.yml@refs/tags/$tag" \
@@ -87,8 +87,8 @@ sha256sum -c --ignore-missing SHA256SUMS
 也可以使用 [GitHub CLI](https://cli.github.com/) 直接验证文件属于对应的不可变 Release (需要 2.79 或更高版本):
 
 ```bash
-tag=oddity-v0.1.0
-gh release verify-asset --repo LaT-SKY/Oddity "$tag" ./oddity_0.1.0_amd64.deb
+tag=oddity-v0.1.1
+gh release verify-asset --repo LaT-SKY/Oddity "$tag" ./oddity_0.1.1_amd64.deb
 ```
 
 `gh release verify-asset` 只说明文件摘要与指定 Release 证明中的附件一致; `cosign` 验证 `SHA256SUMS` 由本仓库的发布 workflow 在对应 release tag 上签名, 再由 `sha256sum` 验证安装包摘要与这份签名清单一致. 这些步骤只确认 Release 归属和摘要匹配, 不证明安装包由发布 workflow 构建, 也不证明内容安全.
