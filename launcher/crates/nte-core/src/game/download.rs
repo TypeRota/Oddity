@@ -14,7 +14,7 @@ use crate::game::check::{
 };
 use crate::game::config::GameUpdateConfig;
 use crate::game::manifest::{Block, PakEntry, ResEntry};
-use crate::game::plan::StageTimings;
+use crate::game::plan::{default_processing_lanes, StageTimings};
 use crate::http::HttpClient;
 use crate::throttle::RateLimiter;
 use crate::update::md5_file_cancellable;
@@ -289,18 +289,6 @@ impl Drop for ApplyPermit<'_> {
         state.reserved -= self.workspace;
         self.gate.released.notify_all();
     }
-}
-
-/// 应用并发上限: 留一半核心给下载和校验, 最多 4 路.
-fn apply_limit_for(parallelism: usize) -> usize {
-    (parallelism / 2).clamp(1, 4)
-}
-
-fn default_apply_limit() -> usize {
-    let parallelism = std::thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(1);
-    apply_limit_for(parallelism)
 }
 
 struct Progress<'a> {
@@ -633,7 +621,7 @@ pub fn apply_plan_observed_full(
     } else {
         0
     };
-    let apply_gate = ApplyGate::new(default_apply_limit(), workspace_budget);
+    let apply_gate = ApplyGate::new(default_processing_lanes(), workspace_budget);
     let limiter = RateLimiter::new(limit_bytes_per_second);
     let (tx, rx) = mpsc::channel();
     let mut worker_txs: Vec<Sender<WorkerEvent>> = (0..workers).map(|_| tx.clone()).collect();
@@ -3186,15 +3174,6 @@ mod tests {
             gate.acquire_cancellable(0, &|| Ok(u64::MAX), &|| true),
             Err(Error::Cancelled)
         ));
-    }
-
-    #[test]
-    fn apply_limit_uses_half_the_cores_up_to_four() {
-        assert_eq!(apply_limit_for(1), 1);
-        assert_eq!(apply_limit_for(3), 1);
-        assert_eq!(apply_limit_for(4), 2);
-        assert_eq!(apply_limit_for(8), 4);
-        assert_eq!(apply_limit_for(64), 4);
     }
 
     #[test]

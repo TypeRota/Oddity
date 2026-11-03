@@ -10,8 +10,8 @@ use crate::game::manifest::{
     LocalManifest, PakEntry, RemoteConfig, ResEntry,
 };
 use crate::game::plan::{
-    balance_plan_choices, chain_upper_bound_nanos, patch_edge_nanos, Throughput,
-    PLAN_PROCESSING_LANES_DEFAULT,
+    balance_plan_choices, chain_upper_bound_nanos, default_processing_lanes, patch_edge_nanos,
+    Throughput,
 };
 use crate::game::pxml;
 use crate::http::HttpClient;
@@ -560,13 +560,14 @@ pub fn check_bundle_cancellable_with_estimates(
     attach_patches(&mut plan, config, bundle, &map, throughput);
     plan.items.sort_by(|a, b| a.path.cmp(&b.path));
     if let Some(throughput) = throughput {
-        // 逐项选链只比较单个文件；多文件同时更新时下载并行、补丁处理串行，
-        // 整份计划的完工时间可能由处理侧决定，这里按整体 makespan 再平衡一次。
-        // 补丁应用和校验共用一条处理通道; 整包校验占用各自的下载 worker.
+        // 逐项选链只比较单个文件；多文件同时更新时下载并行、补丁处理受应用
+        // 闸门限制，整份计划的完工时间可能由处理侧决定，这里按整体 makespan
+        // 再平衡一次。补丁应用和校验共用一条处理通道; 整包校验占用各自的
+        // 下载 worker.
         balance_plan_choices(
             &mut plan.items,
             throughput,
-            PLAN_PROCESSING_LANES_DEFAULT,
+            default_processing_lanes(),
             plan.max_threads.max(1),
         );
     }
@@ -1586,10 +1587,8 @@ mod tests {
         assert_eq!(plan.total_bytes(), 100_000_000);
     }
 
-    #[test]
-    fn plan_level_estimate_switches_items_when_processing_is_the_bottleneck() {
-        let dir = TempDir::new("check-plan-balance");
-        let config = config_for(&dir);
+    /// 两个 200 MB 的补丁项, 每项 50 MB 补丁.
+    fn two_patch_items(dir: &TempDir, config: &GameUpdateConfig) -> RemoteBundle {
         let mut diff = DiffManifest {
             sections: Vec::new(),
             patches: Vec::new(),
@@ -1615,10 +1614,17 @@ mod tests {
             });
         }
         ledger.push_str("</ResList>");
-        write_ledger(&config, &ledger);
-        let bundle = bundle(manifest_res(remote), Some(diff));
+        write_ledger(config, &ledger);
+        bundle(manifest_res(remote), Some(diff))
+    }
 
-        // 默认估计（8 MB/s）下下载仍是瓶颈，逐项时间选链的结果保持不变。
+    #[test]
+    fn plan_level_estimate_keeps_patches_when_download_is_the_bottleneck() {
+        let dir = TempDir::new("check-plan-balance");
+        let config = config_for(&dir);
+        let bundle = two_patch_items(&dir, &config);
+
+        // 默认估计（8 MB/s）下下载仍是瓶颈, 逐项时间选链的结果保持不变.
         let plan = check_bundle_with_estimates(
             &config,
             &bundle,
@@ -1630,9 +1636,15 @@ mod tests {
         assert_eq!(plan.items.len(), 2);
         assert!(plan.items.iter().all(|item| item.patches.len() == 1));
         assert_eq!(plan.total_bytes(), 100_000_000);
+    }
 
-        // 极快下载 + 极慢应用：整份计划被串行处理拖住，至少一项改走整包。
-        let serial_bottleneck = Throughput {
+    #[test]
+    fn plan_level_estimate_uses_the_executor_processing_lanes() {
+        let dir = TempDir::new("check-plan-lanes");
+        let config = config_for(&dir);
+        let bundle = two_patch_items(&dir, &config);
+        // 极快下载 + 极慢应用: 两项能否并行处理取决于执行层放行几条通道.
+        let bottleneck = Throughput {
             download_bytes_per_second: 1_000_000_000.0,
             apply_bytes_per_second: 200_000_000.0,
             verify_bytes_per_second: 365_000_000.0,
@@ -1641,13 +1653,21 @@ mod tests {
             &config,
             &bundle,
             CheckOptions::default(),
-            Some(&serial_bottleneck),
+            Some(&bottleneck),
             &|| false,
         )
         .expect("check");
         assert_eq!(plan.items.len(), 2);
-        assert!(plan.items.iter().any(|item| item.patches.is_empty()));
-        assert!(plan.total_bytes() > 100_000_000);
+        // 两个下载 worker 最多提供两条处理通道.
+        if default_processing_lanes() > 1 {
+            // 两条通道足以并行处理两项, 换成整包只会多下载.
+            assert!(plan.items.iter().all(|item| item.patches.len() == 1));
+            assert_eq!(plan.total_bytes(), 100_000_000);
+        } else {
+            // 单通道时整份计划被串行处理拖住, 至少一项改走整包.
+            assert!(plan.items.iter().any(|item| item.patches.is_empty()));
+            assert!(plan.total_bytes() > 100_000_000);
+        }
     }
 
     #[test]
