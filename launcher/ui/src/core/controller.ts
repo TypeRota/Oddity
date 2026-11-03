@@ -44,7 +44,7 @@ const BULLETIN_CACHE_TTL_MS = 15 * 60 * 1000;
 const disposers: (() => void)[] = [];
 let downloadRevision = 0;
 let bootstrapRevision = 0;
-const downloadStarting = ref<"check" | "apply" | null>(null);
+const downloadStarting = ref<"check" | "apply" | "launcher" | null>(null);
 export const runtimeEnvironmentBusy = ref(false);
 export const runtimeEnvironmentError = ref("");
 // 文本输入防抖, 失焦和开关类控件立即保存。
@@ -560,17 +560,22 @@ export function downloadBusy() {
     ["checking", "launcher", "game"].includes(state.download?.phase || "")
   );
 }
+
+function downloadWritesFiles(mode?: "check" | "apply" | "launcher" | null) {
+  return mode === "apply" || mode === "launcher";
+}
+
 function downloadBlocksLaunch() {
   return (
     downloadBusy() &&
-    (downloadStarting.value || state.download?.mode) === "apply"
+    downloadWritesFiles(downloadStarting.value || state.download?.mode)
   );
 }
 // 只有实际进入下载写入后才锁定路径; 启动下载前的保存仍读取表单。
 const installPathsBusy = computed(
   () =>
     state.game !== "idle" ||
-    (state.download?.mode === "apply" &&
+    (downloadWritesFiles(state.download?.mode) &&
       ["checking", "launcher", "game"].includes(state.download?.phase || "")),
 );
 export const settingsPathsLocked = computed(
@@ -1421,7 +1426,17 @@ function applyDownloadStatus(status: DownloadStatus) {
       key: "auto-download-start",
     });
   }
-  if (status.phase === "ready" && previous !== "ready") {
+  // launcher 模式只更新启动器文件, 结束后要重新检查启动器并刷新版本信息.
+  const launcherUpdateFinished =
+    status.mode === "launcher" &&
+    status.phase !== previous &&
+    ["ready", "needs-update", "needs-verify", "cancelled", "failed"].includes(
+      status.phase,
+    );
+  if (
+    (status.phase === "ready" && previous !== "ready") ||
+    launcherUpdateFinished
+  ) {
     if (status.origin === "auto" && status.mode === "apply")
       notify("游戏资源已自动更新完成.", "ok", 5000, {
         key: "auto-download-done",
@@ -1439,6 +1454,11 @@ function applyDownloadStatus(status: DownloadStatus) {
           applyBootstrap(data, false, false);
       })
       .catch(() => {});
+    if (launcherUpdateFinished)
+      void checkUpdate(
+        status.phase === "cancelled" || status.phase === "failed",
+        true,
+      );
   }
 }
 
@@ -1462,7 +1482,7 @@ function pollDownloadStatus() {
 }
 
 export async function startGameDownload(
-  mode: "check" | "apply",
+  mode: "check" | "apply" | "launcher",
   full = false,
   silent = false,
 ) {

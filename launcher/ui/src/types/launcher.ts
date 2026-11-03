@@ -288,7 +288,7 @@ export type DownloadPhase =
   | "cancelled"
   | "failed";
 export interface DownloadStatus {
-  mode: "check" | "apply";
+  mode: "check" | "apply" | "launcher";
   phase: DownloadPhase;
   /** manual 或 auto, 用于区分手动与自动任务. */
   origin: "manual" | "auto";
@@ -520,7 +520,10 @@ export interface CommandArgs {
   game_mode_tuning_apply: { config: GameModeTuning };
   game_mode_gpu_apply: { config: GpuConfig };
   game_download_status: undefined;
-  game_download_start: { mode: "check" | "apply"; full: boolean };
+  game_download_start: {
+    mode: "check" | "apply" | "launcher";
+    full: boolean;
+  };
   game_download_cancel: undefined;
   close_game: undefined;
   win_minimize: undefined;

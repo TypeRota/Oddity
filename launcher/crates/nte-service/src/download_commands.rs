@@ -103,8 +103,17 @@ pub(crate) fn busy(phase: &str) -> bool {
     matches!(phase, "checking" | "launcher" | "game")
 }
 
+pub(crate) fn writes_launcher_files(mode: &str) -> bool {
+    mode == "apply" || mode == "launcher"
+}
+
+/// 启动器更新是写操作, 单靠大小比对会漏掉同尺寸的内容变更.
+fn launcher_plan_full(mode: &str, requested: bool) -> bool {
+    requested || mode == "launcher"
+}
+
 pub(crate) fn blocks_changes(status: &DownloadStatus) -> bool {
-    busy(&status.phase) && status.mode == "apply"
+    busy(&status.phase) && writes_launcher_files(&status.mode)
 }
 
 fn now_ms() -> u64 {
@@ -255,7 +264,7 @@ fn run_task(
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     let install_root = selected_install_root(settings);
-    let _install_lock = if mode == "apply" {
+    let _install_lock = if writes_launcher_files(mode) {
         Some(
             nte_core::install_lock::InstallLock::acquire(&install_root)
                 .map_err(|error| error.to_string())?,
@@ -263,11 +272,14 @@ fn run_task(
     } else {
         None
     };
-    let launcher_plan =
-        install::plan_launcher_cancellable(settings.distribution, &install_root, full, &|| {
-            cancel.load(Ordering::Relaxed)
-        })
-        .map_err(|error| format!("检查启动器文件失败: {error}"))?;
+    let launcher_plan = install::plan_launcher_cancellable(
+        settings.distribution,
+        &install_root,
+        launcher_plan_full(mode, full),
+        &|| cancel.load(Ordering::Relaxed),
+    )
+    .map_err(|error| format!("检查启动器文件失败: {error}"))?;
+    // 启动器文件总是完整校验; 游戏资源沿用请求或上一轮保留的校验深度.
     run_plan(app, settings, mode, full, cancel, launcher_plan)
 }
 
@@ -382,7 +394,7 @@ fn run_plan(
         publish(app, |status| status.phase = "needs-install".into());
         return Ok(());
     }
-    if mode == "apply" && !launcher_plan.files.is_empty() {
+    if writes_launcher_files(mode) && !launcher_plan.files.is_empty() {
         publish(app, |status| status.phase = "launcher".into());
         install_launcher_files(
             app,
@@ -424,7 +436,7 @@ fn run_plan(
     if plan.items.is_empty() && game_exe_for(&launcher_plan.root).is_none() {
         return Err("资源清单未发现待下载文件，但本地缺少 HTGame.exe".into());
     }
-    if mode == "check" {
+    if mode == "check" || mode == "launcher" {
         publish(app, |status| {
             status.phase = if !plan.unverified.is_empty() {
                 "needs-verify"
@@ -561,7 +573,7 @@ fn prepare_task(
     origin: &str,
     cancel: &Arc<AtomicBool>,
 ) -> Result<(DownloadStatus, Settings, bool), String> {
-    if mode != "check" && mode != "apply" {
+    if !["check", "apply", "launcher"].contains(&mode) {
         return Err("无效的游戏资源操作".into());
     }
     let (status, settings, full) = {
@@ -593,7 +605,7 @@ fn prepare_task(
             if game.environment_busy {
                 return Err("运行环境任务正在进行, 暂时无法检查或更新资源".into());
             }
-            if mode == "apply"
+            if writes_launcher_files(mode)
                 && (game.starting || game.session.as_ref().is_some_and(session_alive))
             {
                 return Err("游戏正在运行，无法修改游戏文件".into());

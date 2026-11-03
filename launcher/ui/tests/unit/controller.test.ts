@@ -164,7 +164,7 @@ beforeEach(() => {
     .mockImplementation(
       async (
         command: string,
-        args?: { settings: Settings; mode: "check" | "apply" },
+        args?: { settings: Settings; mode: "check" | "apply" | "launcher" },
       ) => {
         switch (command) {
           case "attendance_status":
@@ -1503,6 +1503,70 @@ describe("更新检查", () => {
       );
       expect(text("home-status-text")).toBe("3 个文件待更新");
     }
+  });
+
+  it("启动器文件待更新时提供更新入口并在完成后刷新", async () => {
+    const c = await boot();
+    backend.result = check({
+      changed: 4,
+      changedPreview: [
+        "/NTEBrowser.exe",
+        "/NTEUpdate.exe",
+        "/NTEWebBooster.exe",
+        "/ResData/1289.dat",
+      ],
+    });
+    await c.checkUpdate(true);
+    await nextTick();
+    const entry = wrapper!
+      .findAll("#page-update button")
+      .find((item) => item.text() === "更新启动器文件");
+    expect(entry).toBeTruthy();
+    c.state.game = "running";
+    await nextTick();
+    expect(entry!.attributes("disabled")).toBeDefined();
+    c.state.game = "idle";
+    c.runtimeEnvironmentBusy.value = true;
+    await nextTick();
+    expect(entry!.attributes("disabled")).toBeDefined();
+    c.runtimeEnvironmentBusy.value = false;
+    await nextTick();
+    await entry!.trigger("click");
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("game_download_start", {
+      mode: "launcher",
+      full: false,
+    });
+
+    backend.result = check();
+    backend.downloadHandler({
+      ...backend.downloadStatus,
+      mode: "launcher",
+      phase: "ready",
+      pendingFiles: 0,
+    });
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("check_update", {
+      full: false,
+    });
+    await nextTick();
+    expect(text("update-state-title")).toBe("已是最新");
+    expect(
+      wrapper!
+        .findAll("#page-update button")
+        .some((item) => item.text() === "更新启动器文件"),
+    ).toBe(false);
+
+    // 取消或失败后必须重新完整校验, 否则同尺寸损坏会被快速检查误判为最新.
+    backend.downloadHandler({
+      ...backend.downloadStatus,
+      mode: "launcher",
+      phase: "cancelled",
+    });
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenLastCalledWith("check_update", {
+      full: true,
+    });
   });
 
   it("未安装启动器时显示尚未安装, 目录变化后旧结果失效", async () => {

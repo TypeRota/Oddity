@@ -22,6 +22,7 @@ import {
   diskBudget,
   queueSettingsSave,
   settingsPathsLocked,
+  runtimeEnvironmentBusy,
 } from "../core/controller";
 import type { DownloadPhase } from "../types/launcher";
 
@@ -151,6 +152,16 @@ const stateTone = computed(() => {
   return "";
 });
 
+const launcherUpdating = computed(
+  () => state.download?.mode === "launcher" && active.value,
+);
+const launcherDisabled = computed(
+  () =>
+    state.checking ||
+    active.value ||
+    state.game !== "idle" ||
+    runtimeEnvironmentBusy.value,
+);
 const primary = computed(() => {
   switch (displayPhase.value) {
     case "checking":
@@ -161,6 +172,12 @@ const primary = computed(() => {
         busy: true,
       };
     case "launcher":
+      return {
+        kind: "apply" as const,
+        label: "正在更新启动器文件",
+        icon: "i-download-simple",
+        busy: true,
+      };
     case "game":
       return {
         kind: "apply" as const,
@@ -220,6 +237,11 @@ function runPrimary() {
   if (primary.value.kind === "apply")
     void startGameDownload("apply", needsFullRepair.value);
   else void startGameDownload("check", false);
+}
+
+function updateLauncherFiles() {
+  if (launcherDisabled.value) return;
+  void startGameDownload("launcher", false);
 }
 
 const primaryDisabled = computed(
@@ -488,6 +510,16 @@ const isActive = computed(() => state.page === "update");
           </div>
         </div>
         <div class="update-actions">
+          <BaseButton
+            v-if="updateView.pending > 0"
+            id="update-launcher"
+            icon="i-download-simple"
+            :disabled="launcherDisabled"
+            :busy="launcherUpdating"
+            :data-pad-action="launcherUpdating ? undefined : '更新启动器文件'"
+            @click="updateLauncherFiles"
+            >更新启动器文件</BaseButton
+          >
           <BaseButton
             variant="ghost"
             id="update-quick"

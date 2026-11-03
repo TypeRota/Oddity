@@ -25,7 +25,7 @@ use native_session::NativeSession;
 use nte_core::bulletin::{self, BulletinFeed};
 use nte_core::config::{Ini, LauncherConfig};
 use nte_core::distribution::Distribution;
-use nte_core::launch::background::{validated_click_profile, ClickProfile};
+use nte_core::launch::background::{click_profile, ClickProfile};
 use nte_core::manifest::Manifest;
 use nte_core::settings::{Settings, UserPaths};
 use nte_core::{update, version};
@@ -1793,9 +1793,7 @@ async fn open_directory(path: String) -> Result<(), String> {
 
 #[cfg(test)]
 fn launch_impl(settings: &Settings) -> Result<LaunchInvocation, String> {
-    launch_impl_with_profile(settings, |path| {
-        validated_click_profile(path).map_err(|error| error.to_string())
-    })
+    launch_impl_with_profile(settings, |_| Ok(click_profile()))
 }
 
 #[cfg(test)]
@@ -1803,12 +1801,7 @@ fn launch_impl_with_cancel(
     settings: &Settings,
     cancel: &AtomicBool,
 ) -> Result<LaunchInvocation, String> {
-    launch_impl_inner(
-        settings,
-        |path| validated_click_profile(path).map_err(|error| error.to_string()),
-        None,
-        cancel,
-    )
+    launch_impl_inner(settings, |_| Ok(click_profile()), None, cancel)
 }
 
 fn launch_impl_with_snapshots(
@@ -1816,12 +1809,7 @@ fn launch_impl_with_snapshots(
     snapshots: &snapshot_commands::Snapshots,
     cancel: &AtomicBool,
 ) -> Result<LaunchInvocation, String> {
-    launch_impl_inner(
-        settings,
-        |path| validated_click_profile(path).map_err(|error| error.to_string()),
-        Some(snapshots),
-        cancel,
-    )
+    launch_impl_inner(settings, |_| Ok(click_profile()), Some(snapshots), cancel)
 }
 
 #[cfg(test)]

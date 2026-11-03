@@ -1,11 +1,6 @@
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
-
-use crate::{Error, Result};
-
-const CN_LAUNCHER_MD5: &str = "81c779899c4a53b47651c51afa5dea1c";
-const GLOBAL_LAUNCHER_MD5: &str = "c55d49312fbcc7d41ead802faa25281b";
 const READY_MARKER: &[u8] = b"[GameClientAgent::_setLocalResChecked] 0->1";
 const LOG_LIMIT: usize = 4 * 1024 * 1024;
 
@@ -23,22 +18,14 @@ impl ClickProfile {
     }
 }
 
-pub fn validated_click_profile(launcher: &Path) -> Result<ClickProfile> {
-    profile_for_md5(&crate::update::md5_file(launcher)?)
-}
-
-fn profile_for_md5(checksum: &str) -> Result<ClickProfile> {
-    if ![CN_LAUNCHER_MD5, GLOBAL_LAUNCHER_MD5].contains(&checksum) {
-        return Err(Error::Unsupported(
-            "当前官方启动器版本尚未验证后台启动, 请使用官方启动器窗口启动游戏.".into(),
-        ));
-    }
-    Ok(ClickProfile {
+/// 官方启动器 1280x720 窗口中的正常启动按钮位置.
+pub fn click_profile() -> ClickProfile {
+    ClickProfile {
         width: 1280,
         height: 720,
         x: 1120,
         y: 636,
-    })
+    }
 }
 
 #[derive(Debug, Default)]
@@ -201,22 +188,8 @@ mod tests {
     const READY: &str = "[12:00:00] [GameClientAgent::_setLocalResChecked] 0->1\n";
 
     #[test]
-    fn click_profile_requires_a_verified_binary() {
-        assert_eq!(
-            profile_for_md5(CN_LAUNCHER_MD5).unwrap().argument(),
-            "1280,720,1120,636"
-        );
-        assert_eq!(
-            profile_for_md5(GLOBAL_LAUNCHER_MD5).unwrap().argument(),
-            "1280,720,1120,636"
-        );
-        let dir = TempDir::new("background-profile");
-        let path = dir.join("NTEGame.exe");
-        std::fs::write(&path, b"unknown launcher build").unwrap();
-        assert!(matches!(
-            validated_click_profile(&path),
-            Err(Error::Unsupported(_))
-        ));
+    fn click_profile_stays_stable_for_background_handoff() {
+        assert_eq!(click_profile().argument(), "1280,720,1120,636");
     }
 
     #[test]

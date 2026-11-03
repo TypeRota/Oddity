@@ -188,6 +188,111 @@ fn installs_from_an_empty_directory_for_both_regions() {
     }
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn launcher_mode_repairs_same_size_launcher_content_changes() {
+    let fixture = Fixture::new(Distribution::Cn, true);
+    let relative = format!("{}/Config/Config.ini", Distribution::Cn.launcher_dir());
+    let original = fixture.dir.read(&relative);
+    let mut corrupted = original.clone();
+    corrupted[0] ^= 0xff;
+    fixture.dir.write(&relative, &corrupted);
+
+    let manifest_url = fixture.server.url("/launcher/AllFiles.xml");
+    fixture.server.route(
+        "/Version.ini",
+        format!("[VERSION]\nVersion=1.0\nFileListURL={manifest_url}\n"),
+    );
+    let files: String = fixture
+        .files
+        .iter()
+        .map(|file| {
+            format!(
+                r#"<File Path="{}" Size="{}" Checksum="{}" ZipChecksum="{}" ZipSize="{}"/>"#,
+                file.path,
+                file.size,
+                file.checksum,
+                file.zip_checksum.as_deref().unwrap_or_default(),
+                file.zip_size.unwrap_or_default()
+            )
+        })
+        .collect();
+    fixture.server.route(
+        "/launcher/AllFiles.xml",
+        format!(r#"<AllFiles><ProductVersion Version="1.0"/>{files}</AllFiles>"#),
+    );
+
+    let mut env = crate::tests::EnvGuard::new();
+    env.set(
+        "ODDITY_LAUNCHER_VERSION_URL",
+        fixture.server.url("/Version.ini"),
+    );
+    run_task(
+        &fixture.app,
+        &fixture.settings,
+        "launcher",
+        false,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(fixture.dir.read(&relative), original);
+}
+
+#[test]
+fn launcher_mode_keeps_the_previous_full_check_for_game_resources() {
+    let fixture = Fixture::new(Distribution::Cn, true);
+    {
+        let mut inner = fixture.app.downloads.inner.lock().unwrap();
+        inner.status = DownloadStatus {
+            phase: "needs-update".into(),
+            mode: "check".into(),
+            distribution: "cn".into(),
+            install_root: fixture.settings.install_root.clone().unwrap(),
+            full: true,
+            ..DownloadStatus::default()
+        };
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (_, _, full) = prepare_task(
+        &fixture.app.state,
+        &fixture.app.downloads,
+        "launcher",
+        false,
+        "manual",
+        &cancel,
+    )
+    .unwrap();
+    assert!(full);
+}
+
+#[test]
+fn launcher_mode_fully_verifies_launcher_files() {
+    // 同尺寸内容变更只能被完整校验发现, 启动器更新必须走完整校验.
+    assert!(launcher_plan_full("launcher", false));
+    assert!(launcher_plan_full("apply", true));
+    assert!(!launcher_plan_full("check", false));
+}
+
+#[test]
+fn launcher_mode_installs_launcher_files_without_downloading_game_resources() {
+    let fixture = Fixture::new(Distribution::Cn, false);
+    fixture.run("launcher", false, true).unwrap();
+    let status = fixture.status();
+    assert_eq!(status.mode, "launcher");
+    assert_eq!(status.phase, "needs-update");
+    assert!(fixture
+        .dir
+        .path()
+        .join("NTELauncher/Config/Config.ini")
+        .is_file());
+    assert!(!fixture.dir.path().join(DATA).is_file());
+    assert!(!fixture
+        .server
+        .targets()
+        .iter()
+        .any(|path| path.contains("/Res/")));
+}
+
 #[test]
 fn a_full_check_is_preserved_until_corruption_is_repaired() {
     let fixture = Fixture::new(Distribution::Cn, true);
@@ -396,9 +501,12 @@ fn read_only_checks_do_not_block_launch_or_settings() {
     .unwrap();
     assert!(busy(&status.phase));
     assert!(!blocks_changes(&status));
-    let mut applying = status;
+    let mut applying = status.clone();
     applying.mode = "apply".into();
     assert!(blocks_changes(&applying));
+    let mut updating_launcher = status;
+    updating_launcher.mode = "launcher".into();
+    assert!(blocks_changes(&updating_launcher));
     game_download_cancel(&fixture.app.downloads);
     assert!(cancel.load(Ordering::Relaxed));
 }

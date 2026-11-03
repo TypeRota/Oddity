@@ -548,11 +548,16 @@ fn launch_requires_the_expected_tools_and_files() {
 }
 
 #[test]
-fn launch_rejects_an_unverified_background_before_starting_umu() {
+fn launch_attempts_background_for_an_unlisted_launcher_build() {
     let fixture = LaunchFixture::new("launch-unknown-background");
-    let error = expect_launch_error(launch_impl(&fixture.settings("background")));
-    assert!(error.contains("尚未验证后台启动"), "{error}");
-    assert!(!fixture.dump.exists());
+    let invocation = launch_impl(&fixture.settings("background")).expect("launch");
+    assert_eq!(invocation.result.mode, "background");
+    let dump = fixture.dump();
+    assert_eq!(
+        env_value(&dump, "NTE_SESSION_CLICK"),
+        Some("1280,720,1120,636")
+    );
+    fixture.stop(invocation);
 }
 
 #[test]
