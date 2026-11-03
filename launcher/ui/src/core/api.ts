@@ -289,8 +289,8 @@ function previewSnapshotComparison(
       key: "launcher.version",
       section: "启动器",
       label: "Oddity 版本",
-      baseline: "0.1.0",
-      current: "0.1.0",
+      baseline: "0.1.1",
+      current: "0.1.1",
       status: "same",
     },
     {

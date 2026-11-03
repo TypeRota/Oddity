@@ -25,11 +25,21 @@ const PER_HOP_SECONDS: f64 = 0.05;
 const SWITCH_MARGIN: f64 = 0.10;
 const SWITCH_MIN_SECONDS: f64 = 1.0;
 
-/// 规划级处理通道数默认值。
+/// 补丁处理默认通道数，规划与执行共用。
 ///
-/// 补丁应用与最终校验目前都在全局安装锁内串行执行，整份计划只能按 1 条
-/// 处理通道估计；执行层把补丁处理并行化后可以按实际通道数调整。
-pub const PLAN_PROCESSING_LANES_DEFAULT: usize = 1;
+/// 执行层按这个上限并发应用补丁链；规划级完工时间估计必须使用同一口径，
+/// 否则多核设备上会把并行的补丁处理当成串行，高估补丁耗时、偏向整包下载。
+pub fn default_processing_lanes() -> usize {
+    let parallelism = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1);
+    processing_lanes_for(parallelism)
+}
+
+/// 留一半核心给下载和校验，最多 4 路。
+fn processing_lanes_for(parallelism: usize) -> usize {
+    (parallelism / 2).clamp(1, 4)
+}
 
 const EWMA_ALPHA: f64 = 0.3;
 const DOWNLOAD_LIMITS: (f64, f64) = (250_000.0, 200_000_000.0);
@@ -614,6 +624,38 @@ mod tests {
         let parallel = estimate_plan(&patches, &throughput, 2, 4);
         assert!((serial.makespan_seconds - 11.579_452).abs() < 1e-3);
         assert!((parallel.makespan_seconds - 7.789_726).abs() < 1e-3);
+    }
+
+    #[test]
+    fn default_processing_lanes_follow_half_the_cores_up_to_four() {
+        assert_eq!(processing_lanes_for(1), 1);
+        assert_eq!(processing_lanes_for(3), 1);
+        assert_eq!(processing_lanes_for(4), 2);
+        assert_eq!(processing_lanes_for(8), 4);
+        assert_eq!(processing_lanes_for(64), 4);
+        assert!((1..=4).contains(&default_processing_lanes()));
+    }
+
+    #[test]
+    fn parallel_processing_lanes_avoid_unnecessary_full_downloads() {
+        let throughput = Throughput {
+            download_bytes_per_second: 1_000_000_000.0,
+            apply_bytes_per_second: 200_000_000.0,
+            verify_bytes_per_second: 365_000_000.0,
+        };
+        let items = || {
+            vec![
+                res_item(200_000_000, vec![patch(50_000_000, 200_000_000)]),
+                res_item(200_000_000, vec![patch(50_000_000, 200_000_000)]),
+            ]
+        };
+        // 单通道时两项串行应用, 把一项换成整包能缩短完工时间.
+        let mut serial = items();
+        assert_eq!(balance_plan_choices(&mut serial, &throughput, 1, 4), 1);
+        // 两条通道足以并行处理两项, 换成整包只会多下载.
+        let mut parallel = items();
+        assert_eq!(balance_plan_choices(&mut parallel, &throughput, 2, 4), 0);
+        assert!(parallel.iter().all(|item| item.has_patch()));
     }
 
     #[test]
