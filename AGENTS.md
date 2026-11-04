@@ -33,9 +33,17 @@ Prefer reusable logic in `nte-core` over duplication.
 
 When encountering unfamiliar functionality, do not immediately implement it from scratch. First search GitHub for similar open-source projects that are actively maintained and have clear licensing, and compare their implementation approaches, dependencies, and known issues. Prefer proven designs; do not directly copy incompatible code or code of unknown origin.
 
+## Implementation Rules
+
+- All animation uses Motion For Vue. Anything involving animation choreography uses Anime.js. Never hand-roll animation in CSS.
+- No filler in user-facing copy. Players do not want to read it. Every sentence must tell them something they need.
+- Before writing a component, check the existing files for an identical or similar one. Do not build from scratch when one already exists.
+- If the implementation uses or borrows from an open source project, record it in [THIRD_PARTY.md](THIRD_PARTY.md).
+
 ## Branches and PRs
 
 - Before creating a branch or submitting a PR, confirm that your branch is based on the latest `origin/main`.
+- Before opening a PR, read [.github/workflows/check-pr-title.yml](.github/workflows/check-pr-title.yml) and match its allowed types, scopes and subject pattern.
 - Do not use PRs as a dumping ground for irrelevant remarks that are not meant for maintainers.
 
 ## Decision Management

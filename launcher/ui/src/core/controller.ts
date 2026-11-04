@@ -521,6 +521,8 @@ export const media = reactive({
   imageKey: "",
   loopCut: 1,
   initialized: !isDesktop(),
+  // 渲染预算当前档位, 3 表示退到静帧: 暂停解码, 画布保留最后一帧。
+  renderTier: 0,
 });
 let videoElement: HTMLVideoElement | null = null;
 export function setHeroVideo(video: HTMLVideoElement | null) {
@@ -981,6 +983,8 @@ export function applyTheme(theme: string) {
 const HERO_MEDIA = new Set(["video", "photo"]);
 const REDUCE_MOTION_KEY = "nte.reduceMotion";
 const INTRO_DURATION = 380;
+// 渲染预算的最后一档: 停掉绘制并暂停解码, 画布保留最后一帧。
+const HERO_STILL_TIER = 3;
 const BUNDLED_VIDEO_CANDIDATES = [
   { url: "assets/hero-loop.mp4", type: 'video/mp4; codecs="avc1.42E01E"' },
   { url: "assets/hero-loop.webm", type: 'video/webm; codecs="vp9"' },
@@ -1083,6 +1087,7 @@ function releaseHeroMedia() {
   media.videoKey = "";
   media.imageKey = "";
   media.loopCut = 1;
+  media.renderTier = 0;
   launcherBackground = { ...EMPTY_BACKGROUND };
   launcherBackgroundKey = "";
   heroVideoRequest = null;
@@ -1223,6 +1228,8 @@ function requestHeroPlayback(video: HTMLVideoElement) {
 }
 
 function startHeroVideo(video: HTMLVideoElement) {
+  // 静帧档由渲染预算决定何时恢复播放。
+  if (media.renderTier === HERO_STILL_TIER) return;
   media.looping = true;
   requestHeroPlayback(video);
 }
@@ -1235,6 +1242,26 @@ function stopHeroVideo(video: HTMLVideoElement | null, reset = true) {
   try {
     video.currentTime = 0;
   } catch {}
+}
+
+/// 渲染预算落到静帧档时暂停解码, 画布上最后一帧继续显示;
+/// 离开静帧档时从同一帧续播, 不重置播放位置。
+export function setHeroRenderTier(tier: number) {
+  const previous = media.renderTier;
+  media.renderTier = tier;
+  if (previous === tier) return;
+  const still = tier === HERO_STILL_TIER;
+  // 只在跨越静帧边界时动解码器, 节奏档之间切换不打断播放。
+  if (still === (previous === HERO_STILL_TIER)) return;
+  const video = videoElement;
+  if (!video) return;
+  if (still) {
+    stopHeroVideo(video, false);
+    return;
+  }
+  // 首帧还没解码出来也要请求播放, 否则静帧档恢复后没人再拉起播放。
+  if (!canPlayHeroVideo()) return;
+  startHeroVideo(video);
 }
 
 export function applyHeroMedia(input: string) {

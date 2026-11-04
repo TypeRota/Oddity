@@ -2900,6 +2900,268 @@ describe("主视觉和资源", () => {
     expect(button("hero-canvas").classList.contains("is-visible")).toBe(false);
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("预算退到静帧档时暂停解码并保留当前帧, 恢复后续播", async () => {
+    backend.data.settings = {
+      ...settings,
+      reduceMotion: false,
+      heroMedia: "video",
+    };
+    const c = await boot();
+    const video = document.getElementById("hero-video") as HTMLVideoElement;
+    const canvas = document.getElementById("hero-canvas") as HTMLCanvasElement;
+    Object.defineProperties(video, {
+      readyState: { value: 2, writable: true },
+      paused: { value: false, writable: true },
+      seeking: { value: false, writable: true },
+      duration: { value: 13 },
+      videoWidth: { value: 1920 },
+      videoHeight: { value: 1080 },
+      currentTime: { value: 5, writable: true },
+    });
+    Object.defineProperties(canvas, {
+      clientWidth: { value: 800 },
+      clientHeight: { value: 600 },
+    });
+    resizeElement(canvas, 800, 600);
+    await vi.advanceTimersByTimeAsync(40);
+    expect(canvas.classList.contains("is-visible")).toBe(true);
+
+    vi.mocked(HTMLMediaElement.prototype.pause).mockClear();
+    vi.mocked(HTMLMediaElement.prototype.play).mockClear();
+    c.setHeroRenderTier(3);
+    expect(c.media.renderTier).toBe(3);
+    expect(c.media.looping).toBe(false);
+    expect(video.pause).toHaveBeenCalled();
+    // 静帧保留在当前帧, 不回跳到首帧。
+    expect(video.currentTime).toBe(5);
+
+    // 抽帧动画在静帧档停掉, 画布继续显示最后一帧。
+    Object.defineProperty(video, "paused", { value: true, writable: true });
+    vi.mocked(HTMLMediaElement.prototype.play).mockClear();
+    c.setHeroRenderTier(2);
+    expect(c.media.renderTier).toBe(2);
+    expect(video.play).toHaveBeenCalled();
+    expect(c.media.looping).toBe(true);
+    expect(video.currentTime).toBe(5);
+  });
+
+  it("预算档位在非静帧档之间变化不触发播放请求", async () => {
+    backend.data.settings = {
+      ...settings,
+      reduceMotion: false,
+      heroMedia: "video",
+    };
+    const c = await boot();
+    const video = document.getElementById("hero-video") as HTMLVideoElement;
+    Object.defineProperties(video, {
+      readyState: { value: 2, writable: true },
+      paused: { value: false, writable: true },
+      currentTime: { value: 3, writable: true },
+    });
+    vi.mocked(HTMLMediaElement.prototype.play).mockClear();
+    vi.mocked(HTMLMediaElement.prototype.pause).mockClear();
+    c.setHeroRenderTier(1);
+    c.setHeroRenderTier(2);
+    expect(c.media.renderTier).toBe(2);
+    expect(video.play).not.toHaveBeenCalled();
+    expect(video.pause).not.toHaveBeenCalled();
+    expect(video.currentTime).toBe(3);
+  });
+
+  it("帧间隔持续变坏时降到静帧档, 暂停解码并保留当前帧", async () => {
+    backend.data.settings = {
+      ...settings,
+      reduceMotion: false,
+      heroMedia: "video",
+    };
+    // 用可控帧间隔驱动预算: 预热期 200ms 一帧, 之后翻倍到 400ms。
+    // 200ms 间隔下 1 秒窗口只装得下 3 个样本, 判定次数在测试里是确定的。
+    const frame = { delay: 200 };
+    let pending = 0;
+    HTMLVideoElement.prototype.requestVideoFrameCallback = function (cb) {
+      pending = window.setTimeout(
+        () =>
+          cb(performance.now(), { mediaTime: 0 } as VideoFrameCallbackMetadata),
+        frame.delay,
+      );
+      return pending;
+    };
+    HTMLVideoElement.prototype.cancelVideoFrameCallback = (id) =>
+      window.clearTimeout(id);
+
+    const c = await boot();
+    const video = document.getElementById("hero-video") as HTMLVideoElement;
+    const canvas = document.getElementById("hero-canvas") as HTMLCanvasElement;
+    Object.defineProperties(video, {
+      readyState: { value: 2, writable: true },
+      paused: { value: false, writable: true },
+      seeking: { value: false, writable: true },
+      duration: { value: 13 },
+      videoWidth: { value: 1920 },
+      videoHeight: { value: 1080 },
+      currentTime: { value: 7, writable: true },
+    });
+    Object.defineProperties(canvas, {
+      clientWidth: { value: 800 },
+      clientHeight: { value: 600 },
+    });
+    resizeElement(canvas, 800, 600);
+    // 预热期健康: 跑满 2 秒采基线, 之后画布照常显示。
+    await vi.advanceTimersByTimeAsync(2600);
+    expect(canvas.classList.contains("is-visible")).toBe(true);
+    expect(c.media.renderTier).toBe(0);
+
+    // 帧间隔翻倍越过判坏阈值, 逐级降到静帧档。
+    frame.delay = 400;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(c.media.renderTier).toBe(3);
+    expect(c.media.looping).toBe(false);
+    // 静帧停在当前帧, 不回跳到首帧; 画布保留最后一帧继续显示。
+    expect(video.currentTime).toBe(7);
+    expect(canvas.classList.contains("is-visible")).toBe(true);
+
+    vi.mocked(HTMLMediaElement.prototype.play).mockClear();
+    c.showPage("settings");
+    await nextTick();
+    // 离页复位档位, 复位本身不抢先拉起播放。
+    expect(c.media.renderTier).toBe(0);
+    expect(c.media.looping).toBe(false);
+    expect(video.play).not.toHaveBeenCalled();
+    window.clearTimeout(pending);
+  });
+
+  it("静帧档恢复时首帧还没解码也请求播放", async () => {
+    backend.data.settings = {
+      ...settings,
+      reduceMotion: false,
+      heroMedia: "video",
+    };
+    const c = await boot();
+    const video = document.getElementById("hero-video") as HTMLVideoElement;
+    Object.defineProperties(video, {
+      readyState: { value: 0, writable: true },
+      paused: { value: false, writable: true },
+      currentTime: { value: 4, writable: true },
+    });
+    vi.mocked(HTMLMediaElement.prototype.play).mockClear();
+    vi.mocked(HTMLMediaElement.prototype.pause).mockClear();
+    c.setHeroRenderTier(3);
+    expect(c.media.renderTier).toBe(3);
+    expect(c.media.looping).toBe(false);
+    expect(video.pause).toHaveBeenCalled();
+
+    // 首帧未解码就没人再拉起播放, 画布会永久停在上一帧。
+    vi.mocked(HTMLMediaElement.prototype.play).mockClear();
+    c.setHeroRenderTier(2);
+    expect(c.media.renderTier).toBe(2);
+    expect(video.play).toHaveBeenCalled();
+    expect(c.media.looping).toBe(true);
+    // 恢复续播不改写播放位置, 首帧解码出来后从同一帧继续。
+    expect(video.currentTime).toBe(4);
+  });
+
+  it("恢复播放位置后按新区间重算名义帧间隔, 仍能识别过载", async () => {
+    backend.data.settings = {
+      ...settings,
+      reduceMotion: false,
+      heroMedia: "video",
+    };
+    // 源名义帧率 10fps: 解码计数贴着媒体时间走, 与绘制到达的节奏无关。
+    // 过载只让绘制间隔翻倍到 200ms, 名义间隔仍应是 100ms。
+    const sourceInterval = 100;
+    const frame = { delay: sourceInterval };
+    const decoded = { frames: 0 };
+    let pending = 0;
+    HTMLVideoElement.prototype.requestVideoFrameCallback = function (cb) {
+      const source = this as HTMLVideoElement;
+      pending = window.setTimeout(() => {
+        source.currentTime += frame.delay / 1000;
+        decoded.frames += Math.round(frame.delay / sourceInterval);
+        cb(performance.now(), {
+          mediaTime: source.currentTime,
+        } as VideoFrameCallbackMetadata);
+      }, frame.delay);
+      return pending;
+    };
+    HTMLVideoElement.prototype.cancelVideoFrameCallback = (id) =>
+      window.clearTimeout(id);
+
+    const c = await boot();
+    const video = document.getElementById("hero-video") as HTMLVideoElement;
+    const canvas = document.getElementById("hero-canvas") as HTMLCanvasElement;
+    Object.defineProperties(video, {
+      readyState: { value: 2, writable: true },
+      paused: { value: false, writable: true },
+      seeking: { value: false, writable: true },
+      duration: { value: 600 },
+      videoWidth: { value: 1920 },
+      videoHeight: { value: 1080 },
+      currentTime: { value: 0, writable: true },
+    });
+    // jsdom 没有解码计数, 按测试控制的累计值提供。
+    Object.defineProperty(video, "getVideoPlaybackQuality", {
+      configurable: true,
+      value: () => ({
+        totalVideoFrames: decoded.frames,
+        droppedVideoFrames: 0,
+      }),
+    });
+    Object.defineProperties(canvas, {
+      clientWidth: { value: 800 },
+      clientHeight: { value: 600 },
+    });
+    resizeElement(canvas, 800, 600);
+
+    // 健康设备跑完预热: 名义间隔 100ms 成为基线。
+    await vi.advanceTimersByTimeAsync(2600);
+    expect(canvas.classList.contains("is-visible")).toBe(true);
+    expect(c.media.renderTier).toBe(0);
+
+    // 游戏会话暂停播放并保留位置, 再隐藏窗口才会走重新加载与续播的路径。
+    backend.handler(session({ running: true, pid: 123 }));
+    await nextTick();
+    await flushPromises();
+    expect(c.media.looping).toBe(false);
+    video.currentTime = 11;
+
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    const visibility = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await nextTick();
+    await flushPromises();
+    expect(video.hasAttribute("src")).toBe(false);
+
+    visibility.mockReturnValue("visible");
+    hidden.mockReturnValue(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await nextTick();
+    await flushPromises();
+
+    // 重新加载后解码计数仍是累计值, 播放位置却被搬回 11 秒:
+    // 两者不再属于同一区间, 用累计比值会把基线放大到不再降档。
+    video.dispatchEvent(new Event("loadedmetadata"));
+    await nextTick();
+    expect(video.currentTime).toBe(11);
+
+    backend.handler(session());
+    await nextTick();
+    await flushPromises();
+    expect(c.media.looping).toBe(true);
+
+    // 恢复后整机过载: 绘制间隔翻倍, 源的名义间隔没变。
+    frame.delay = 200;
+    // 静帧档的试探恢复会短暂升档, 因此按是否到过静帧判定。
+    let reachedStill = false;
+    for (let round = 0; round < 12; round += 1) {
+      await vi.advanceTimersByTimeAsync(5000);
+      if (c.media.renderTier === 3) reachedStill = true;
+    }
+    expect(reachedStill).toBe(true);
+    window.clearTimeout(pending);
+  });
 });
 
 it("官方启动器视频通过本地流交给双缓冲循环", async () => {
