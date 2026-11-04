@@ -61,6 +61,8 @@ const backend = vi.hoisted(() => ({
   status: {} as GameStatus,
   playtimeHistory: { sessions: [], active: null } as PlaytimeHistory,
   background: { video: null, image: null } as LauncherBackgroundMedia,
+  focused: true,
+  visible: true,
   isMaximized: vi.fn(),
   onResized: vi.fn(),
   resize: async () => {},
@@ -119,10 +121,15 @@ vi.mock("../../src/composables/useNotificationArrival", async () => {
 });
 vi.mock("../../src/core/desktop", () => ({
   desktopWindow: {
-    getState: async () => ({
-      maximized: await backend.isMaximized(),
-      visible: true,
-    }),
+    getState: async () => {
+      const focused = backend.focused;
+      const visible = backend.visible;
+      return {
+        maximized: await backend.isMaximized(),
+        visible,
+        focused,
+      };
+    },
     onResized: backend.onResized,
   },
 }));
@@ -321,6 +328,8 @@ beforeEach(() => {
     },
   );
   backend.isMaximized.mockReset().mockResolvedValue(false);
+  backend.focused = true;
+  backend.visible = true;
   backend.onResized
     .mockReset()
     .mockImplementation(async (callback: () => Promise<void>) => {
@@ -599,6 +608,7 @@ describe("启动与设置", () => {
       theme: "dark",
       reduceMotion: false,
       heroMedia: "photo",
+      pauseHeroOnBlur: true,
     });
     await c.saveSettings();
     expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
@@ -612,6 +622,7 @@ describe("启动与设置", () => {
         theme: "dark",
         reduceMotion: false,
         heroMedia: "photo",
+        pauseHeroOnBlur: true,
         minimizeToTrayOnClose: true,
         showLauncherAfterGameExit: true,
       },
@@ -2718,6 +2729,148 @@ describe("主视觉和资源", () => {
     await flushPromises();
     expect(c.media.looping).toBe(true);
     expect(video.currentTime).toBe(0);
+  });
+
+  it("游戏会话期间停止解码, 游戏退出后恢复播放", async () => {
+    backend.data.settings = {
+      ...settings,
+      reduceMotion: false,
+      heroMedia: "video",
+    };
+    const c = await boot();
+    const video = document.getElementById("hero-video") as HTMLVideoElement;
+    expect(c.media.looping).toBe(true);
+    video.currentTime = 6;
+
+    backend.handler(session({ running: true, pid: 123 }));
+    await nextTick();
+    await flushPromises();
+    expect(c.state.game).toBe("running");
+    expect(c.media.looping).toBe(false);
+    expect(video.currentTime).toBe(6);
+    expect(video.getAttribute("src")).toContain("assets/hero-loop.mp4");
+
+    backend.handler(session());
+    await nextTick();
+    await flushPromises();
+    expect(c.state.game).toBe("idle");
+    expect(c.media.looping).toBe(true);
+    expect(video.currentTime).toBe(6);
+    expect(video.getAttribute("src")).toContain("assets/hero-loop.mp4");
+  });
+
+  it("游戏期间隐藏窗口仍保留播放位置", async () => {
+    backend.data.settings = {
+      ...settings,
+      reduceMotion: false,
+      heroMedia: "video",
+      pauseHeroOnBlur: false,
+    };
+    const c = await boot();
+    const video = document.getElementById("hero-video") as HTMLVideoElement;
+    video.currentTime = 6;
+
+    backend.handler(session({ running: true, pid: 123 }));
+    await nextTick();
+    await flushPromises();
+    backend.visible = false;
+    await backend.resize();
+    await nextTick();
+    await flushPromises();
+    expect(video.hasAttribute("src")).toBe(false);
+
+    backend.handler(session());
+    await nextTick();
+    await flushPromises();
+    expect(c.state.game).toBe("idle");
+
+    backend.visible = true;
+    await backend.resize();
+    await nextTick();
+    await flushPromises();
+    video.dispatchEvent(new Event("loadedmetadata"));
+    expect(c.media.looping).toBe(true);
+    expect(video.currentTime).toBe(6);
+  });
+
+  it("失焦暂停设置控制窗口失焦时的视频解码", async () => {
+    backend.data.settings = {
+      ...settings,
+      reduceMotion: false,
+      heroMedia: "video",
+      pauseHeroOnBlur: false,
+    };
+    const c = await boot();
+    const video = document.getElementById("hero-video") as HTMLVideoElement;
+    video.currentTime = 6;
+    backend.focused = false;
+    await backend.resize();
+    await nextTick();
+    await flushPromises();
+    expect(c.media.looping).toBe(true);
+    expect(video.getAttribute("src")).toContain("assets/hero-loop.mp4");
+
+    c.form.pauseHeroOnBlur = true;
+    c.applyHeroMedia("video");
+    await nextTick();
+    await flushPromises();
+    expect(c.media.looping).toBe(false);
+    expect(video.currentTime).toBe(6);
+    expect(video.getAttribute("src")).toContain("assets/hero-loop.mp4");
+
+    backend.focused = true;
+    await backend.resize();
+    await nextTick();
+    await flushPromises();
+    expect(c.media.looping).toBe(true);
+    expect(video.currentTime).toBe(6);
+    expect(video.getAttribute("src")).toContain("assets/hero-loop.mp4");
+  });
+
+  it("迟到的焦点快照不覆盖新焦点", async () => {
+    const c = await boot();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    backend.isMaximized.mockImplementationOnce(async () => {
+      await gate;
+      return false;
+    });
+    backend.focused = false;
+    const stale = backend.resize();
+    backend.focused = true;
+    window.dispatchEvent(new Event("focus"));
+    release();
+    await stale;
+    await flushPromises();
+    expect(c.ui.windowFocused).toBe(true);
+  });
+
+  it("浏览器预览跟随窗口焦点暂停", async () => {
+    backend.native = false;
+    backend.data.settings = {
+      ...settings,
+      reduceMotion: false,
+      heroMedia: "video",
+      pauseHeroOnBlur: true,
+    };
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const c = await boot();
+    expect(c.ui.windowFocused).toBe(true);
+    expect(c.media.looping).toBe(true);
+
+    window.dispatchEvent(new Event("blur"));
+    await nextTick();
+    await flushPromises();
+    expect(c.ui.windowFocused).toBe(false);
+    expect(c.media.looping).toBe(false);
+
+    window.dispatchEvent(new Event("focus"));
+    await nextTick();
+    await flushPromises();
+    expect(c.ui.windowFocused).toBe(true);
+    expect(c.media.looping).toBe(true);
   });
 
   it("视频播放或原生窗口接口失败时仍显示主页", async () => {

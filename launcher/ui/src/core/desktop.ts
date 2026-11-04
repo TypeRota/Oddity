@@ -11,6 +11,7 @@ export type SaveDialogOptions = DialogOptions;
 export interface WindowState {
   maximized: boolean;
   visible: boolean;
+  focused: boolean;
 }
 export interface DesktopBridge {
   invoke<K extends keyof Commands>(

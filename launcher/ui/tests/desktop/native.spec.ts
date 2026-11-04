@@ -253,11 +253,19 @@ test("真实 Rust 命令、窗口、导航、手柄与退出", async ({}, info) 
     await page.evaluate(() => window.oddity!.invoke("win_toggle_maximize"));
     await expect
       .poll(() => page.evaluate(() => window.oddity!.windowState()))
-      .toEqual({ maximized: true, visible: true });
+      .toEqual({
+        maximized: true,
+        visible: true,
+        focused: expect.any(Boolean),
+      });
     await page.evaluate(() => window.oddity!.invoke("win_toggle_maximize"));
     await expect
       .poll(() => page.evaluate(() => window.oddity!.windowState()))
-      .toEqual({ maximized: false, visible: true });
+      .toEqual({
+        maximized: false,
+        visible: true,
+        focused: expect.any(Boolean),
+      });
     await page.evaluate(() => window.oddity!.invoke("win_close"));
     expect(
       await app.evaluate(({ BrowserWindow }) =>

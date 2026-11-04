@@ -58,6 +58,13 @@ export const settingsEntries = [
     keywords: "动画 运动 无障碍",
   },
   {
+    id: "focus-pause",
+    category: "appearance",
+    label: "失焦时暂停主视觉视频",
+    description: "窗口失去焦点时停止视频解码, 降低同屏运行游戏时的资源占用.",
+    keywords: "焦点 失焦 窗口 视频 解码 性能 资源 主视觉",
+  },
+  {
     id: "tray",
     category: "appearance",
     label: "关闭窗口时最小化到托盘",

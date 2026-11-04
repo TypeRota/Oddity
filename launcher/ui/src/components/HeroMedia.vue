@@ -4,6 +4,7 @@ import { useReducedMotion } from "motion-v";
 import { useDocumentVisibility } from "@vueuse/core";
 import {
   applyHeroMedia,
+  heroPlaybackSuspended,
   media,
   setHeroVideo,
   state,
@@ -164,13 +165,16 @@ function syncPainting() {
   painting = playing.value && context ? currentVideo.value : null;
   if (painting) frame = painting.requestVideoFrameCallback(paint);
 }
-// 离页后释放解码器仍保留播放位置, 重新解码时从同一帧续播.
+// 离页、隐藏或游戏/失焦暂停后保留播放位置, 重新解码时从同一帧续播;
+// 只有主页因隐藏、静音等普通原因卸载时才从头开始。
 watch(
   videoEnabled,
   (enabled) => {
     if (!enabled)
       resumeTime =
-        state.page === "home" ? 0 : (currentVideo.value?.currentTime ?? 0);
+        state.page === "home" && !heroPlaybackSuspended()
+          ? 0
+          : (currentVideo.value?.currentTime ?? 0);
   },
   { flush: "sync" },
 );

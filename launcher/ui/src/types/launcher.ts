@@ -157,6 +157,7 @@ export interface Settings {
   stackBulletins: boolean;
   theme: string;
   heroMedia: string;
+  pauseHeroOnBlur: boolean;
   adaptiveTheme?: boolean;
   minimizeToTrayOnClose: boolean;
   showLauncherAfterGameExit: boolean;

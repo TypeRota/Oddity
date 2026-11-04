@@ -17,6 +17,7 @@ fn settings_default_matches_the_ui_contract() {
     assert!(!settings.stack_bulletins);
     assert_eq!(settings.theme, "light");
     assert_eq!(settings.hero_media, "video");
+    assert!(settings.pause_hero_on_blur);
     assert!(settings.minimize_to_tray_on_close);
     assert!(settings.show_launcher_after_game_exit);
     assert_eq!(settings.snapshot_success_minutes, 1);
@@ -38,6 +39,7 @@ fn download_only_blocks_region_and_install_paths() {
     next.reduce_motion = true;
     next.theme = "dark".into();
     next.hero_media = "photo".into();
+    next.pause_hero_on_blur = false;
     next.minimize_to_tray_on_close = false;
     next.show_launcher_after_game_exit = false;
     assert!(!download_paths_changed(&current, &next));
@@ -76,6 +78,7 @@ fn settings_round_trip_through_the_config_dir() {
     settings.stack_bulletins = true;
     settings.theme = "dark".to_string();
     settings.hero_media = "photo".to_string();
+    settings.pause_hero_on_blur = false;
     settings.minimize_to_tray_on_close = false;
     settings.show_launcher_after_game_exit = false;
     settings.snapshot_success_minutes = 10;
@@ -86,6 +89,7 @@ fn settings_round_trip_through_the_config_dir() {
     assert!(text.contains("\"games\""), "{text}");
     assert!(text.contains("\"installRoot\""), "{text}");
     assert!(text.contains("\"reduceMotion\""), "{text}");
+    assert!(text.contains("\"pauseHeroOnBlur\": false"), "{text}");
     assert!(text.contains("\"minimizeToTrayOnClose\""), "{text}");
     assert!(text.contains("\"showLauncherAfterGameExit\""), "{text}");
     assert!(text.contains("\"snapshotSuccessMinutes\": 10"), "{text}");
@@ -104,6 +108,7 @@ fn settings_round_trip_through_the_config_dir() {
     assert!(loaded.stack_bulletins);
     assert_eq!(loaded.theme, "dark");
     assert_eq!(loaded.hero_media, "photo");
+    assert!(!loaded.pause_hero_on_blur);
     assert!(!loaded.minimize_to_tray_on_close);
     assert_eq!(loaded.snapshot_success_minutes, 10);
     assert!(!loaded.show_launcher_after_game_exit);
@@ -144,6 +149,7 @@ fn settings_fall_back_when_the_file_is_broken_or_partial() {
     assert!(!partial.stack_bulletins);
     assert_eq!(partial.current().launch_mode, "background");
     assert_eq!(partial.hero_media, "video");
+    assert!(partial.pause_hero_on_blur);
     assert!(partial.minimize_to_tray_on_close);
     assert!(partial.show_launcher_after_game_exit);
     assert!(!partial.current().updates.auto_download);

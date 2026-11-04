@@ -90,6 +90,7 @@ function windowEvent() {
   main.webContents.send("oddity:event", "window-state", {
     maximized: main.isMaximized(),
     visible: main.isVisible() && !minimized && !main.isMinimized(),
+    focused: main.isFocused(),
   });
   void backend
     .call("host_state", {
@@ -418,6 +419,7 @@ async function start() {
     return {
       maximized: main?.isMaximized() ?? false,
       visible: Boolean(main?.isVisible() && !minimized && !main.isMinimized()),
+      focused: main?.isFocused() ?? false,
     };
   });
   const icon = join(

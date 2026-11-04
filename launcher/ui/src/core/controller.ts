@@ -44,6 +44,7 @@ import { settingsNavigation, type SettingsCategory } from "./settingsCatalog";
 import { APP_VERSION } from "./version";
 
 let generation = 0;
+let windowFocusRevision = 0;
 let events = new window.AbortController();
 const BULLETIN_CACHE_KEY = "nte.bulletins.v3";
 let bulletinRequest = 0;
@@ -444,6 +445,7 @@ export const form = reactive({
   },
   theme: "light",
   heroMedia: "video",
+  pauseHeroOnBlur: true,
   adaptiveTheme: true,
   reduceMotion: false,
   stackBulletins: false,
@@ -496,6 +498,7 @@ export const ui = reactive({
   redetecting: false,
   maximized: false,
   windowVisible: true,
+  windowFocused: true,
   introStarted: false,
   introDone: false,
   scrollEdge: { top: false, bottom: false },
@@ -1192,15 +1195,26 @@ async function loadHeroVideo(video: HTMLVideoElement) {
   return promise;
 }
 
+// 游戏会话和选择开启的失焦场景与二级界面一致, 暂停并保留当前帧。
+export function heroPlaybackSuspended() {
+  return state.game !== "idle" || (form.pauseHeroOnBlur && !ui.windowFocused);
+}
+
 function canPlayHeroVideo() {
   if (
     state.heroMedia !== "video" ||
     state.page !== "home" ||
+    heroPlaybackSuspended() ||
     document.hidden ||
     !ui.windowVisible
   )
     return false;
   return !motionReduced();
+}
+
+// 只有离开主页或进入游戏/失焦暂停时保留播放位置; 隐藏和减少动效仍从头开始。
+function resetHeroVideoOnStop() {
+  return state.page === "home" && !heroPlaybackSuspended();
 }
 
 function requestHeroPlayback(video: HTMLVideoElement) {
@@ -1240,7 +1254,7 @@ export function applyHeroMedia(input: string) {
   if (!video) return value;
 
   if (!canPlayHeroVideo()) {
-    stopHeroVideo(video, state.page === "home");
+    stopHeroVideo(video, resetHeroVideoOnStop());
     return value;
   }
 
@@ -1250,11 +1264,11 @@ export function applyHeroMedia(input: string) {
     // 等待期间切换了地区时, 旧回调不能停掉新地区已开始的播放.
     if (epoch !== generation || key !== heroBackgroundKey()) return;
     if (!loaded) {
-      stopHeroVideo(video, state.page === "home");
+      stopHeroVideo(video, resetHeroVideoOnStop());
       return;
     }
     if (!canPlayHeroVideo()) {
-      stopHeroVideo(video, state.page === "home");
+      stopHeroVideo(video, resetHeroVideoOnStop());
       return;
     }
     if (!media.looping) {
@@ -1423,6 +1437,7 @@ function applyBootstrap(
   form.updates.windowStart = saved.updates?.window?.start || "02:00";
   form.updates.windowEnd = saved.updates?.window?.end || "07:00";
   form.stackBulletins = settings.stackBulletins;
+  form.pauseHeroOnBlur = settings.pauseHeroOnBlur ?? true;
   form.adaptiveTheme = settings.adaptiveTheme ?? true;
   applyReduceMotion(Boolean(settings.reduceMotion));
   applyHeroMedia(settings.heroMedia || "video");
@@ -2047,6 +2062,9 @@ export async function fetchBulletins(silent = true, force = false) {
 function setLaunchState(next: GamePhase) {
   const previous = state.game;
   state.game = next;
+  // 进入或离开游戏会话时和切页一样暂停/恢复主视觉。
+  if ((previous === "idle") !== (next === "idle"))
+    applyHeroMedia(state.heroMedia);
   if (next !== "running" || previous === "running") return;
   // 启动流程直接进入 running, 在这里统一刷新活动会话。
   playtimeRequestedAt = 0;
@@ -2357,6 +2375,7 @@ function currentSettings(): Settings {
     stackBulletins: form.stackBulletins,
     theme: THEMES.has(form.theme) ? form.theme : "light",
     heroMedia: HERO_MEDIA.has(form.heroMedia) ? form.heroMedia : "video",
+    pauseHeroOnBlur: form.pauseHeroOnBlur,
     adaptiveTheme: form.adaptiveTheme,
     minimizeToTrayOnClose: form.minimizeToTrayOnClose,
     showLauncherAfterGameExit: form.showLauncherAfterGameExit,
@@ -2768,22 +2787,43 @@ function bindInteractions() {
   onWindow("hashchange", () => showPage(hashPage(), false));
 
   onWindow("focus", () => {
+    applyWindowFocusEvent(true);
     if (state.game === "closing") return;
     syncGameStatus();
     if (state.page === "records") void loadPlaytime();
   });
+  onWindow("blur", () => applyWindowFocusEvent(false));
+}
+
+function applyWindowFocus(focused: boolean) {
+  if (ui.windowFocused === focused) return;
+  ui.windowFocused = focused;
+  if (form.pauseHeroOnBlur) applyHeroMedia(state.heroMedia);
+}
+
+function applyWindowFocusEvent(focused: boolean) {
+  // 焦点事件本身也要推进版本, 用于丢弃稍后返回的旧快照。
+  windowFocusRevision++;
+  applyWindowFocus(focused);
 }
 
 async function watchWindowShape() {
   const epoch = generation;
-  if (!isDesktop()) return;
+  if (!isDesktop()) {
+    // 浏览器预览没有主进程窗口状态, 先用页面焦点初始化, 之后由 focus/blur 事件同步。
+    applyWindowFocusEvent(document.hasFocus());
+    return;
+  }
   try {
     const win = desktopWindow;
     const sync = async () => {
+      const revision = ++windowFocusRevision;
       const snapshot = await win.getState();
       if (epoch !== generation) return;
       ui.maximized = snapshot.maximized;
       ui.windowVisible = snapshot.visible;
+      if (revision !== windowFocusRevision) return;
+      applyWindowFocus(snapshot.focused);
     };
     const stop = await win.onResized(sync);
     if (epoch !== generation) stop();

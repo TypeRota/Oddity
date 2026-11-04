@@ -19,6 +19,7 @@ test("原生隐藏、最小化和减少动效释放解码器并恢复播放", as
     JSON.stringify({
       theme: "dark",
       reduceMotion: false,
+      pauseHeroOnBlur: false,
       installRoot: join(temporary, "game"),
     }),
   );

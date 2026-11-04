@@ -59,6 +59,7 @@ export const settings: Settings = {
   stackBulletins: false,
   theme: "light",
   heroMedia: "photo",
+  pauseHeroOnBlur: true,
   adaptiveTheme: true,
   minimizeToTrayOnClose: true,
   showLauncherAfterGameExit: true,

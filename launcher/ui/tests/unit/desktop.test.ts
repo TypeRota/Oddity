@@ -24,7 +24,9 @@ it("原生命令和结构化错误透传, 事件订阅可解除", async () => {
       callbacks.set(event, callback);
       return unlisten;
     }),
-    windowState: vi.fn().mockResolvedValue({ maximized: true, visible: true }),
+    windowState: vi
+      .fn()
+      .mockResolvedValue({ maximized: true, visible: true, focused: true }),
     homeDir: vi.fn().mockResolvedValue("/home/player"),
     open: vi.fn().mockResolvedValue("/game"),
     save: vi.fn().mockResolvedValue(null),
@@ -46,6 +48,7 @@ it("原生命令和结构化错误透传, 事件订阅可解除", async () => {
   expect(await desktopWindow.getState()).toEqual({
     maximized: true,
     visible: true,
+    focused: true,
   });
   const resize = vi.fn();
   const stopResize = await desktopWindow.onResized(resize);

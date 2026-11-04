@@ -71,6 +71,7 @@ pub struct Settings {
     pub stack_bulletins: bool,
     pub theme: String,
     pub hero_media: String,
+    pub pause_hero_on_blur: bool,
     pub adaptive_theme: bool,
     pub minimize_to_tray_on_close: bool,
     pub show_launcher_after_game_exit: bool,
@@ -89,6 +90,7 @@ impl Default for Settings {
             stack_bulletins: false,
             theme: "light".to_string(),
             hero_media: "video".to_string(),
+            pause_hero_on_blur: true,
             adaptive_theme: true,
             minimize_to_tray_on_close: true,
             show_launcher_after_game_exit: true,
@@ -307,6 +309,7 @@ mod tests {
         let settings: Settings =
             serde_json::from_str(r#"{"theme":"dark","heroMedia":"photo"}"#).unwrap();
         assert!(settings.adaptive_theme);
+        assert!(settings.pause_hero_on_blur);
         assert_eq!(settings.theme, "dark");
     }
 
@@ -389,6 +392,7 @@ mod tests {
             "activeEnvironment": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "stableEnvironment": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "theme": "dark",
+            "pauseHeroOnBlur": false,
             "futureOption": 7
         }"#;
         let path = write_settings(&dir, std::str::from_utf8(original).unwrap());
@@ -428,6 +432,8 @@ mod tests {
         assert_eq!(value["games"]["nte"]["launchMode"], "direct");
         assert_eq!(value["games"]["nte"]["gameMode"]["inhibit"], true);
         assert_eq!(value["futureOption"], 7);
+        assert_eq!(value["pauseHeroOnBlur"], false);
+        assert!(!settings.pause_hero_on_blur);
         assert_eq!(value["games"]["nte"]["distribution"], "global");
         assert_eq!(value["games"]["nte"]["installRoot"], "/games/cn");
         assert_eq!(value["activeGame"], "nte");

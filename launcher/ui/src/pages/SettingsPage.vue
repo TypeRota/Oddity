@@ -608,6 +608,25 @@ const integritySummary = computed(() => {
                       "
                     />
                   </SettingRow>
+                  <SettingRow
+                    data-setting="focus-pause"
+                    tabindex="-1"
+                    :label="entry('focus-pause').label"
+                    :description="entry('focus-pause').description"
+                    for="set-pause-hero-on-blur"
+                    v-slot="{ describedby }"
+                  >
+                    <BaseSwitch
+                      id="set-pause-hero-on-blur"
+                      v-model="form.pauseHeroOnBlur"
+                      :label="entry('focus-pause').label"
+                      :describedby="describedby"
+                      @change="
+                        applyHeroMedia(form.heroMedia);
+                        queueSettingsSave(0);
+                      "
+                    />
+                  </SettingRow>
                 </SettingGroup>
                 <SettingGroup title="窗口行为">
                   <SettingRow
