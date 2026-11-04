@@ -203,6 +203,65 @@ pub async fn dispatch(app: ServiceHandle, command: String, args: Value) -> Resul
             )
             .map_err(|e| json!(e.to_string()))
         }
+        "migration_plan" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                distribution: nte_core::distribution::Distribution,
+                target: String,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            serde_json::to_value(
+                crate::service::spawn_blocking(move || {
+                    crate::migration_commands::plan(&app, args.distribution, &args.target)
+                })
+                .await
+                .map_err(|e| json!(e.to_string()))?
+                .map_err(|e| json!(e))?,
+            )
+            .map_err(|e| json!(e.to_string()))
+        }
+        "migration_start" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                distribution: nte_core::distribution::Distribution,
+                target: String,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            serde_json::to_value(
+                crate::migration_commands::start(app, args.distribution, args.target)
+                    .await
+                    .map_err(|e| json!(e))?,
+            )
+            .map_err(|e| json!(e.to_string()))
+        }
+        "migration_status" => serde_json::to_value(crate::migration_commands::current(&app))
+            .map_err(|e| json!(e.to_string())),
+        "migration_cancel" => serde_json::to_value(crate::migration_commands::cancel(&app))
+            .map_err(|e| json!(e.to_string())),
+        "migration_cleanup" => serde_json::to_value(
+            crate::migration_commands::cleanup(app.clone()).map_err(|e| json!(e))?,
+        )
+        .map_err(|e| json!(e.to_string())),
+        "migration_abandon" => serde_json::to_value(
+            crate::service::spawn_blocking(move || crate::migration_commands::abandon(&app))
+                .await
+                .map_err(|e| json!(e.to_string()))?
+                .map_err(|e| json!(e))?,
+        )
+        .map_err(|e| json!(e.to_string())),
+        "migration_dismiss" => {
+            serde_json::to_value(crate::migration_commands::dismiss(&app).map_err(|e| json!(e))?)
+                .map_err(|e| json!(e.to_string()))
+        }
+        "migration_retry" => serde_json::to_value(
+            crate::service::spawn_blocking(move || crate::migration_commands::retry(&app))
+                .await
+                .map_err(|e| json!(e.to_string()))?
+                .map_err(|e| json!(e))?,
+        )
+        .map_err(|e| json!(e.to_string())),
         "environment_action" => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]

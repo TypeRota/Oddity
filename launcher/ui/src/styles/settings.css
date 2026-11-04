@@ -292,3 +292,16 @@
     display: none;
   }
 }
+
+.settings-migration {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+
+.migration-summary__path {
+  max-width: 62%;
+  overflow-wrap: anywhere;
+  font-weight: 500;
+  text-align: right;
+}

@@ -353,7 +353,7 @@ test("搜索时设置分类条不进入拖动", async ({ page }) => {
   await page.mouse.move(runtime.x + 240, runtime.y);
   await page.mouse.up();
   await expect(search).toHaveValue("路径");
-  await expect(page.locator("#page-settings .settings-result")).toHaveCount(2);
+  await expect(page.locator("#page-settings .settings-result")).toHaveCount(3);
 });
 
 test("触摸拖动设置分类条也能切类", async ({ browser }) => {

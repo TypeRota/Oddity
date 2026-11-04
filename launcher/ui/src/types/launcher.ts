@@ -319,6 +319,54 @@ export interface ResourceCatalog {
   preloadCachedBytes: number;
   resources: OptionalResource[];
 }
+export type MigrationPhase =
+  | "idle"
+  | "planning"
+  | "moving"
+  | "copying"
+  | "verifying"
+  | "committing"
+  | "rebinding"
+  | "cleanup"
+  | "repair"
+  | "done"
+  | "failed"
+  | "cancelled";
+export interface MigrationEnvironment {
+  id: string;
+  name: string;
+  prefix: string;
+}
+export interface MigrationPlan {
+  distribution: "cn" | "global";
+  mode: "move" | "copy" | "repair";
+  source: string;
+  target: string;
+  sameFilesystem: boolean;
+  files: number;
+  bytes: number;
+  requiredBytes: number;
+  availableBytes: number;
+  environments: MigrationEnvironment[];
+  preloadRoot: string | null;
+  warnings: string[];
+}
+export interface MigrationStatus {
+  phase: MigrationPhase;
+  distribution: "cn" | "global" | null;
+  mode: "move" | "copy" | "repair" | "";
+  source: string;
+  target: string;
+  files: number;
+  totalFiles: number;
+  bytes: number;
+  totalBytes: number;
+  current: string;
+  error: string;
+  cleanupPending: boolean;
+  cleanupSource: string;
+  canCancel: boolean;
+}
 export interface DownloadStatus {
   mode: "check" | "apply" | "launcher" | "preload";
   phase: DownloadPhase;
@@ -487,6 +535,14 @@ export interface Commands {
   game_resource_catalog: ResourceCatalog;
   game_resource_select: ResourceCatalog;
   game_preload_delete: ResourceCatalog;
+  migration_plan: MigrationPlan;
+  migration_start: MigrationStatus;
+  migration_status: MigrationStatus;
+  migration_cancel: MigrationStatus;
+  migration_cleanup: MigrationStatus;
+  migration_abandon: MigrationStatus;
+  migration_dismiss: MigrationStatus;
+  migration_retry: MigrationStatus;
   game_download_status: DownloadStatus;
   game_download_start: DownloadStatus;
   game_download_cancel: DownloadStatus;
@@ -560,6 +616,14 @@ export interface CommandArgs {
   game_resource_catalog: undefined;
   game_resource_select: { tags: string[] };
   game_preload_delete: undefined;
+  migration_plan: { distribution: "cn" | "global"; target: string };
+  migration_start: { distribution: "cn" | "global"; target: string };
+  migration_status: undefined;
+  migration_cancel: undefined;
+  migration_cleanup: undefined;
+  migration_abandon: undefined;
+  migration_dismiss: undefined;
+  migration_retry: undefined;
   game_download_status: undefined;
   game_download_start: {
     mode: "check" | "apply" | "launcher" | "preload";

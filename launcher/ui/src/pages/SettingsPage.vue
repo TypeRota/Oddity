@@ -12,6 +12,7 @@ import {
   redetect,
   settingsPathsLocked,
   runtimeEnvironmentBusy,
+  migrationBusy,
   runtimePathsLocked,
 } from "../core/controller";
 import {
@@ -34,6 +35,7 @@ import SettingGroup from "../components/settings/SettingGroup.vue";
 import SettingRow from "../components/settings/SettingRow.vue";
 import LogExport from "../components/LogExport.vue";
 import EnvironmentSnapshots from "../components/EnvironmentSnapshots.vue";
+import InstallMigration from "../components/InstallMigration.vue";
 import GamepadSettings from "../components/GamepadSettings.vue";
 import BaseDisclosure from "../components/BaseDisclosure.vue";
 import type { IntegrityState, MeteredPolicy } from "../types/launcher";
@@ -673,9 +675,11 @@ const integritySummary = computed(() => {
                     role="status"
                   >
                     {{
-                      state.game !== "idle" || runtimeEnvironmentBusy
-                        ? "游戏或运行环境任务进行中, 暂时无法修改运行路径."
-                        : "游戏资源任务进行中, 暂时无法修改游戏地区和安装目录."
+                      migrationBusy
+                        ? "安装目录迁移进行中, 暂时无法修改运行路径."
+                        : state.game !== "idle" || runtimeEnvironmentBusy
+                          ? "游戏或运行环境任务进行中, 暂时无法修改运行路径."
+                          : "游戏资源任务进行中, 暂时无法修改游戏地区和安装目录."
                     }}
                   </p>
                   <SettingRow
@@ -721,6 +725,23 @@ const integritySummary = computed(() => {
                       @change="queueSettingsSave(0)"
                     />
                   </div>
+                  <SettingRow
+                    data-setting="migration"
+                    tabindex="-1"
+                    label="迁移安装目录"
+                    description="移动到其他位置, 保留运行环境和预下载资源."
+                  >
+                    <div class="settings-migration">
+                      <InstallMigration
+                        distribution="cn"
+                        :disabled="settingsPathsLocked"
+                      />
+                      <InstallMigration
+                        distribution="global"
+                        :disabled="settingsPathsLocked"
+                      />
+                    </div>
+                  </SettingRow>
                 </SettingGroup>
                 <SettingGroup title="启动"
                   ><SettingRow

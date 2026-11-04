@@ -21,6 +21,8 @@ import type {
   GameSettings,
   MeteredPolicy,
   IntegrityStatus,
+  MigrationPlan,
+  MigrationStatus,
 } from "../types/launcher";
 import {
   invoke,
@@ -30,6 +32,7 @@ import {
   listenPlaytimeStarted,
   listenSettingsChanged,
   listenIntegrityState,
+  listenMigrationState,
 } from "./api";
 import { DEMO_NOTICE_KEY, isDemo } from "./demo";
 import { activeGame, gameSettings } from "./game";
@@ -59,6 +62,25 @@ const downloadStarting = ref<"check" | "apply" | "launcher" | "preload" | null>(
 );
 export const runtimeEnvironmentBusy = ref(false);
 export const runtimeEnvironmentError = ref("");
+export const migration = reactive({
+  plan: null as MigrationPlan | null,
+  status: null as MigrationStatus | null,
+  planning: false,
+  error: "",
+});
+const MIGRATION_BUSY_PHASES = new Set([
+  "planning",
+  "moving",
+  "copying",
+  "verifying",
+  "committing",
+  "rebinding",
+  "cleanup",
+  "repair",
+]);
+export const migrationBusy = computed(() =>
+  MIGRATION_BUSY_PHASES.has(migration.status?.phase ?? ""),
+);
 // 文本输入防抖, 失焦和开关类控件立即保存。
 const AUTO_SAVE_DELAY = 500;
 const SAVED_STATE_DURATION = 2000;
@@ -607,13 +629,20 @@ const installPathsBusy = computed(
       ["checking", "launcher", "game"].includes(state.download?.phase || "")),
 );
 export const settingsPathsLocked = computed(
-  () => runtimeEnvironmentBusy.value || installPathsBusy.value,
+  () =>
+    migrationBusy.value ||
+    runtimeEnvironmentBusy.value ||
+    installPathsBusy.value,
 );
 export const runtimePathsLocked = computed(
-  () => runtimeEnvironmentBusy.value || state.game !== "idle",
+  () =>
+    migrationBusy.value ||
+    runtimeEnvironmentBusy.value ||
+    state.game !== "idle",
 );
 export const runtimeEnvironmentLocked = computed(
   () =>
+    migrationBusy.value ||
     runtimeEnvironmentBusy.value ||
     state.game !== "idle" ||
     state.checking ||
@@ -2613,6 +2642,99 @@ export function runtimeEnvironmentAction(
   return changeEnvironment(() => invoke("environment_action", { action, id }));
 }
 
+function applyMigrationStatus(next: MigrationStatus) {
+  migration.status = next;
+  if (next.phase === "done") {
+    void invoke("bootstrap")
+      .then((data) => {
+        applyBootstrap(data, false);
+      })
+      .catch(() => {});
+  }
+}
+
+export async function refreshMigrationStatus() {
+  try {
+    applyMigrationStatus(await invoke("migration_status"));
+  } catch {}
+}
+
+export async function planInstallMigration(
+  distribution: "cn" | "global",
+  target: string,
+) {
+  migration.planning = true;
+  migration.error = "";
+  migration.plan = null;
+  try {
+    migration.plan = await invoke("migration_plan", { distribution, target });
+  } catch (error) {
+    migration.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    migration.planning = false;
+  }
+}
+
+export async function startInstallMigration(
+  distribution: "cn" | "global",
+  target: string,
+) {
+  migration.error = "";
+  try {
+    applyMigrationStatus(
+      await invoke("migration_start", { distribution, target }),
+    );
+  } catch (error) {
+    migration.error = error instanceof Error ? error.message : String(error);
+  }
+}
+
+export async function cancelInstallMigration() {
+  try {
+    applyMigrationStatus(await invoke("migration_cancel"));
+  } catch (error) {
+    migration.error = error instanceof Error ? error.message : String(error);
+  }
+}
+
+export async function retryInstallMigration() {
+  try {
+    applyMigrationStatus(await invoke("migration_retry"));
+  } catch (error) {
+    migration.error = error instanceof Error ? error.message : String(error);
+  }
+}
+
+export async function cleanupInstallMigration() {
+  try {
+    applyMigrationStatus(await invoke("migration_cleanup"));
+  } catch (error) {
+    migration.error = error instanceof Error ? error.message : String(error);
+  }
+}
+
+export async function abandonInstallMigration(): Promise<boolean> {
+  try {
+    const status = await invoke("migration_abandon");
+    applyMigrationStatus(status);
+    if (status.phase === "idle") {
+      applyBootstrap(await invoke("bootstrap"), false);
+    }
+    return true;
+  } catch (error) {
+    migration.error = error instanceof Error ? error.message : String(error);
+    return false;
+  }
+}
+
+export async function dismissInstallMigration() {
+  try {
+    applyMigrationStatus(await invoke("migration_dismiss"));
+  } catch (error) {
+    migration.error = error instanceof Error ? error.message : String(error);
+  }
+}
+
 export async function redetect() {
   const epoch = generation;
   if (ui.redetecting) return;
@@ -2895,6 +3017,7 @@ export async function init() {
     }),
   );
   disposers.push(listenDownloadState(applyDownloadStatus));
+  disposers.push(listenMigrationState(applyMigrationStatus));
   disposers.push(
     listenIntegrityState((status) => applyIntegrityStatus(status)),
   );
@@ -2931,6 +3054,7 @@ export async function init() {
   } catch {}
 
   void loadDownloadStatus();
+  void refreshMigrationStatus();
   void fetchBulletins();
   whenIntroDone(() => {
     void checkPreloadAvailability();

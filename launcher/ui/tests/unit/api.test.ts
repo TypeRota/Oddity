@@ -714,3 +714,25 @@ it("模拟环境快照的对比, 参考保存和清理", async () => {
   expect(cleared.latest).toBeNull();
   expect(cleared.attempts).toBe(0);
 });
+
+it("模拟安装目录迁移命令", async () => {
+  const { invoke } = await import("../../src/core/api");
+  const plan = await invoke("migration_plan", {
+    distribution: "cn",
+    target: "/mnt/games",
+  });
+  expect(plan.target).toBe("/mnt/games");
+  expect(plan.environments).toHaveLength(0);
+  const started = await invoke("migration_start", {
+    distribution: "cn",
+    target: plan.target,
+  });
+  expect(started.phase).toBe("done");
+  expect((await invoke("migration_status")).target).toBe("/mnt/games");
+  expect((await invoke("migration_cancel")).phase).toBe("cancelled");
+  await invoke("migration_cleanup");
+  expect((await invoke("migration_retry")).phase).toBe("cancelled");
+  await invoke("migration_dismiss");
+  expect((await invoke("migration_status")).phase).toBe("idle");
+  expect((await invoke("migration_abandon")).phase).toBe("idle");
+});

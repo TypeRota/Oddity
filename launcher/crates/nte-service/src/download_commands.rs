@@ -1094,6 +1094,15 @@ pub(crate) fn start_task(
 ) -> Result<DownloadStatus, String> {
     let state = &app.state;
     let manager = &app.downloads;
+    if state
+        .game
+        .lock()
+        .map_err(|error| error.to_string())?
+        .migration_busy
+        || crate::migration_commands::repair_pending()
+    {
+        return Err("安装目录迁移正在进行".into());
+    }
     let cancel = Arc::new(AtomicBool::new(false));
     let (status, settings, full) = prepare_task(state, manager, mode, full, origin, &cancel)?;
     let app = app.clone();

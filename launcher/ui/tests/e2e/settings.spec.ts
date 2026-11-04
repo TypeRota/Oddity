@@ -47,14 +47,14 @@ test("搜索名称和关键词, 键盘定位并聚焦设置项, Escape 先清空
   await page.goto("/#settings");
   const search = page.getByRole("searchbox", { name: "搜索设置" });
   await search.fill("路径");
-  await expect(page.locator("#page-settings .settings-result")).toHaveCount(2);
+  await expect(page.locator("#page-settings .settings-result")).toHaveCount(3);
   await search.press("ArrowDown");
   await expect(
     page.locator("#page-settings .settings-result").first(),
   ).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(
-    page.locator("#page-settings .settings-result").last(),
+    page.locator("#page-settings .settings-result").nth(1),
   ).toBeFocused();
   await page.keyboard.press("ArrowUp");
   await expect(

@@ -100,6 +100,13 @@ export const settingsEntries = [
     keywords: "路径 文件夹 磁盘 位置 NTE",
   },
   {
+    id: "migration",
+    category: "game",
+    label: "迁移安装目录",
+    description: "把当前安装移动到其他位置, 保留运行环境和预下载资源.",
+    keywords: "迁移 移动 安装目录 路径 磁盘 空间",
+  },
+  {
     id: "launch",
     category: "game",
     label: "启动方式",

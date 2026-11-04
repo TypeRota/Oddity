@@ -96,6 +96,7 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
         "environment_snapshot_save_reference",
         "host_state",
         "external_launch",
+        "migration_abandon",
     ] {
         let reply = call(command, json!(false));
         assert!(reply["error"].is_string(), "{command}: {reply}");
@@ -118,6 +119,7 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
         "environment_snapshot_clear_history",
         "environment_snapshot_delete_reference",
         "attendance_status",
+        "migration_retry",
     ] {
         let reply = call(command, json!({}));
         assert!(reply.get("result").is_some(), "{command}: {reply}");

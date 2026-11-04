@@ -18,6 +18,8 @@ pub struct Service {
     pub playtime: crate::playtime_commands::Playtime,
     pub snapshots: crate::snapshot_commands::Snapshots,
     pub exports: crate::log_commands::LogExports,
+    pub migration: Mutex<crate::migration_commands::MigrationManager>,
+    pub migration_op: Mutex<()>,
     pub focused: AtomicBool,
     pub visible: AtomicBool,
     pub stopping: AtomicBool,
@@ -45,6 +47,8 @@ impl Service {
             playtime: crate::playtime_commands::Playtime::load(data),
             snapshots: crate::snapshot_commands::Snapshots::load(data),
             exports: Default::default(),
+            migration: Mutex::new(crate::migration_commands::MigrationManager::default()),
+            migration_op: Mutex::new(()),
             focused: AtomicBool::new(false),
             visible: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
@@ -136,6 +140,7 @@ pub fn run() {
         eprintln!("{error:#}");
         std::process::exit(1)
     });
+    crate::migration_commands::recover(&paths.data_dir(), &paths.settings());
     let mut settings = crate::load_settings();
     for environment in &settings.runtime_environments {
         if let Err(error) = nte_core::environment::recover_pending(&crate::data_dir(), environment)

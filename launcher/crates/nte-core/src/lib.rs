@@ -22,6 +22,7 @@ pub mod integrity;
 pub mod launch;
 pub mod logs;
 pub mod manifest;
+pub mod migration;
 pub mod notifications;
 mod paths;
 pub mod playtime;

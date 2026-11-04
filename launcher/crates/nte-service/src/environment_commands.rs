@@ -96,7 +96,9 @@ impl<'a> Task<'a> {
             return Err("游戏资源任务正在进行, 暂时无法操作运行环境".into());
         }
         let mut game = state.game.lock().map_err(|error| error.to_string())?;
-        if game.environment_busy
+        if game.migration_busy
+            || crate::migration_commands::repair_pending()
+            || game.environment_busy
             || game.starting
             || game
                 .session

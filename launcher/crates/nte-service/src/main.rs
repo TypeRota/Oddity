@@ -44,6 +44,7 @@ mod gamepad_commands;
 mod integrity_commands;
 mod launch_progress;
 mod log_commands;
+mod migration_commands;
 mod native_session;
 mod playtime_commands;
 mod snapshot_commands;
@@ -59,6 +60,7 @@ struct AppState {
 #[derive(Default)]
 struct GameTracker {
     environment_busy: bool,
+    migration_busy: bool,
     session: Option<GameSession>,
     starting: bool,
     next_id: u64,
@@ -1446,6 +1448,15 @@ fn launcher_background(state: &AppState) -> LauncherBackgroundMedia {
     }
 }
 async fn check_update(state: &AppState, full: bool) -> Result<CheckResult, String> {
+    if state
+        .game
+        .lock()
+        .map_err(|error| error.to_string())?
+        .migration_busy
+        || crate::migration_commands::repair_pending()
+    {
+        return Err("安装目录迁移正在进行".into());
+    }
     let settings = state
         .settings
         .lock()
@@ -1535,7 +1546,9 @@ fn save_settings(app: &service::Service, settings: Settings) -> Result<Bootstrap
     }
     let mut current = state.settings.lock().map_err(|error| error.to_string())?;
     let game = state.game.lock().map_err(|error| error.to_string())?;
-    let busy = game.environment_busy
+    let busy = game.migration_busy
+        || crate::migration_commands::repair_pending()
+        || game.environment_busy
         || game.starting
         || game
             .session
@@ -2239,6 +2252,9 @@ fn prepare_launch(
 ) -> Result<(), String> {
     if download_commands::blocks_changes(status) {
         return Err("游戏资源任务正在进行，暂时无法启动游戏".into());
+    }
+    if tracker.migration_busy || crate::migration_commands::repair_pending() {
+        return Err("安装目录迁移尚未完成, 请先完成绑定".into());
     }
     if tracker.environment_busy {
         return Err("运行环境任务正在进行, 请完成后再启动游戏".into());

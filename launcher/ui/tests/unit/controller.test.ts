@@ -36,6 +36,7 @@ import type {
   PlaytimeHistory,
   Settings,
   IntegrityStatus,
+  MigrationStatus,
 } from "../../src/types/launcher";
 
 const backend = vi.hoisted(() => ({
@@ -44,11 +45,13 @@ const backend = vi.hoisted(() => ({
   downloadUnlisten: vi.fn(),
   settingsUnlisten: vi.fn(),
   integrityUnlisten: vi.fn(),
+  migrationUnlisten: vi.fn(),
   stopResize: vi.fn(),
   invoke: vi.fn(),
   handler: (_status: GameStatus) => {},
   settingsHandler: (_data: Bootstrap) => {},
   integrityHandler: (_status: IntegrityStatus) => {},
+  migrationHandler: (_status: MigrationStatus) => {},
   playtimeStarted: () => {},
   playtimeUnlisten: vi.fn(),
   downloadHandler: (_status: DownloadStatus) => {},
@@ -89,6 +92,10 @@ vi.mock("../../src/core/api", () => ({
   listenIntegrityState: (handler: (status: IntegrityStatus) => void) => {
     backend.integrityHandler = handler;
     return backend.integrityUnlisten;
+  },
+  listenMigrationState: (handler: (status: MigrationStatus) => void) => {
+    backend.migrationHandler = handler;
+    return backend.migrationUnlisten;
   },
 }));
 vi.mock("../../src/core/gamepad", async (original) => ({
@@ -190,9 +197,11 @@ beforeEach(() => {
   backend.downloadUnlisten.mockClear();
   backend.settingsUnlisten.mockClear();
   backend.integrityUnlisten.mockClear();
+  backend.migrationUnlisten.mockClear();
   backend.stopResize.mockClear();
   backend.settingsHandler = () => {};
   backend.integrityHandler = () => {};
+  backend.migrationHandler = () => {};
   backend.data = bootstrap();
   backend.result = check();
   backend.status = session();
@@ -3428,6 +3437,19 @@ it("在视频结尾切换到预载的备播元素", async () => {
     600,
   );
   expect(c.media.looping).toBe(true);
+});
+
+it("放弃修复后同步安装目录表单", async () => {
+  const controller = await boot();
+  backend.data.settings.games.nte!.installRoot = "/moved-game";
+  backend.invoke.mockImplementation(async (command: string) => {
+    if (command === "migration_abandon")
+      return { phase: "idle", canCancel: false } as never;
+    if (command === "bootstrap") return structuredClone(backend.data);
+    return null as never;
+  });
+  expect(await controller.abandonInstallMigration()).toBe(true);
+  expect(controller.form.installRoot).toBe("/moved-game");
 });
 
 it("组件事件和双向绑定将用户操作传给控制器", async () => {

@@ -13,6 +13,7 @@ import type {
   LaunchProgress,
   LaunchStage,
   DownloadStatus,
+  MigrationStatus,
   ResourceCatalog,
   OptionalResource,
   Commands,
@@ -714,6 +715,24 @@ export function listenDownloadState(handler: (status: DownloadStatus) => void) {
   };
 }
 
+export function listenMigrationState(
+  handler: (status: MigrationStatus) => void,
+) {
+  if (!isDesktop()) return () => {};
+  let disposed = false;
+  let unlisten: (() => void) | null = null;
+  listen<MigrationStatus>("migration-state", (event) => handler(event.payload))
+    .then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    })
+    .catch(() => {});
+  return () => {
+    disposed = true;
+    if (unlisten) unlisten();
+  };
+}
+
 const mockDownload: DownloadStatus = {
   mode: "check",
   phase: "idle",
@@ -810,6 +829,24 @@ export async function invoke<C extends keyof Commands>(
   if (isDesktop()) return nativeInvoke<C>(command, params[0]);
   return previewInvoke(command, params[0]) as Promise<Commands[C]>;
 }
+
+const idleMigration: MigrationStatus = {
+  phase: "idle",
+  distribution: null,
+  mode: "",
+  source: "",
+  target: "",
+  files: 0,
+  totalFiles: 0,
+  bytes: 0,
+  totalBytes: 0,
+  current: "",
+  error: "",
+  cleanupPending: false,
+  cleanupSource: "",
+  canCancel: false,
+};
+let previewMigration: MigrationStatus = clone(idleMigration);
 
 async function previewInvoke(
   command: keyof Commands,
@@ -1137,6 +1174,71 @@ async function previewInvoke(
       await new Promise((resolve) => setTimeout(resolve, 160));
       return previewCatalog();
     }
+    case "migration_plan": {
+      const { distribution, target } = args as CommandArgs["migration_plan"];
+      const game = gameSettings(mock.settings);
+      const source =
+        distribution === "global"
+          ? game.globalInstallRoot || mock.installRoot
+          : game.installRoot || mock.installRoot;
+      return {
+        distribution,
+        mode: "copy",
+        source,
+        target,
+        sameFilesystem: false,
+        files: 128,
+        bytes: 8 * 1024 ** 3,
+        requiredBytes: 8 * 1024 ** 3,
+        availableBytes: 128 * 1024 ** 3,
+        environments: mock.settings.runtimeEnvironments
+          .filter(
+            (profile) =>
+              profile.game === activeGame(mock.settings) &&
+              profile.distribution === distribution,
+          )
+          .map((profile) => ({
+            id: profile.id,
+            name: profile.name,
+            prefix: `preview/${profile.id}/prefix`,
+          })),
+        preloadRoot: null,
+        warnings: [],
+      };
+    }
+    case "migration_start": {
+      const { distribution, target } = args as CommandArgs["migration_start"];
+      const game = gameSettings(mock.settings);
+      previewMigration = {
+        ...idleMigration,
+        phase: "done",
+        distribution,
+        mode: "copy",
+        source:
+          distribution === "global"
+            ? game.globalInstallRoot || mock.installRoot
+            : game.installRoot || mock.installRoot,
+        target,
+      };
+      return clone(previewMigration);
+    }
+    case "migration_status":
+      return clone(previewMigration);
+    case "migration_cancel":
+      previewMigration.phase = "cancelled";
+      return clone(previewMigration);
+    case "migration_cleanup":
+      previewMigration.cleanupPending = false;
+      previewMigration.cleanupSource = "";
+      return clone(previewMigration);
+    case "migration_abandon":
+      previewMigration = clone(idleMigration);
+      return clone(previewMigration);
+    case "migration_dismiss":
+      previewMigration = clone(idleMigration);
+      return clone(previewMigration);
+    case "migration_retry":
+      return clone(previewMigration);
     case "game_download_status":
       return clone(mockDownload);
     case "game_download_start": {
