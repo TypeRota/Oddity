@@ -19,8 +19,16 @@ import type { DialogOptions } from "../src/core/desktop";
 import type { Bootstrap, LauncherBackgroundMedia } from "../src/types/launcher";
 
 const args = process.argv.slice(app.isPackaged ? 1 : 2);
+// 这些参数只能配合 --launch 使用; 只要出现就交给后台校验组合是否合法.
+// --launch 只有独立形式有效, 其他参数也接受 --name=value.
+const launchOptions = ["--game", "--region", "--launch-mode", "--environment"];
+const isLaunchRequest = (argv: string[]) =>
+  argv.includes("--launch") ||
+  argv.some((arg) =>
+    launchOptions.some((name) => arg === name || arg.startsWith(`${name}=`)),
+  );
 const compatible = args.includes("--recovery-compatible");
-const hiddenLaunch = args.includes("--launch");
+const hiddenLaunch = isLaunchRequest(args);
 const root = resolve(__dirname, "..");
 const bundled = app.isPackaged || Boolean(process.env.ODDITY_RESOURCES);
 const resourceRoot =
@@ -75,6 +83,11 @@ let pendingShow = false;
 let mediaRevision = 0;
 const mediaByRevision = new Map<number, LauncherBackgroundMedia>();
 const knownCommands = new Set<string>(Object.keys(commands));
+
+/// 界面请求带上当前游戏, 后台据此校验请求与当前安装一致.
+function backendCall(command: string, args?: unknown) {
+  return backend.call(command, args, settings?.activeGame ?? "nte");
+}
 
 function authorized(event: Electron.IpcMainInvokeEvent) {
   if (
@@ -237,7 +250,7 @@ async function start() {
     if (main && !main.isDestroyed())
       main.webContents.send("oddity:event", name, payload);
   });
-  const bootstrap = (await backend.call("bootstrap")) as Bootstrap;
+  const bootstrap = (await backendCall("bootstrap")) as Bootstrap;
   settings = bootstrap.settings;
   protocol.handle("oddity", async (request) => {
     if (request.method !== "GET" && request.method !== "HEAD")
@@ -333,7 +346,7 @@ async function start() {
       main!.hide();
       return null;
     }
-    const result = await backend.call(command, input);
+    const result = await backendCall(command, input);
     if (
       command === "bootstrap" ||
       command === "save_settings" ||
@@ -446,7 +459,7 @@ async function start() {
     await showMain();
   }
   if (hiddenLaunch)
-    await backend.call("external_launch", { argv: args, cold: true });
+    await backendCall("external_launch", { argv: args, cold: true });
   else await showMain();
 }
 function fatal(error: unknown) {
@@ -471,8 +484,18 @@ else {
     const forwarded = argv.slice(app.isPackaged ? 1 : 2);
     void ready
       .then(() =>
-        forwarded.includes("--launch")
-          ? backend.call("external_launch", { argv: forwarded, cold: false })
+        isLaunchRequest(forwarded)
+          ? backendCall("external_launch", {
+              argv: forwarded,
+              cold: false,
+            }).catch((error) => {
+              // 转发请求的参数错误不能带走已经运行的主实例.
+              dialog.showErrorBox(
+                "外部启动参数错误",
+                error instanceof Error ? error.message : String(error),
+              );
+              return showMain();
+            })
           : showMain(),
       )
       .catch(fatal);

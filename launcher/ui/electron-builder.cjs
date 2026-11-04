@@ -1,5 +1,6 @@
 const { resolve, dirname } = require("node:path");
 const version = require("./package.json").version;
+const { launchActions } = require("../packaging/games.cjs");
 
 const extra = [
   `${resolve("../packaging/nte-cli")}=/usr/bin/nte-cli`,
@@ -57,14 +58,12 @@ module.exports = async () => {
           Categories: "Game;Utility;",
         },
         desktopActions: {
-          LaunchCn: {
-            Name: "异环",
-            Exec: "oddity --launch --region cn --launch-mode background",
-          },
-          LaunchGlobal: {
-            Name: "NTE",
-            Exec: "oddity --launch --region global --launch-mode background",
-          },
+          ...Object.fromEntries(
+            launchActions().map(({ key, name, exec }) => [
+              key,
+              { Name: name, Exec: exec },
+            ]),
+          ),
           Recovery: { Name: "应急恢复", Exec: "oddity --recovery" },
         },
       },

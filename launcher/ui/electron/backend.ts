@@ -53,13 +53,18 @@ export class Backend extends EventEmitter {
     });
     this.child.stdin.on("error", (error) => this.fail(error));
   }
-  call(command: string, args?: unknown): Promise<unknown> {
+  call(command: string, args?: unknown, game?: string): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error("后台服务已退出"));
     const id = ++this.next;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       this.child.stdin.write(
-        JSON.stringify({ id, command, args: args ?? {} }) + "\n",
+        JSON.stringify({
+          id,
+          command,
+          args: args ?? {},
+          ...(game ? { game } : {}),
+        }) + "\n",
       );
     });
   }

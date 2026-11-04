@@ -5,6 +5,9 @@ import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
+const require = createRequire(import.meta.url);
+const { launchActions } = require("../launcher/packaging/games.cjs");
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const failures = [];
 
@@ -75,25 +78,26 @@ const desktopSections = parseDesktopSections(read(desktopPath));
 const desktopActions = (desktop.get("Actions") ?? "")
   .split(";")
   .filter(Boolean);
-for (const [action, name, exec] of [
-  ["LaunchCn", "异环", "oddity --launch --region cn --launch-mode background"],
-  [
-    "LaunchGlobal",
-    "NTE",
-    "oddity --launch --region global --launch-mode background",
-  ],
-]) {
-  if (!desktopActions.includes(action))
-    fail(`${desktopPath}: Actions 中缺少 ${action}`);
-  const values = desktopSections.get(`Desktop Action ${action}`);
+for (const { key, name, exec } of launchActions()) {
+  if (!desktopActions.includes(key))
+    fail(`${desktopPath}: Actions 中缺少 ${key}`);
+  const values = desktopSections.get(`Desktop Action ${key}`);
   if (!values) {
-    fail(`${desktopPath}: 缺少 [Desktop Action ${action}]`);
+    fail(`${desktopPath}: 缺少 [Desktop Action ${key}]`);
     continue;
   }
   if (values.get("Name") !== name)
-    fail(`${desktopPath}: ${action} 的 Name 应该是 "${name}"`);
+    fail(`${desktopPath}: ${key} 的 Name 应该是 "${name}"`);
   if (values.get("Exec") !== exec)
-    fail(`${desktopPath}: ${action} 的 Exec 应该是 "${exec}"`);
+    fail(`${desktopPath}: ${key} 的 Exec 应该是 "${exec}"`);
+}
+const knownDesktopActions = new Set([
+  ...launchActions().map((action) => action.key),
+  "Recovery",
+]);
+for (const action of desktopActions) {
+  if (!knownDesktopActions.has(action))
+    fail(`${desktopPath}: 未登记桌面动作 ${action}`);
 }
 
 const recoveryDesktopPath = "launcher/packaging/oddity-recovery.desktop";
@@ -123,7 +127,6 @@ for (const icon of [
   requireFile(icon);
 }
 
-const require = createRequire(import.meta.url);
 const previous = process.cwd();
 process.chdir(join(root, "launcher/ui"));
 const config = await require(join(root, "launcher/ui/electron-builder.cjs"))();
@@ -138,6 +141,18 @@ if (config.appId !== "io.github.oddity.Launcher") fail("应用标识不一致");
 if (config.asar !== true) fail("发行版必须包含打包资源");
 for (const target of ["deb", "rpm", "AppImage"])
   if (!config.linux.target.includes(target)) fail(`缺少发行格式 ${target}`);
+const configuredActions = config.linux.desktop?.desktopActions ?? {};
+for (const { key, name, exec } of launchActions()) {
+  const action = configuredActions[key];
+  if (!action) {
+    fail(`electron-builder 缺少桌面动作 ${key}`);
+    continue;
+  }
+  if (action.Name !== name || action.Exec !== exec)
+    fail(`electron-builder 的桌面动作 ${key} 与 ${desktopPath} 不一致`);
+}
+if (configuredActions.Recovery?.Exec !== "oddity --recovery")
+  fail("electron-builder 缺少应急恢复动作");
 for (const [target, dependencies] of Object.entries({
   deb: ["libnss3", "libsecret-1-0", "xdg-utils"],
   rpm: ["nss", "libsecret-1.so.0()(64bit)", "xdg-utils"],
@@ -246,8 +261,7 @@ for (const [file, needles] of [
 const installer = read("launcher/scripts/install-desktop.sh");
 for (const needle of [
   "oddity.desktop",
-  "--launch --region cn",
-  "--launch --region global",
+  "--launch",
   "app-icon.svg",
   "crates/nte-service/icons",
 ]) {

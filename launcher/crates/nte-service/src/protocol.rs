@@ -1,15 +1,91 @@
 //! 命令参数在此反序列化一次, 业务层只接收具体类型.
 use crate::service::ServiceHandle;
+use nte_core::game_profile::GameId;
 use serde::Deserialize;
 use serde_json::{json, Value};
 #[derive(Deserialize)]
 pub struct Request {
     pub id: u64,
     pub command: String,
+    /// 命令所属游戏; 旧调用没有该字段时使用《异环》.
+    #[serde(default)]
+    pub game: Option<String>,
     #[serde(default)]
     pub args: Value,
 }
-pub async fn dispatch(app: ServiceHandle, command: String, args: Value) -> Result<Value, Value> {
+
+/// bootstrap 用于让界面发现当前游戏, 不能要求调用方先知道游戏.
+fn requires_current_game(command: &str) -> bool {
+    matches!(
+        command,
+        "attendance_refresh_game_records"
+            | "attendance_login"
+            | "attendance_send_code"
+            | "attendance_login_sms"
+            | "attendance_run"
+            | "save_settings"
+            | "check_update"
+            | "fetch_bulletins"
+            | "launcher_background"
+            | "launch_official"
+            | "cancel_launch"
+            | "game_status"
+            | "take_launch_error"
+            | "close_game"
+            | "environment_create"
+            | "environment_action"
+            | "migration_plan"
+            | "migration_start"
+            | "migration_status"
+            | "migration_cancel"
+            | "migration_cleanup"
+            | "migration_abandon"
+            | "migration_dismiss"
+            | "migration_retry"
+            | "environment_snapshot_overview"
+            | "environment_snapshot_compare"
+            | "environment_snapshot_save_reference"
+            | "environment_snapshot_delete_reference"
+            | "environment_snapshot_clear_history"
+            | "game_mode_gpu_info"
+            | "game_mode_gpu_apply"
+            | "game_mode_tuning_info"
+            | "game_mode_tuning_apply"
+            | "game_mode_status"
+            | "game_resource_catalog"
+            | "game_preload_delete"
+            | "game_resource_select"
+            | "game_download_status"
+            | "game_download_start"
+            | "game_download_cancel"
+    )
+}
+
+pub async fn dispatch(
+    app: ServiceHandle,
+    command: String,
+    game: Option<String>,
+    args: Value,
+) -> Result<Value, Value> {
+    let game = match game.as_deref() {
+        Some(value) => value.parse::<GameId>().map_err(|error| json!(error))?,
+        None => GameId::default(),
+    };
+    if requires_current_game(&command) {
+        let current = app
+            .state
+            .settings
+            .lock()
+            .map_err(|error| json!(error.to_string()))?
+            .active_game;
+        if game != current {
+            return Err(json!(format!(
+                "请求的游戏是《{}》, 当前游戏是《{}》. 请刷新界面后重试.",
+                game.profile().name,
+                current.profile().name
+            )));
+        }
+    }
     match command.as_str() {
         "attendance_status" => serde_json::to_value(
             crate::attendance_commands::attendance_status()
@@ -666,5 +742,72 @@ pub async fn dispatch(app: ServiceHandle, command: String, args: Value) -> Resul
             Ok(Value::Null)
         }
         _ => Err(json!("无法识别的宿主命令")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_context_defaults_to_nte_and_must_match_the_current_game() {
+        let app = crate::service::test_service();
+        let status =
+            crate::service::block_on(dispatch(app.clone(), "game_status".into(), None, json!({})))
+                .unwrap();
+        assert_eq!(status["running"], false);
+        assert!(crate::service::block_on(dispatch(
+            app.clone(),
+            "game_status".into(),
+            Some("nte".into()),
+            json!({}),
+        ))
+        .is_ok());
+
+        app.state.settings.lock().unwrap().active_game = GameId::Hsr;
+        let error = crate::service::block_on(dispatch(
+            app.clone(),
+            "game_status".into(),
+            Some("nte".into()),
+            json!({}),
+        ))
+        .unwrap_err();
+        assert!(
+            error
+                .as_str()
+                .unwrap()
+                .contains("当前游戏是《崩坏:星穹铁道》"),
+            "{error}"
+        );
+        assert!(crate::service::block_on(dispatch(
+            app,
+            "game_status".into(),
+            Some("hsr".into()),
+            json!({}),
+        ))
+        .is_ok());
+    }
+
+    #[test]
+    fn unknown_game_is_rejected_with_a_clear_error() {
+        let app = crate::service::test_service();
+        let error = crate::service::block_on(dispatch(
+            app,
+            "game_status".into(),
+            Some("genshin".into()),
+            json!({}),
+        ))
+        .unwrap_err();
+        let message = error.as_str().unwrap();
+        assert!(message.contains("无法识别游戏: genshin"), "{message}");
+        assert!(message.contains("nte, hsr"), "{message}");
+    }
+
+    #[test]
+    fn bootstrap_discovers_the_current_game_without_validation() {
+        assert!(!requires_current_game("bootstrap"));
+        assert!(!requires_current_game("external_launch"));
+        assert!(requires_current_game("game_status"));
+        assert!(requires_current_game("take_launch_error"));
     }
 }

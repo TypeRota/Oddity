@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use nte_core::distribution::Distribution;
 use nte_core::environment::{self, RuntimeEnvironment};
+use nte_core::game_profile::GameId;
 use serde::Serialize;
 
 use crate::{
@@ -450,34 +451,31 @@ fn resolve_launch_target(
     ))
 }
 
-/// 解析请求地区与环境, 必要时切换并持久化. 没有指定时沿用当前设置.
+/// 解析请求游戏, 地区与环境, 必要时切换并持久化. 没有指定时沿用该游戏的当前设置.
 pub fn select_for_launch(
     state: &AppState,
     downloads: &crate::download_commands::DownloadManager,
+    game: GameId,
     region: Option<Distribution>,
     environment: Option<&str>,
 ) -> Result<LaunchSelection, String> {
-    if region.is_none() && environment.is_none() {
-        let settings = state
-            .settings
-            .lock()
-            .map_err(|error| error.to_string())?
-            .clone();
-        return Ok(LaunchSelection {
-            settings,
-            changed: false,
-        });
-    }
-
     let current = state
         .settings
         .lock()
         .map_err(|error| error.to_string())?
         .clone();
-    let (distribution, environment_id) = resolve_launch_target(&current, region, environment)?;
-    if current.current().distribution == distribution
-        && current.current().active_environment.as_deref() == Some(environment_id.as_str())
-    {
+    if region.is_none() && environment.is_none() && current.active_game == game {
+        return Ok(LaunchSelection {
+            settings: current,
+            changed: false,
+        });
+    }
+
+    let mut next = current.clone();
+    next.active_game = game;
+    next.normalize();
+    apply_launch_target(&mut next, region, environment)?;
+    if launch_selection_matches(&current, &next) {
         return Ok(LaunchSelection {
             settings: current,
             changed: false,
@@ -486,11 +484,12 @@ pub fn select_for_launch(
 
     let task = Task::begin(state, downloads)?;
     let mut settings = state.settings.lock().map_err(|error| error.to_string())?;
-    let snapshot = settings.clone();
-    let (distribution, environment_id) = resolve_launch_target(&snapshot, region, environment)?;
-    if snapshot.current().distribution == distribution
-        && snapshot.current().active_environment.as_deref() == Some(environment_id.as_str())
-    {
+    let mut next = settings.clone();
+    next.active_game = game;
+    next.normalize();
+    apply_launch_target(&mut next, region, environment)?;
+    if launch_selection_matches(&settings, &next) {
+        let snapshot = settings.clone();
         drop(settings);
         drop(task);
         return Ok(LaunchSelection {
@@ -499,9 +498,6 @@ pub fn select_for_launch(
         });
     }
 
-    let mut next = snapshot;
-    next.current_mut().distribution = distribution;
-    next.current_mut().active_environment = Some(environment_id);
     validate_selection(&next)?;
     persist_settings(&next)?;
     *settings = next.clone();
@@ -511,6 +507,27 @@ pub fn select_for_launch(
         settings: next,
         changed: true,
     })
+}
+
+fn apply_launch_target(
+    settings: &mut Settings,
+    region: Option<Distribution>,
+    environment: Option<&str>,
+) -> Result<(), String> {
+    if region.is_none() && environment.is_none() {
+        return Ok(());
+    }
+    let (distribution, environment_id) = resolve_launch_target(settings, region, environment)?;
+    let current = settings.current_mut();
+    current.distribution = distribution;
+    current.active_environment = Some(environment_id);
+    Ok(())
+}
+
+fn launch_selection_matches(current: &Settings, next: &Settings) -> bool {
+    current.active_game == next.active_game
+        && current.current().distribution == next.current().distribution
+        && current.current().active_environment == next.current().active_environment
 }
 
 #[cfg(test)]
@@ -960,6 +977,7 @@ mod tests {
         let selection = select_for_launch(
             &fixture.state,
             &fixture.downloads,
+            GameId::Nte,
             Some(Distribution::Global),
             None,
         )
@@ -988,6 +1006,7 @@ mod tests {
         let selection = select_for_launch(
             &fixture.state,
             &fixture.downloads,
+            GameId::Nte,
             Some(Distribution::Cn),
             Some(&a.id),
         )
@@ -999,8 +1018,14 @@ mod tests {
             Some(a.id.as_str())
         );
 
-        let selection =
-            select_for_launch(&fixture.state, &fixture.downloads, None, Some("A")).unwrap();
+        let selection = select_for_launch(
+            &fixture.state,
+            &fixture.downloads,
+            GameId::Nte,
+            None,
+            Some("A"),
+        )
+        .unwrap();
         assert!(!selection.changed);
         assert_eq!(
             selection.settings.current().active_environment.as_deref(),
@@ -1015,17 +1040,24 @@ mod tests {
         let error = select_for_launch(
             &fixture.state,
             &fixture.downloads,
+            GameId::Nte,
             Some(Distribution::Global),
             None,
         )
         .unwrap_err();
         assert!(error.contains("尚未找到国际服安装"));
-        assert!(
-            select_for_launch(&fixture.state, &fixture.downloads, None, Some("missing"),).is_err()
-        );
+        assert!(select_for_launch(
+            &fixture.state,
+            &fixture.downloads,
+            GameId::Nte,
+            None,
+            Some("missing"),
+        )
+        .is_err());
         let error = select_for_launch(
             &fixture.state,
             &fixture.downloads,
+            GameId::Nte,
             Some(Distribution::Global),
             Some("A"),
         )
@@ -1034,6 +1066,7 @@ mod tests {
         let selection = select_for_launch(
             &fixture.state,
             &fixture.downloads,
+            GameId::Nte,
             Some(Distribution::Cn),
             None,
         )
@@ -1071,6 +1104,7 @@ mod tests {
         let error = select_for_launch(
             &fixture.state,
             &fixture.downloads,
+            GameId::Nte,
             Some(Distribution::Cn),
             None,
         )
@@ -1080,6 +1114,7 @@ mod tests {
         let selection = select_for_launch(
             &fixture.state,
             &fixture.downloads,
+            GameId::Nte,
             Some(Distribution::Cn),
             Some("B"),
         )
@@ -1095,7 +1130,8 @@ mod tests {
         let fixture = Fixture::new();
         fixture.first();
         let before = crate::load_settings();
-        let selection = select_for_launch(&fixture.state, &fixture.downloads, None, None).unwrap();
+        let selection =
+            select_for_launch(&fixture.state, &fixture.downloads, GameId::Nte, None, None).unwrap();
         assert!(!selection.changed);
         assert_eq!(
             selection.settings.current().distribution,
@@ -1104,6 +1140,32 @@ mod tests {
         assert_eq!(
             selection.settings.current().active_environment,
             before.current().active_environment
+        );
+    }
+
+    #[test]
+    fn launch_selection_switches_game_and_rejects_environments_of_other_games() {
+        let fixture = Fixture::new();
+        let _a = fixture.first();
+        let error = select_for_launch(
+            &fixture.state,
+            &fixture.downloads,
+            GameId::Hsr,
+            None,
+            Some("A"),
+        )
+        .unwrap_err();
+        assert!(error.contains("属于其他游戏"), "{error}");
+
+        fixture.state.settings.lock().unwrap().active_game = GameId::Hsr;
+        let selection =
+            select_for_launch(&fixture.state, &fixture.downloads, GameId::Nte, None, None).unwrap();
+        assert!(selection.changed);
+        assert_eq!(selection.settings.active_game, GameId::Nte);
+        assert_eq!(
+            crate::load_settings().active_game,
+            GameId::Nte,
+            "切换游戏需要写回设置"
         );
     }
 
@@ -1117,6 +1179,7 @@ mod tests {
         let error = select_for_launch(
             &fixture.state,
             &fixture.downloads,
+            GameId::Nte,
             Some(Distribution::Global),
             None,
         )

@@ -191,6 +191,7 @@ pub fn run() {
                         let result = runtime().block_on(crate::protocol::dispatch(
                             app.clone(),
                             request.command,
+                            request.game,
                             request.args,
                         ));
                         let reply = match result {
@@ -201,9 +202,13 @@ pub fn run() {
                         continue;
                     }
                     spawn(async move {
-                        let result =
-                            crate::protocol::dispatch(app.clone(), request.command, request.args)
-                                .await;
+                        let result = crate::protocol::dispatch(
+                            app.clone(),
+                            request.command,
+                            request.game,
+                            request.args,
+                        )
+                        .await;
                         let reply = match result {
                             Ok(value) => json!({"id":request.id,"result":value}),
                             Err(error) => json!({"id":request.id,"error":error}),

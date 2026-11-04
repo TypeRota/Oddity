@@ -2383,13 +2383,18 @@ async fn external_launch_impl(
     app: &ServiceHandle,
     request: &cli::LaunchRequest,
 ) -> Result<LaunchResult, String> {
+    if request.game.profile().regions.is_empty() {
+        return Err(format!("《{}》尚未支持启动.", request.game.profile().name));
+    }
     let selected_app = app.clone();
+    let game = request.game;
     let region = request.region;
     let environment = request.environment.clone();
     let selection = crate::service::spawn_blocking(move || {
         let selection = environment_commands::select_for_launch(
             &selected_app.state,
             &selected_app.downloads,
+            game,
             region,
             environment.as_deref(),
         )?;
@@ -2439,16 +2444,7 @@ async fn handle_external_launch(
 }
 
 fn launch_failure_summary(app: &ServiceHandle, request: &cli::LaunchRequest) -> String {
-    let profile = {
-        let state = &app.state;
-        state
-            .settings
-            .lock()
-            .ok()
-            .map(|settings| settings.active_game)
-            .unwrap_or_default()
-            .profile()
-    };
+    let profile = request.game.profile();
     let distribution = request.region.or_else(|| {
         let state = &app.state;
         let settings = state.settings.lock().ok()?;
@@ -2457,16 +2453,18 @@ fn launch_failure_summary(app: &ServiceHandle, request: &cli::LaunchRequest) -> 
                 .runtime_environments
                 .iter()
                 .find(|entry| entry.id == value || entry.name == value)
+                .filter(|entry| entry.game == request.game)
             {
                 return Some(environment.distribution);
             }
         }
-        Some(settings.current().distribution)
+        Some(settings.game(request.game).distribution)
     });
-    match distribution.and_then(|distribution| profile.region(distribution)) {
-        Some(region) => format!("{}启动失败", region.display_name),
-        None => "Oddity 启动失败".to_string(),
-    }
+    let name = distribution
+        .and_then(|distribution| profile.region(distribution))
+        .map(|region| region.display_name)
+        .unwrap_or(profile.name);
+    format!("{name}启动失败")
 }
 
 fn notification_body(message: &str) -> String {

@@ -6,9 +6,10 @@ Oddity 提供不需要先打开主界面的启动命令, 供应用菜单, 桌面
 
 ```bash
 oddity --launch
-oddity --launch --region cn
-oddity --launch --region global
-oddity --launch --region global --environment "GE-Proton 9"
+oddity --launch --game nte
+oddity --launch --game nte --region cn
+oddity --launch --game nte --region global
+oddity --launch --game nte --region global --environment "GE-Proton 9"
 oddity --launch --region cn --launch-mode official
 oddity --launch --help
 ```
@@ -18,13 +19,18 @@ oddity --launch --help
 | 参数 | 说明 |
 | --- | --- |
 | `--launch` | 启动游戏, 必填. |
-| `--region cn\|global` | 指定国服或国际服. 省略时使用当前设置中的地区. |
+| `--game nte\|hsr` | 指定游戏. 省略时使用 `nte`. 当前只有《异环》支持启动, 其他游戏会提示尚未支持. |
+| `--region cn\|global` | 指定国服或国际服. 省略时使用该游戏当前设置中的地区. |
 | `--launch-mode official\|background\|direct` | 指定本次启动方式. 省略时固定使用 `background`. |
-| `--environment <名称或 ID>` | 指定运行环境. 省略时自动选择当前地区可用的环境. |
+| `--environment <名称或 ID>` | 指定运行环境. 同时省略 `--region` 时沿用该游戏当前环境, 环境不可用时启动报错; 只指定 `--region` 时自动选择该地区可用的环境. |
 
 规则:
 
-- `--region` 和 `--environment` 会写回设置, 下次打开 Oddity 时仍是该地区和运行环境.
+- 启动目标解析成功后, `--game`, `--region` 和 `--environment` 会写回设置, 下次打开 Oddity 时仍是该游戏、地区和运行环境; 未支持启动的游戏不会写回.
+- 不带 `--game` 的旧命令保持兼容, 默认按《异环》处理.
+- 同时省略 `--region` 和 `--environment` 时沿用该游戏当前环境; 当前环境未设置或与启动条件不匹配时会报错, 不会自动切换环境.
+- `--region` 必须是 `--game` 指定游戏支持的地区.
+- `--environment` 必须属于 `--game` 指定的游戏, 不能跨游戏组合.
 - `--launch-mode` 只对本次启动生效, 不修改设置中的启动方式.
 - 只给 `--region` 时, 优先使用当前环境; 其次使用稳定环境; 再次使用该地区唯一的匹配环境. 有多个候选时会报错并提示使用 `--environment`.
 - 同时给出 `--region` 和 `--environment` 时, 两者必须属于同一地区.
@@ -32,20 +38,21 @@ oddity --launch --help
 
 ## 应用菜单
 
-安装包会在 `oddity.desktop` 中注册两个动作:
+安装包会按游戏在 `oddity.desktop` 中注册动作:
 
 | 动作 | 命令 |
 | --- | --- |
-| 异环 | `oddity --launch --region cn --launch-mode background` |
-| NTE | `oddity --launch --region global --launch-mode background` |
+| 异环 | `oddity --launch --game nte --region cn --launch-mode background` |
+| NTE | `oddity --launch --game nte --region global --launch-mode background` |
 
-动作位于 Oddity 图标的右键菜单或应用菜单的动作菜单中. 主入口 Oddity 仍用于打开启动器界面.
+动作位于 Oddity 图标的右键菜单或应用菜单的动作菜单中. 主入口 Oddity 仍用于打开启动器界面. 旧版本安装的桌面入口不带 `--game`, 仍然可以正常启动.
 
 ## Steam
 
 1. 在 Steam 中添加非 Steam 游戏, 目标选择 `oddity`.
-2. 在启动选项里填入 `--launch --region cn --launch-mode background`.
-3. 国际服使用 `--launch --region global --launch-mode background`.
+2. 在启动选项里填入 `--launch --game nte --region cn --launch-mode background`.
+3. 国际服使用 `--launch --game nte --region global --launch-mode background`.
+4. 旧的不带 `--game` 的启动选项仍然有效, 默认启动《异环》.
 
 参数要放在启动选项里, 不要直接拼在可执行文件路径后面. Steam 的快捷方式名称可以写成 `异环` 或 `NTE`.
 

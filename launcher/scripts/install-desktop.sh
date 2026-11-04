@@ -37,8 +37,7 @@ tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 sed -e "s|^Exec=oddity$|Exec=$bin|" \
   -e "s|^Exec=oddity --recovery$|Exec=$bin --recovery|" \
-  -e "s|^Exec=oddity --launch --region cn --launch-mode background$|Exec=$bin --launch --region cn --launch-mode background|" \
-  -e "s|^Exec=oddity --launch --region global --launch-mode background$|Exec=$bin --launch --region global --launch-mode background|" \
+  -e "s|^Exec=oddity --launch |Exec=$bin --launch |" \
   -e "s|^TryExec=oddity$|TryExec=$bin|" \
   "$root/packaging/oddity.desktop" >"$tmp"
 install -Dm644 "$tmp" "$apps/oddity.desktop"

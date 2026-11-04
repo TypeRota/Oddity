@@ -233,6 +233,35 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
     assert!(call("host_state", json!({"focused":false,"visible":false}))
         .get("result")
         .is_some());
+    drop(call);
+    // 新调用带 game, 旧调用不带时仍按《异环》处理.
+    let mut call_game = |id: u64, game: Option<&str>| {
+        let mut request = json!({"id":id,"command":"game_status","args":{}});
+        if let Some(game) = game {
+            request["game"] = json!(game);
+        }
+        writeln!(input, "{request}").unwrap();
+        loop {
+            let value = replies.recv_timeout(Duration::from_secs(15)).unwrap();
+            if value.get("id") == Some(&json!(id)) {
+                return value;
+            }
+            assert!(value.get("event").is_some(), "{value}");
+        }
+    };
+    let unknown = call_game(1000, Some("genshin"));
+    assert!(
+        unknown["error"]
+            .as_str()
+            .unwrap()
+            .contains("无法识别游戏: genshin"),
+        "{unknown}"
+    );
+    let matching = call_game(1001, Some("nte"));
+    assert!(matching.get("result").is_some(), "{matching}");
+    let legacy = call_game(1002, None);
+    assert!(legacy.get("result").is_some(), "{legacy}");
+    drop(call_game);
     drop(input);
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {

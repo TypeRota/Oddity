@@ -136,6 +136,7 @@ fn launch_summary_uses_region_environment_or_current_distribution() {
         managed_state(settings, GameTracker::default());
 
     let region = cli::LaunchRequest {
+        game: nte_core::game_profile::GameId::Nte,
         region: Some(Distribution::Global),
         mode: cli::LaunchMode::Background,
         environment: None,
@@ -143,6 +144,7 @@ fn launch_summary_uses_region_environment_or_current_distribution() {
     assert_eq!(crate::launch_failure_summary(&app, &region), "NTE启动失败");
 
     let environment = cli::LaunchRequest {
+        game: nte_core::game_profile::GameId::Nte,
         region: None,
         mode: cli::LaunchMode::Background,
         environment: Some("Global Env".into()),
@@ -153,6 +155,7 @@ fn launch_summary_uses_region_environment_or_current_distribution() {
     );
 
     let current = cli::LaunchRequest {
+        game: nte_core::game_profile::GameId::Nte,
         region: None,
         mode: cli::LaunchMode::Background,
         environment: None,
@@ -163,6 +166,7 @@ fn launch_summary_uses_region_environment_or_current_distribution() {
     );
 
     let unknown = cli::LaunchRequest {
+        game: nte_core::game_profile::GameId::Nte,
         region: None,
         mode: cli::LaunchMode::Background,
         environment: Some("missing".into()),
@@ -171,6 +175,30 @@ fn launch_summary_uses_region_environment_or_current_distribution() {
         crate::launch_failure_summary(&app, &unknown),
         "异环启动失败"
     );
+
+    let other_game = cli::LaunchRequest {
+        game: nte_core::game_profile::GameId::Hsr,
+        region: None,
+        mode: cli::LaunchMode::Background,
+        environment: None,
+    };
+    assert_eq!(
+        crate::launch_failure_summary(&app, &other_game),
+        "崩坏:星穹铁道启动失败"
+    );
+}
+
+#[test]
+fn external_launch_rejects_games_without_a_launch_profile() {
+    let app = crate::service::test_service();
+    let request = cli::LaunchRequest {
+        game: nte_core::game_profile::GameId::Hsr,
+        region: None,
+        mode: cli::LaunchMode::Background,
+        environment: None,
+    };
+    let error = crate::service::block_on(crate::external_launch_impl(&app, &request)).unwrap_err();
+    assert_eq!(error, "《崩坏:星穹铁道》尚未支持启动.");
 }
 
 #[test]

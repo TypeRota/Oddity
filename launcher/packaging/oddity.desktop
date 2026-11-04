@@ -20,13 +20,13 @@ Actions=LaunchCn;LaunchGlobal;Recovery;
 [Desktop Action LaunchCn]
 Name=异环
 Name[zh_CN]=异环
-Exec=oddity --launch --region cn --launch-mode background
+Exec=oddity --launch --game nte --region cn --launch-mode background
 Icon=oddity
 
 [Desktop Action LaunchGlobal]
 Name=NTE
 Name[zh_CN]=NTE
-Exec=oddity --launch --region global --launch-mode background
+Exec=oddity --launch --game nte --region global --launch-mode background
 Icon=oddity
 
 [Desktop Action Recovery]

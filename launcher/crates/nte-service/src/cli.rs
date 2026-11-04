@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 
 use nte_core::distribution::Distribution;
+use nte_core::game_profile::GameId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchMode {
@@ -34,12 +35,14 @@ impl LaunchMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchRequest {
+    /// 请求启动的游戏; 省略时使用《异环》.
+    pub game: GameId,
     pub region: Option<Distribution>,
     pub mode: LaunchMode,
     pub environment: Option<String>,
 }
 
-pub const USAGE: &str = "用法: oddity --launch [--region cn|global] [--launch-mode official|background|direct] [--environment <名称或 ID>]";
+pub const USAGE: &str = "用法: oddity --launch [--game nte|hsr] [--region cn|global] [--launch-mode official|background|direct] [--environment <名称或 ID>]";
 
 /// --launch 配合 --help 时只打印用法, 避免把帮助当成一次启动请求.
 pub fn help_requested(args: &[OsString]) -> bool {
@@ -50,6 +53,7 @@ pub fn help_requested(args: &[OsString]) -> bool {
 /// 解析外部启动参数; 没有 --launch 时返回 None.
 pub fn parse(args: &[OsString]) -> Result<Option<LaunchRequest>, String> {
     let mut launch = false;
+    let mut game = None;
     let mut region = None;
     let mut mode = None;
     let mut environment = None;
@@ -59,6 +63,10 @@ pub fn parse(args: &[OsString]) -> Result<Option<LaunchRequest>, String> {
         if raw == "--launch" {
             launch = true;
             index += 1;
+            continue;
+        }
+        if let Some(value) = take_value(args, &mut index, "--game")? {
+            set_once(&mut game, value, "--game")?;
             continue;
         }
         if let Some(value) = take_value(args, &mut index, "--region")? {
@@ -78,14 +86,20 @@ pub fn parse(args: &[OsString]) -> Result<Option<LaunchRequest>, String> {
     }
 
     if !launch {
-        if region.is_some() || mode.is_some() || environment.is_some() {
+        if game.is_some() || region.is_some() || mode.is_some() || environment.is_some() {
             return Err(
-                "--region, --launch-mode 和 --environment 只能与 --launch 一起使用.".into(),
+                "--game, --region, --launch-mode 和 --environment 只能与 --launch 一起使用.".into(),
             );
         }
         return Ok(None);
     }
 
+    let game = match game {
+        Some(value) => value
+            .parse::<GameId>()
+            .map_err(|_| format!("无法识别 --game 参数: {value}. 可选值: {}.", game_names()))?,
+        None => GameId::default(),
+    };
     let region = match region {
         Some(value) => Some(
             value
@@ -94,16 +108,32 @@ pub fn parse(args: &[OsString]) -> Result<Option<LaunchRequest>, String> {
         ),
         None => None,
     };
+    if let Some(region) = region.filter(|region| !game.profile().supports(*region)) {
+        return Err(format!(
+            "《{}》暂不支持地区 {}.",
+            game.profile().name,
+            region.as_str()
+        ));
+    }
     let mode = match mode {
         Some(value) => LaunchMode::parse(&value)?,
         // 桌面动作不传模式时也走官方启动器与正常登录流程.
         None => LaunchMode::Background,
     };
     Ok(Some(LaunchRequest {
+        game,
         region,
         mode,
         environment,
     }))
+}
+
+fn game_names() -> String {
+    GameId::ALL
+        .iter()
+        .map(|game| game.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn take_value(args: &[OsString], index: &mut usize, name: &str) -> Result<Option<String>, String> {
@@ -151,11 +181,38 @@ mod tests {
     }
 
     #[test]
-    fn launch_defaults_to_background_and_current_region() {
+    fn launch_defaults_to_background_game_and_current_region() {
         let request = parse(&args(&["--launch"])).unwrap().unwrap();
+        assert_eq!(request.game, GameId::Nte);
         assert_eq!(request.region, None);
         assert_eq!(request.mode, LaunchMode::Background);
         assert_eq!(request.environment, None);
+    }
+
+    #[test]
+    fn parses_game_and_rejects_unknown_or_unsupported_combinations() {
+        let request = parse(&args(&["--launch", "--game", "hsr"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.game, GameId::Hsr);
+        let request = parse(&args(&["--game=HSR", "--launch"])).unwrap().unwrap();
+        assert_eq!(request.game, GameId::Hsr);
+        let request = parse(&args(&["--launch", "--game", "nte", "--region", "cn"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.game, GameId::Nte);
+        assert_eq!(request.region, Some(Distribution::Cn));
+
+        let error = parse(&args(&["--launch", "--game", "genshin"])).unwrap_err();
+        assert!(error.contains("无法识别 --game 参数: genshin"), "{error}");
+        assert!(error.contains("nte, hsr"), "{error}");
+        assert!(parse(&args(&["--game"])).is_err());
+        let error = parse(&args(&["--launch", "--game"])).unwrap_err();
+        assert!(error.contains("缺少参数值"), "{error}");
+        let error = parse(&args(&["--launch", "--game", "hsr", "--region", "cn"])).unwrap_err();
+        assert!(error.contains("暂不支持地区 cn"), "{error}");
+        let error = parse(&args(&["--launch", "--game", "nte", "--game", "hsr"])).unwrap_err();
+        assert!(error.contains("不能重复指定"), "{error}");
     }
 
     #[test]
@@ -195,11 +252,13 @@ mod tests {
     #[test]
     fn rejects_options_without_launch_and_bad_values() {
         assert!(parse(&args(&["--region", "cn"])).is_err());
+        assert!(parse(&args(&["--game", "nte"])).is_err());
         assert!(parse(&args(&["--launch", "--region", "eu"])).is_err());
         assert!(parse(&args(&["--launch", "--region"])).is_err());
         assert!(parse(&args(&["--launch", "--region", "--launch-mode"])).is_err());
         assert!(parse(&args(&["--launch", "--launch-mode", "debug"])).is_err());
         assert!(parse(&args(&["--launch", "--environment"])).is_err());
+        assert!(parse(&args(&["--launch", "--game", "genshin"])).is_err());
         assert!(parse(&args(&["--launch", "--region", "cn", "--region", "global"])).is_err());
         assert!(parse(&args(&[
             "--launch",
