@@ -49,6 +49,7 @@ async fn apply_configuration(
         .settings
         .lock()
         .map_err(|error| error.to_string())?
+        .current()
         .game_mode
         .performance
     {
@@ -123,12 +124,13 @@ mod tests {
         );
         let mut app = crate::service::test_service();
         std::sync::Arc::get_mut(&mut app).unwrap().state = crate::AppState {
-            settings: Mutex::new(crate::Settings {
-                game_mode: nte_core::game_mode::Options {
+            settings: Mutex::new({
+                let mut settings = crate::Settings::default();
+                settings.current_mut().game_mode = nte_core::game_mode::Options {
                     performance: true,
                     ..Default::default()
-                },
-                ..Default::default()
+                };
+                settings
             }),
             game: Mutex::new(crate::GameTracker {
                 environment_busy: true,
@@ -151,7 +153,13 @@ mod tests {
         ));
         assert!(tuning_failed.is_err());
         assert!(!app.state.game.lock().unwrap().environment_busy);
-        app.state.settings.lock().unwrap().game_mode.performance = false;
+        app.state
+            .settings
+            .lock()
+            .unwrap()
+            .current_mut()
+            .game_mode
+            .performance = false;
         let disabled = crate::service::block_on(game_mode_tuning_apply(
             &app.state,
             nte_core::game_mode::tuning::Config::default(),

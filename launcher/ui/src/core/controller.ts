@@ -18,6 +18,7 @@ import type {
   LauncherBackgroundMedia,
   PlaytimeHistory,
   Settings,
+  GameSettings,
   MeteredPolicy,
   IntegrityStatus,
 } from "../types/launcher";
@@ -31,6 +32,7 @@ import {
   listenIntegrityState,
 } from "./api";
 import { DEMO_NOTICE_KEY, isDemo } from "./demo";
+import { activeGame, gameSettings } from "./game";
 import {
   notify,
   dismissNotification,
@@ -160,7 +162,7 @@ export function syncAttendance(next: AttendanceStatus, syncForm = true) {
 }
 export async function refreshGameRecords(force = false) {
   if (
-    state.bootstrap?.settings.distribution === "global" ||
+    gameSettings(state.bootstrap?.settings).distribution === "global" ||
     !attendance.status?.accounts.length ||
     gameRecords.loading ||
     (attendance.busy && !attendance.running) ||
@@ -566,7 +568,8 @@ export const launchView = computed(() => {
 });
 function downloadNeedsWork() {
   return (
-    state.download?.distribution === state.bootstrap?.settings.distribution &&
+    state.download?.distribution ===
+      gameSettings(state.bootstrap?.settings).distribution &&
     ["needs-install", "needs-update", "needs-verify"].includes(
       state.download?.phase || "idle",
     )
@@ -768,7 +771,8 @@ export const downloadView = computed(() => {
 });
 export const homeDownloadNotice = computed(() => {
   const phase =
-    state.download?.distribution === state.bootstrap?.settings.distribution
+    state.download?.distribution ===
+    gameSettings(state.bootstrap?.settings).distribution
       ? state.download?.phase || "idle"
       : "idle";
   return {
@@ -794,19 +798,21 @@ function normalizedRoot(value: string) {
 
 function currentInstallRoot() {
   const data = state.bootstrap;
+  const settings = gameSettings(data?.settings);
   const root =
     form.distribution === "cn" ? form.installRoot : form.globalInstallRoot;
   const saved =
-    data?.settings.distribution === form.distribution
+    settings.distribution === form.distribution
       ? form.distribution === "cn"
-        ? data.settings.installRoot
-        : data.settings.globalInstallRoot
+        ? settings.installRoot
+        : settings.globalInstallRoot
       : null;
   if (
-    data?.settings.distribution === form.distribution &&
-    normalizedRoot(root.trim()) === normalizedRoot(saved || data.installRoot)
+    settings.distribution === form.distribution &&
+    normalizedRoot(root.trim()) ===
+      normalizedRoot(saved || data?.installRoot || "")
   )
-    return data.installRoot;
+    return data?.installRoot || "";
   return root.trim();
 }
 
@@ -1025,7 +1031,7 @@ function startIntro() {
 
 function heroBackgroundKey(data: Bootstrap | null = state.bootstrap) {
   return data
-    ? `${data.settings?.distribution || ""}|${data.launcherRoot || ""}`
+    ? `${gameSettings(data.settings).distribution}|${data.launcherRoot || ""}`
     : "";
 }
 
@@ -1338,7 +1344,11 @@ function applyBootstrap(
   const previousResolvedRoot = state.bootstrap?.installRoot;
   state.bootstrap = data;
   applyIntegrityStatus(data.integrity);
-  if (previous && previous.distribution !== data.settings.distribution) {
+  if (
+    previous &&
+    gameSettings(previous).distribution !==
+      gameSettings(data.settings).distribution
+  ) {
     bulletinRequest++;
     state.bulletins = null;
     state.bulletinsLoading = false;
@@ -1360,7 +1370,8 @@ function applyBootstrap(
   }
   if (
     previous &&
-    (previous.preloadRoot || "") !== (data.settings.preloadRoot || "")
+    (gameSettings(previous).preloadRoot || "") !==
+      (gameSettings(data.settings).preloadRoot || "")
   ) {
     state.resourceCatalog = null;
     state.resourcesError = "";
@@ -1381,16 +1392,17 @@ function applyBootstrap(
   if (!syncForm) return;
   applyTheme(settings.theme || "light");
 
+  const saved = gameSettings(settings);
   form.installRoot =
-    settings.installRoot ||
-    (settings.distribution !== "global" ? data.installRoot : "") ||
+    saved.installRoot ||
+    (saved.distribution !== "global" ? data.installRoot : "") ||
     "";
   form.globalInstallRoot =
-    settings.globalInstallRoot ||
-    (settings.distribution === "global" ? data.installRoot : "") ||
+    saved.globalInstallRoot ||
+    (saved.distribution === "global" ? data.installRoot : "") ||
     "";
-  form.distribution = settings.distribution || "cn";
-  form.launchMode = settings.launchMode || "background";
+  form.distribution = saved.distribution || "cn";
+  form.launchMode = saved.launchMode || "background";
   Object.assign(
     form.gameMode,
     {
@@ -1400,16 +1412,16 @@ function applyBootstrap(
       overlay: false,
       gamescope: { ...defaultGamescope },
     },
-    settings.gameMode,
+    saved.gameMode,
   );
 
   Object.assign(form.gamepad, settings.gamepad);
-  form.updates.autoDownload = settings.updates?.autoDownload ?? false;
-  form.updates.metered = settings.updates?.metered ?? "ask";
-  form.updates.limitBytesPerSecond = settings.updates?.limitBytesPerSecond ?? 0;
-  form.updates.windowEnabled = Boolean(settings.updates?.window);
-  form.updates.windowStart = settings.updates?.window?.start || "02:00";
-  form.updates.windowEnd = settings.updates?.window?.end || "07:00";
+  form.updates.autoDownload = saved.updates?.autoDownload ?? false;
+  form.updates.metered = saved.updates?.metered ?? "ask";
+  form.updates.limitBytesPerSecond = saved.updates?.limitBytesPerSecond ?? 0;
+  form.updates.windowEnabled = Boolean(saved.updates?.window);
+  form.updates.windowStart = saved.updates?.window?.start || "02:00";
+  form.updates.windowEnd = saved.updates?.window?.end || "07:00";
   form.stackBulletins = settings.stackBulletins;
   form.adaptiveTheme = settings.adaptiveTheme ?? true;
   applyReduceMotion(Boolean(settings.reduceMotion));
@@ -1417,7 +1429,7 @@ function applyBootstrap(
   form.minimizeToTrayOnClose = settings.minimizeToTrayOnClose ?? true;
   form.showLauncherAfterGameExit = settings.showLauncherAfterGameExit ?? true;
   form.snapshotSuccessMinutes = settings.snapshotSuccessMinutes ?? 1;
-  form.preloadRoot = settings.preloadRoot || "";
+  form.preloadRoot = saved.preloadRoot || "";
   // 记录表单当前对应的持久化状态, 自动保存时只提交真正的修改。
   lastSavedSettings = JSON.stringify(currentSettings());
   void nextTick(syncScrollEdges);
@@ -1469,7 +1481,7 @@ function applyDownloadStatus(status: DownloadStatus) {
   const previousAuto = state.download?.autoWaiting || "";
   const sameDistribution =
     !state.bootstrap ||
-    status.distribution === state.bootstrap.settings.distribution;
+    status.distribution === gameSettings(state.bootstrap.settings).distribution;
   state.download = status;
   if (
     sameDistribution &&
@@ -1584,11 +1596,12 @@ let optionalSelectionRevision = 0;
 // 后端总是读取已保存的设置, 表单尚未提交时先不读取目录.
 function formMatchesSavedSettings() {
   const data = state.bootstrap;
-  if (!data || data.settings.distribution !== form.distribution) return false;
+  const settings = gameSettings(data?.settings);
+  if (!data || settings.distribution !== form.distribution) return false;
   const saved =
     form.distribution === "cn"
-      ? data.settings.installRoot
-      : data.settings.globalInstallRoot;
+      ? settings.installRoot
+      : settings.globalInstallRoot;
   return (
     normalizedRoot(saved || data.installRoot) ===
     normalizedRoot(currentInstallRoot())
@@ -1968,7 +1981,8 @@ function writeBulletinCache(feed: BulletinFeed, distribution: string) {
 
 export async function fetchBulletins(silent = true, force = false) {
   const epoch = generation;
-  const distribution = state.bootstrap?.settings.distribution || "cn";
+  const distribution =
+    gameSettings(state.bootstrap?.settings).distribution || "cn";
   if (state.bulletinsLoading) return;
   const cached = readBulletinCache(distribution);
   if (
@@ -2267,13 +2281,17 @@ function installPathsChanged(
   previousResolvedRoot?: string,
 ) {
   if (!previous) return false;
-  if (previous.distribution !== next.distribution) return true;
+  const previousGame = gameSettings(previous);
+  const nextGame = gameSettings(next);
+  if (previousGame.distribution !== nextGame.distribution) return true;
   const previousRoot =
-    previous.distribution === "cn"
-      ? previous.installRoot
-      : previous.globalInstallRoot;
+    previousGame.distribution === "cn"
+      ? previousGame.installRoot
+      : previousGame.globalInstallRoot;
   const nextRoot =
-    next.distribution === "cn" ? next.installRoot : next.globalInstallRoot;
+    nextGame.distribution === "cn"
+      ? nextGame.installRoot
+      : nextGame.globalInstallRoot;
   if (normalizedRoot(previousRoot || "") === normalizedRoot(nextRoot || ""))
     return false;
   // 首次自动保存会把界面上的默认探测目录写入设置, 这不算切换目录。
@@ -2296,22 +2314,25 @@ function currentSettings(): Settings {
   )
     ? form.launchMode
     : "background";
-  return {
+  const savedGame = gameSettings(persisted ?? state.bootstrap?.settings);
+  const gameId = activeGame(persisted ?? state.bootstrap?.settings);
+  const games: Settings["games"] = {
+    ...(state.bootstrap?.settings.games ?? {}),
+  };
+  const game: GameSettings = {
     installRoot: persisted
-      ? persisted.installRoot
+      ? savedGame.installRoot
       : form.installRoot.trim() || null,
     globalInstallRoot: persisted
-      ? persisted.globalInstallRoot
+      ? savedGame.globalInstallRoot
       : form.globalInstallRoot.trim() || null,
-    distribution: persisted ? persisted.distribution : form.distribution,
-    runtimeEnvironments: JSON.parse(
-      JSON.stringify(state.bootstrap?.settings.runtimeEnvironments ?? []),
-    ),
-    activeEnvironment: state.bootstrap?.settings.activeEnvironment ?? null,
-    stableEnvironment: state.bootstrap?.settings.stableEnvironment ?? null,
+    distribution: persisted ? savedGame.distribution : form.distribution,
+    preloadRoot: form.preloadRoot.trim() || null,
     launchMode,
-    gameMode: { ...form.gameMode, gamescope: { ...form.gameMode.gamescope } },
-    gamepad: JSON.parse(JSON.stringify(form.gamepad)),
+    gameMode: {
+      ...form.gameMode,
+      gamescope: { ...form.gameMode.gamescope },
+    },
     updates: {
       autoDownload: form.updates.autoDownload,
       metered: form.updates.metered,
@@ -2320,6 +2341,17 @@ function currentSettings(): Settings {
         ? { start: form.updates.windowStart, end: form.updates.windowEnd }
         : null,
     },
+    activeEnvironment: savedGame.activeEnvironment,
+    stableEnvironment: savedGame.stableEnvironment,
+  };
+  games[gameId] = game;
+  return {
+    activeGame: gameId,
+    games,
+    runtimeEnvironments: JSON.parse(
+      JSON.stringify(state.bootstrap?.settings.runtimeEnvironments ?? []),
+    ),
+    gamepad: JSON.parse(JSON.stringify(form.gamepad)),
     language: "zh-CN",
     reduceMotion: form.reduceMotion,
     stackBulletins: form.stackBulletins,
@@ -2329,7 +2361,6 @@ function currentSettings(): Settings {
     minimizeToTrayOnClose: form.minimizeToTrayOnClose,
     showLauncherAfterGameExit: form.showLauncherAfterGameExit,
     snapshotSuccessMinutes: form.snapshotSuccessMinutes,
-    preloadRoot: form.preloadRoot.trim() || null,
   };
 }
 

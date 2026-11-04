@@ -59,8 +59,8 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
     let bootstrap = call("bootstrap", json!({}));
     let mut settings = bootstrap["result"]["settings"].clone();
     assert!(settings.is_object(), "{bootstrap}");
-    settings["installRoot"] = json!(directory.join("installation-cn"));
-    settings["globalInstallRoot"] = json!(directory.join("installation-global"));
+    settings["games"]["nte"]["installRoot"] = json!(directory.join("installation-cn"));
+    settings["games"]["nte"]["globalInstallRoot"] = json!(directory.join("installation-global"));
     assert!(call("save_settings", json!({"settings":settings}))
         .get("result")
         .is_some());
@@ -194,7 +194,7 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
             .is_some()
     );
     settings["theme"] = json!("dark");
-    settings["distribution"] = json!("global");
+    settings["games"]["nte"]["distribution"] = json!("global");
     let saved = call("save_settings", json!({"settings":settings}));
     assert_eq!(saved["result"]["settings"]["theme"], "dark", "{saved}");
     for (command, args) in [

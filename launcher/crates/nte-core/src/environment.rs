@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::disk;
 use crate::distribution::Distribution;
+use crate::game_profile::GameId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,13 +71,16 @@ pub struct RuntimeEnvironment {
     pub name: String,
     pub proton: ProtonPin,
     pub install_root: PathBuf,
+    #[serde(default)]
+    pub game: GameId,
     pub distribution: Distribution,
     pub created_at: u64,
 }
 
 impl RuntimeEnvironment {
-    pub fn matches(&self, install_root: &Path, distribution: Distribution) -> bool {
-        distribution == self.distribution
+    pub fn matches(&self, game: GameId, install_root: &Path, distribution: Distribution) -> bool {
+        game == self.game
+            && distribution == self.distribution
             && install_root
                 .canonicalize()
                 .is_ok_and(|root| root == self.install_root)
@@ -187,6 +191,7 @@ pub fn create(
     source: Option<(&Path, &Path)>,
     proton: &Path,
     install_root: &Path,
+    game: GameId,
     distribution: Distribution,
     name: &str,
 ) -> Result<RuntimeEnvironment> {
@@ -246,6 +251,7 @@ pub fn create(
         name: name.into(),
         proton: pin,
         install_root,
+        game,
         distribution,
         created_at: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
     })
@@ -481,10 +487,34 @@ mod tests {
                 Some((&self.0.join("source"), &self.0.join("proton-a"))),
                 &self.0.join("proton-b"),
                 &self.0.join("install"),
+                GameId::Nte,
                 Distribution::Cn,
                 "新版测试",
             )
         }
+    }
+
+    #[test]
+    fn legacy_environments_belong_to_nte() {
+        let directory = TempDir::new("environment-legacy");
+        directory.write("proton/proton", "runner");
+        directory.write("proton/toolmanifest.vdf", "manifest");
+        directory.write("install/game.pak", "game");
+        let profile = create(
+            &directory.join("data"),
+            None,
+            &directory.join("proton"),
+            &directory.join("install"),
+            GameId::Nte,
+            Distribution::Cn,
+            "legacy",
+        )
+        .unwrap();
+        let mut value = serde_json::to_value(&profile).unwrap();
+        value.as_object_mut().unwrap().remove("game");
+        let legacy: RuntimeEnvironment = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.game, GameId::Nte);
+        assert_eq!(legacy, profile);
     }
 
     #[test]
@@ -514,8 +544,9 @@ mod tests {
             dir.join("install")
         );
         assert_eq!(profile.proton.path, dir.join("proton-b"));
-        assert!(profile.matches(&dir.join("install"), Distribution::Cn));
-        assert!(!profile.matches(&dir.join("install"), Distribution::Global));
+        assert!(profile.matches(GameId::Nte, &dir.join("install"), Distribution::Cn));
+        assert!(!profile.matches(GameId::Hsr, &dir.join("install"), Distribution::Cn));
+        assert!(!profile.matches(GameId::Nte, &dir.join("install"), Distribution::Global));
         discard(&dir.join("data"), &profile).unwrap();
         assert!(!prefix.exists());
         assert_eq!(dir.read_text("install/game.pak"), "shared game");
@@ -581,6 +612,7 @@ mod tests {
             )),
             &dir.join("proton-a"),
             &dir.join("install"),
+            GameId::Nte,
             Distribution::Cn,
             "第二次实验",
         )
@@ -610,6 +642,7 @@ mod tests {
             Some((&dir.join("source"), &dir.join("proton-b"))),
             &dir.join("proton-c"),
             &dir.join("install"),
+            GameId::Nte,
             Distribution::Cn,
             "B 环境克隆到 C",
         )
@@ -621,6 +654,7 @@ mod tests {
             Some((&prefix, &profile.proton.path)),
             &dir.join("proton-b"),
             &dir.join("install"),
+            GameId::Nte,
             Distribution::Cn,
             "C 再克隆到 B",
         )
@@ -775,6 +809,7 @@ mod tests {
             Some((&dir.join("source"), &dir.join("proton-a"))),
             &dir.join("proton-b"),
             &dir.join("source/drive_c/NTE"),
+            GameId::Nte,
             Distribution::Cn,
             "游戏在前缀中",
         )
@@ -801,6 +836,7 @@ mod tests {
                 Some((&dir.join("source"), &dir.join("proton-a"))),
                 &dir.join("proton-b"),
                 &dir.join("install"),
+                GameId::Nte,
                 Distribution::Cn,
                 name
             )
@@ -811,6 +847,7 @@ mod tests {
             Some((&dir.join("source"), &dir.join("proton-a"))),
             &dir.join("proton-b"),
             &dir.join("install"),
+            GameId::Nte,
             Distribution::Cn,
             "recursive"
         )

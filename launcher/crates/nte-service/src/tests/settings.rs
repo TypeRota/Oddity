@@ -4,10 +4,14 @@ use crate::*;
 #[test]
 fn settings_default_matches_the_ui_contract() {
     let settings = Settings::default();
-    assert!(settings.install_root.is_none());
-    assert!(settings.global_install_root.is_none());
-    assert_eq!(settings.distribution, Distribution::Cn);
-    assert_eq!(settings.launch_mode, "background");
+    assert!(settings.current().install_root.is_none());
+    assert!(settings.current().global_install_root.is_none());
+    assert_eq!(settings.current().distribution, Distribution::Cn);
+    assert_eq!(settings.active_game, nte_core::game_profile::GameId::Nte);
+    assert!(settings
+        .games
+        .contains_key(&nte_core::game_profile::GameId::Nte));
+    assert_eq!(settings.current().launch_mode, "background");
     assert_eq!(settings.language, "zh-CN");
     assert!(!settings.reduce_motion);
     assert!(!settings.stack_bulletins);
@@ -16,20 +20,20 @@ fn settings_default_matches_the_ui_contract() {
     assert!(settings.minimize_to_tray_on_close);
     assert!(settings.show_launcher_after_game_exit);
     assert_eq!(settings.snapshot_success_minutes, 1);
-    assert!(!settings.updates.auto_download);
+    assert!(!settings.current().updates.auto_download);
     assert_eq!(
-        settings.updates.metered,
+        settings.current().updates.metered,
         nte_core::updates::MeteredPolicy::Ask
     );
-    assert_eq!(settings.updates.limit_bytes_per_second, 0);
-    assert!(settings.updates.window.is_none());
+    assert_eq!(settings.current().updates.limit_bytes_per_second, 0);
+    assert!(settings.current().updates.window.is_none());
 }
 
 #[test]
 fn download_only_blocks_region_and_install_paths() {
     let current = Settings::default();
     let mut next = current.clone();
-    next.launch_mode = "direct".into();
+    next.current_mut().launch_mode = "direct".into();
     next.language = "en-US".into();
     next.reduce_motion = true;
     next.theme = "dark".into();
@@ -39,15 +43,15 @@ fn download_only_blocks_region_and_install_paths() {
     assert!(!download_paths_changed(&current, &next));
 
     let mut next = current.clone();
-    next.install_root = Some("/games/nte".into());
+    next.current_mut().install_root = Some("/games/nte".into());
     assert!(download_paths_changed(&current, &next));
 
     let mut next = current.clone();
-    next.global_install_root = Some("/games/nte-global".into());
+    next.current_mut().global_install_root = Some("/games/nte-global".into());
     assert!(download_paths_changed(&current, &next));
 
     let mut next = current.clone();
-    next.distribution = Distribution::Global;
+    next.current_mut().distribution = Distribution::Global;
     assert!(download_paths_changed(&current, &next));
 }
 
@@ -58,27 +62,28 @@ fn settings_round_trip_through_the_config_dir() {
     env.set("XDG_CONFIG_HOME", dir.path());
 
     // 没有配置文件时使用默认值
-    assert_eq!(load_settings().launch_mode, "background");
+    assert_eq!(load_settings().current().launch_mode, "background");
     assert_eq!(settings_path(), dir.join("oddity/settings.json"));
 
-    let settings = Settings {
-        install_root: Some("/games/nte".to_string()),
-        global_install_root: Some("/games/nte-global".to_string()),
-        distribution: Distribution::Global,
-        launch_mode: "direct".to_string(),
-        language: "en-US".to_string(),
-        reduce_motion: true,
-        stack_bulletins: true,
-        theme: "dark".to_string(),
-        hero_media: "photo".to_string(),
-        minimize_to_tray_on_close: false,
-        show_launcher_after_game_exit: false,
-        snapshot_success_minutes: 10,
-        ..Default::default()
-    };
+    let mut settings = crate::tests::settings_with_game(
+        Distribution::Global,
+        Some(PathBuf::from("/games/nte")),
+        Some(PathBuf::from("/games/nte-global")),
+    );
+    settings.current_mut().launch_mode = "direct".to_string();
+    settings.language = "en-US".to_string();
+    settings.reduce_motion = true;
+    settings.stack_bulletins = true;
+    settings.theme = "dark".to_string();
+    settings.hero_media = "photo".to_string();
+    settings.minimize_to_tray_on_close = false;
+    settings.show_launcher_after_game_exit = false;
+    settings.snapshot_success_minutes = 10;
     persist_settings(&settings).expect("persist settings");
 
     let text = dir.read_text("oddity/settings.json");
+    assert!(text.contains("\"activeGame\""), "{text}");
+    assert!(text.contains("\"games\""), "{text}");
     assert!(text.contains("\"installRoot\""), "{text}");
     assert!(text.contains("\"reduceMotion\""), "{text}");
     assert!(text.contains("\"minimizeToTrayOnClose\""), "{text}");
@@ -87,13 +92,13 @@ fn settings_round_trip_through_the_config_dir() {
     assert!(!dir.join("oddity/settings.json.tmp").exists());
 
     let loaded = load_settings();
-    assert_eq!(loaded.install_root.as_deref(), Some("/games/nte"));
+    assert_eq!(loaded.current().install_root.as_deref(), Some("/games/nte"));
     assert_eq!(
-        loaded.global_install_root.as_deref(),
+        loaded.current().global_install_root.as_deref(),
         Some("/games/nte-global")
     );
-    assert_eq!(loaded.distribution, Distribution::Global);
-    assert_eq!(loaded.launch_mode, "direct");
+    assert_eq!(loaded.current().distribution, Distribution::Global);
+    assert_eq!(loaded.current().launch_mode, "direct");
     assert_eq!(loaded.language, "en-US");
     assert!(loaded.reduce_motion);
     assert!(loaded.stack_bulletins);
@@ -102,9 +107,9 @@ fn settings_round_trip_through_the_config_dir() {
     assert!(!loaded.minimize_to_tray_on_close);
     assert_eq!(loaded.snapshot_success_minutes, 10);
     assert!(!loaded.show_launcher_after_game_exit);
-    assert!(!loaded.updates.auto_download);
+    assert!(!loaded.current().updates.auto_download);
     assert_eq!(
-        loaded.updates.metered,
+        loaded.current().updates.metered,
         nte_core::updates::MeteredPolicy::Ask
     );
 }
@@ -130,19 +135,19 @@ fn settings_fall_back_when_the_file_is_broken_or_partial() {
     persist_settings(&Settings::default()).expect("persist settings");
 
     dir.write_text("oddity/settings.json", "{ not json");
-    assert_eq!(load_settings().launch_mode, "background");
+    assert_eq!(load_settings().current().launch_mode, "background");
 
     // 缺字段时用 serde 默认值补齐
     dir.write_text("oddity/settings.json", "{\"theme\":\"dark\"}");
     let partial = load_settings();
     assert_eq!(partial.theme, "dark");
     assert!(!partial.stack_bulletins);
-    assert_eq!(partial.launch_mode, "background");
+    assert_eq!(partial.current().launch_mode, "background");
     assert_eq!(partial.hero_media, "video");
     assert!(partial.minimize_to_tray_on_close);
     assert!(partial.show_launcher_after_game_exit);
-    assert!(!partial.updates.auto_download);
-    assert!(partial.updates.window.is_none());
+    assert!(!partial.current().updates.auto_download);
+    assert!(partial.current().updates.window.is_none());
 }
 
 #[test]
@@ -177,7 +182,7 @@ fn settings_report_write_failures() {
     env.set("XDG_CONFIG_HOME", &blocked);
     let error = persist_settings(&Settings::default()).expect_err("cannot create config dir");
     assert!(error.contains("create "), "{error}");
-    assert_eq!(load_settings().launch_mode, "background");
+    assert_eq!(load_settings().current().launch_mode, "background");
 }
 
 #[test]
@@ -302,12 +307,71 @@ fn global_settings_preserve_background_launch_mode() {
     let mut env = EnvGuard::new();
     let directory = TempDir::new("global-settings-background");
     env.set("XDG_CONFIG_HOME", directory.path());
-    let settings = Settings {
-        distribution: Distribution::Global,
-        ..Default::default()
-    };
+    let mut settings = Settings::default();
+    settings.current_mut().distribution = Distribution::Global;
     persist_settings(&settings).unwrap();
     let loaded = load_settings();
-    assert_eq!(loaded.distribution, Distribution::Global);
-    assert_eq!(loaded.launch_mode, "background");
+    assert_eq!(loaded.current().distribution, Distribution::Global);
+    assert_eq!(loaded.current().launch_mode, "background");
+}
+
+#[test]
+fn legacy_settings_file_is_migrated_on_load() {
+    let mut env = EnvGuard::new();
+    let directory = TempDir::new("settings-legacy-file");
+    env.set("XDG_CONFIG_HOME", directory.path());
+    let original = r#"{"distribution":"global","installRoot":"/games/cn","globalInstallRoot":"/games/global","theme":"dark"}"#;
+    directory.write_text("oddity/settings.json", original);
+
+    let loaded = load_settings();
+    let game = loaded.current();
+    assert_eq!(game.distribution, Distribution::Global);
+    assert_eq!(game.install_root.as_deref(), Some("/games/cn"));
+    assert_eq!(game.global_install_root.as_deref(), Some("/games/global"));
+    assert_eq!(loaded.theme, "dark");
+    assert_eq!(directory.read_text("oddity/settings.json.bak"), original);
+    let migrated: serde_json::Value =
+        serde_json::from_str(&directory.read_text("oddity/settings.json")).unwrap();
+    assert!(migrated.get("installRoot").is_none());
+    assert_eq!(migrated["games"]["nte"]["installRoot"], "/games/cn");
+}
+
+#[test]
+fn saving_after_a_failed_migration_backs_up_the_legacy_file() {
+    let mut env = EnvGuard::new();
+    let directory = TempDir::new("settings-legacy-save");
+    env.set("XDG_CONFIG_HOME", directory.path());
+    let original = r#"{"installRoot":"/games/cn","theme":"dark"}"#;
+    directory.write_text("oddity/settings.json", original);
+
+    persist_settings(&Settings::default()).expect("persist settings");
+
+    assert_eq!(directory.read_text("oddity/settings.json.bak"), original);
+    let migrated: serde_json::Value =
+        serde_json::from_str(&directory.read_text("oddity/settings.json")).unwrap();
+    assert!(migrated.get("installRoot").is_none());
+}
+
+#[test]
+fn failed_backup_keeps_the_legacy_file_untouched() {
+    let mut env = EnvGuard::new();
+    let directory = TempDir::new("settings-backup-failure");
+    env.set("XDG_CONFIG_HOME", directory.path());
+    let original = r#"{"installRoot":"/games/cn","theme":"dark"}"#;
+    directory.write_text("oddity/settings.json", original);
+    std::fs::set_permissions(
+        directory.join("oddity"),
+        std::fs::Permissions::from_mode(0o555),
+    )
+    .unwrap();
+
+    let error = persist_settings(&Settings::default()).unwrap_err();
+    assert!(error.contains("备份旧设置失败"), "{error}");
+    assert_eq!(directory.read_text("oddity/settings.json"), original);
+
+    std::fs::set_permissions(
+        directory.join("oddity"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .ok();
 }

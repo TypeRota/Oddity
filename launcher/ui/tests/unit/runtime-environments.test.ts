@@ -22,6 +22,7 @@ beforeEach(() => {
       id: a,
       name: "稳定 A",
       proton: { path: "/proton-a", identity: "pin" },
+      game: "nte",
       distribution: "cn",
       installRoot: "/game",
       createdAt: 1,
@@ -30,13 +31,14 @@ beforeEach(() => {
       id: b,
       name: "实验 B",
       proton: { path: "/proton-b", identity: "pin-b" },
+      game: "nte",
       distribution: "cn",
       installRoot: "/game",
       createdAt: 2,
     },
   ];
-  controller.state.bootstrap.settings.activeEnvironment = b;
-  controller.state.bootstrap.settings.stableEnvironment = a;
+  controller.state.bootstrap.settings.games.nte!.activeEnvironment = b;
+  controller.state.bootstrap.settings.games.nte!.stableEnvironment = a;
   controller.runtimeEnvironmentBusy = ref(false);
   controller.runtimeEnvironmentLocked = ref(false);
   controller.runtimeEnvironmentError = ref("");
@@ -54,7 +56,7 @@ async function render() {
 
 it("首次使用时创建全新运行环境", async () => {
   controller.state.bootstrap.settings.runtimeEnvironments = [];
-  controller.state.bootstrap.settings.activeEnvironment = null;
+  controller.state.bootstrap.settings.games.nte!.activeEnvironment = null;
   const wrapper = await render();
   expect(wrapper.text()).toContain("请先创建 Proton 运行环境");
   expect(wrapper.find("#runtime-environment").exists()).toBe(false);
@@ -99,7 +101,9 @@ it("使用 B 时选中稳定 A, 副本请求使用 A 且不切换当前环境", 
     a,
     "cn",
   );
-  expect(controller.state.bootstrap.settings.activeEnvironment).toBe(b);
+  expect(controller.state.bootstrap.settings.games.nte!.activeEnvironment).toBe(
+    b,
+  );
   expect(wrapper.find("#runtime-environment-name").exists()).toBe(true);
   wrapper
     .findAllComponents({ name: "BaseSelect" })[2]
@@ -136,7 +140,7 @@ it("切换和保留指定环境, 当前和稳定环境不可删除", async () =>
 });
 
 it("删除必须在弹窗中确认, 失败保留弹窗并允许取消和重试", async () => {
-  controller.state.bootstrap.settings.activeEnvironment = a;
+  controller.state.bootstrap.settings.games.nte!.activeEnvironment = a;
   const wrapper = await render();
   wrapper
     .findComponent({ name: "BaseSelect" })

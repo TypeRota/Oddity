@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyDemoPreview, DEMO_NOTICE_KEY, isDemo } from "../../src/core/demo";
 import { bootstrap } from "./fixtures";
+import { gameSettings } from "../../src/core/game";
 
 const preview = {
   protonPath:
@@ -46,13 +47,14 @@ describe("浏览器演示初始化", () => {
       name: "GE-Proton11-5",
       proton: { path: preview.protonPath, identity: "browser-preview" },
       installRoot: data.installRoot,
-      distribution: data.settings.distribution,
+      game: "nte",
+      distribution: gameSettings(data.settings).distribution,
       createdAt: expect.any(Number),
     });
     expect(environment.createdAt).toBeGreaterThanOrEqual(before);
     expect(environment.createdAt).toBeLessThanOrEqual(after);
-    expect(data.settings.activeEnvironment).toBe(environment.id);
-    expect(data.settings.stableEnvironment).toBe(environment.id);
+    expect(gameSettings(data.settings).activeEnvironment).toBe(environment.id);
+    expect(gameSettings(data.settings).stableEnvironment).toBe(environment.id);
     expect(data.checks).toEqual([
       { label: "Proton", ok: true, detail: "GE-Proton11-5" },
       { label: "Wine prefix", ok: true, detail: preview.prefix },
@@ -72,7 +74,7 @@ describe("浏览器演示初始化", () => {
     expect(data.ok).toBe(true);
     expect(data.error).toBeNull();
     expect(data.settings.runtimeEnvironments).toHaveLength(1);
-    expect(data.settings.activeEnvironment).not.toBeNull();
+    expect(gameSettings(data.settings).activeEnvironment).not.toBeNull();
     expect(data.prefixExists).toBe(true);
   });
 });

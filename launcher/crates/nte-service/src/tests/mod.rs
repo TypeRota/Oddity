@@ -25,6 +25,30 @@ mod proton;
 mod settings;
 mod snapshots;
 
+/// 测试里固定用《异环》的内置地区配置.
+pub fn region(
+    distribution: nte_core::distribution::Distribution,
+) -> &'static nte_core::game_profile::RegionProfile {
+    nte_core::game_profile::GameId::Nte
+        .profile()
+        .region(distribution)
+        .expect("NTE region")
+}
+
+/// 构造当前游戏的设置, 避免每个测试重复写 games.nte.
+pub fn settings_with_game(
+    distribution: nte_core::distribution::Distribution,
+    install_root: Option<PathBuf>,
+    global_install_root: Option<PathBuf>,
+) -> nte_core::settings::Settings {
+    let mut settings = nte_core::settings::Settings::default();
+    let game = settings.current_mut();
+    game.distribution = distribution;
+    game.install_root = install_root.map(|path| path.display().to_string());
+    game.global_install_root = global_install_root.map(|path| path.display().to_string());
+    settings
+}
+
 /// 独占进程环境变量并在测试结束时恢复。
 pub struct EnvGuard {
     saved: Vec<(&'static str, Option<OsString>)>,
@@ -153,6 +177,7 @@ pub fn managed_environment(
         None,
         proton,
         install,
+        nte_core::game_profile::GameId::Nte,
         distribution,
         "测试环境",
     )

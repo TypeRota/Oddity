@@ -1,7 +1,8 @@
 import { defaultAttendanceTasks } from "../../src/core/attendanceTasks";
 import { APP_VERSION } from "../../src/core/version";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { bootstrap, settings } from "./fixtures";
+import { bootstrap, settings, withGame } from "./fixtures";
+import { gameSettings } from "../../src/core/game";
 import type { Bootstrap, GameStatus } from "../../src/types/launcher";
 
 const native = vi.hoisted(() => ({
@@ -38,7 +39,7 @@ describe("浏览器命令桥接", () => {
       sourceId: id,
     });
     expect(copied.settings.runtimeEnvironments).toHaveLength(2);
-    expect(copied.settings.activeEnvironment).toBe(id);
+    expect(gameSettings(copied.settings).activeEnvironment).toBe(id);
     await expect(
       invoke("environment_create", {
         distribution: "cn",
@@ -56,7 +57,10 @@ describe("浏览器命令桥接", () => {
       }),
     ).rejects.toThrow("尚未安装");
     await invoke("save_settings", {
-      settings: { ...copied.settings, globalInstallRoot: "/global-game" },
+      settings: withGame(
+        { globalInstallRoot: "/global-game" },
+        copied.settings,
+      ),
     });
     const global = await invoke("environment_create", {
       distribution: "global",
@@ -69,12 +73,12 @@ describe("浏览器命令桥接", () => {
       distribution: "global",
       installRoot: "/global-game",
     });
-    expect(global.settings.distribution).toBe("cn");
+    expect(gameSettings(global.settings).distribution).toBe("cn");
     const switched = await invoke("environment_action", {
       action: "switch",
       id: profile.id,
     });
-    expect(switched.settings.distribution).toBe("global");
+    expect(gameSettings(switched.settings).distribution).toBe("global");
     expect(switched.installRoot).toBe("/global-game");
   });
   it("模拟环境创建、切换、保留和删除, 并保护当前和稳定环境", async () => {
@@ -309,7 +313,7 @@ describe("浏览器命令桥接", () => {
     });
     expect(
       await invoke("save_settings", {
-        settings: { ...settings, installRoot: "/new", theme: "dark" },
+        settings: { ...withGame({ installRoot: "/new" }), theme: "dark" },
       }),
     ).toMatchObject({ installRoot: "/new", settings: { theme: "dark" } });
     await invoke("save_settings", { settings: { ...settings } });

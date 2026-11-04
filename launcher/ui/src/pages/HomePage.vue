@@ -14,12 +14,15 @@ import {
 import { playerExpanded } from "../composables/useSceneMotion";
 import HomeGameRecords from "../components/HomeGameRecords.vue";
 import { gamepad } from "../core/gamepad";
+import { gameSettings } from "../core/game";
 import GamepadGlyph from "../components/GamepadGlyph.vue";
 const isActive = computed(() => state.page === "home");
 const prefersReduced = useReducedMotion();
 const reduced = computed(() => form.reduceMotion || prefersReduced.value);
 const gameName = computed(() =>
-  state.bootstrap?.settings.distribution === "global" ? "NTE" : "异环",
+  gameSettings(state.bootstrap?.settings).distribution === "global"
+    ? "NTE"
+    : "异环",
 );
 // 状态行始终占位, 避免提示显隐时把标题和启动按钮一起顶动.
 const statusVisible = computed(

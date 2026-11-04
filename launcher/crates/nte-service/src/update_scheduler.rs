@@ -80,7 +80,7 @@ fn install_root(settings: &Settings) -> std::path::PathBuf {
 
 fn installed(settings: &Settings) -> bool {
     install_root(settings)
-        .join(settings.distribution.launcher_dir())
+        .join(crate::current_launcher_dir(settings))
         .join("UserData/Patcher/PatcherSDK/ResList.xml")
         .is_file()
 }
@@ -130,7 +130,7 @@ fn run(app: ServiceHandle, stop: &AtomicBool) {
         let Some(settings) = settings(&app) else {
             continue;
         };
-        let options = &settings.updates;
+        let options = &settings.current().updates;
         if !options.auto_download {
             announced = false;
             // 关闭自动下载后清掉残留的等待提示.
@@ -174,8 +174,8 @@ fn run(app: ServiceHandle, stop: &AtomicBool) {
         }
 
         let root = install_root(&settings).display().to_string();
-        let same_target =
-            status.distribution == settings.distribution.as_str() && status.install_root == root;
+        let same_target = status.distribution == settings.current().distribution.as_str()
+            && status.install_root == root;
         // 手动预下载的结果保留一个检查周期, 便于查看完成状态或继续下载.
         if same_target
             && status.mode == "preload"
@@ -302,7 +302,7 @@ fn monitor_until_idle(
         std::thread::sleep(MONITOR_INTERVAL);
         // 下载期间设置可能被修改, 每次都读取最新值.
         if let Some(settings) = settings(app) {
-            monitor(app, &status, &settings.updates, metered_cache);
+            monitor(app, &status, &settings.current().updates, metered_cache);
         }
         match snapshot(app) {
             Some(next) => status = next,
@@ -385,16 +385,14 @@ mod tests {
     }
 
     fn test_settings(root: &Path) -> Settings {
-        Settings {
-            distribution: Distribution::Cn,
-            install_root: Some(root.display().to_string()),
-            updates: Options {
-                auto_download: true,
-                metered: MeteredPolicy::Allow,
-                ..Options::default()
-            },
-            ..Settings::default()
-        }
+        let mut settings =
+            crate::tests::settings_with_game(Distribution::Cn, Some(root.to_path_buf()), None);
+        settings.current_mut().updates = Options {
+            auto_download: true,
+            metered: MeteredPolicy::Allow,
+            ..Options::default()
+        };
+        settings
     }
 
     fn test_app(settings: Settings) -> ServiceHandle {
@@ -489,7 +487,7 @@ mod tests {
         let dir = TempDir::new("disabled");
         let root = installed_root(&dir);
         let mut settings = test_settings(&root);
-        settings.updates.auto_download = false;
+        settings.current_mut().updates.auto_download = false;
         let app = test_app(settings);
         ready_status(&app, &root);
         let stop = start(&app);
@@ -536,7 +534,7 @@ mod tests {
         let dir = TempDir::new("gates");
         let root = installed_root(&dir);
         let mut settings = test_settings(&root);
-        settings.updates.window = Some(window_outside_now());
+        settings.current_mut().updates.window = Some(window_outside_now());
         let app = test_app(settings);
         let root_text = root.display().to_string();
         set_status(&app, |status| {
@@ -559,7 +557,13 @@ mod tests {
             status.disk_available_bytes = Some(0);
             status.disk_required_bytes = 1;
         });
-        app.state.settings.lock().unwrap().updates.window = None;
+        app.state
+            .settings
+            .lock()
+            .unwrap()
+            .current_mut()
+            .updates
+            .window = None;
         assert!(wait_until(
             || download_status(&app).auto_waiting == "disk",
             Duration::from_secs(2)
@@ -572,7 +576,7 @@ mod tests {
         let dir = TempDir::new("monitor");
         let root = installed_root(&dir);
         let mut settings = test_settings(&root);
-        settings.updates.window = Some(window_outside_now());
+        settings.current_mut().updates.window = Some(window_outside_now());
         let app = test_app(settings);
         let root_text = root.display().to_string();
         set_status(&app, |status| {
@@ -652,7 +656,7 @@ mod tests {
         assert!(installed(&settings));
         let mut cache = None;
         assert_eq!(
-            current_metered(&settings.updates, &mut cache, 0),
+            current_metered(&settings.current().updates, &mut cache, 0),
             Metered::No
         );
         assert!(now_ms() > 0);

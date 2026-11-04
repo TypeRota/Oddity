@@ -33,7 +33,7 @@ impl Fixture {
     fn new(distribution: Distribution, installed: bool) -> Self {
         let dir = TempDir::new("download-task");
         let server = HttpServer::start();
-        let root = distribution.launcher_dir();
+        let root = crate::tests::region(distribution).launcher_dir;
         let id = if distribution == Distribution::Cn {
             "1289"
         } else {
@@ -41,7 +41,7 @@ impl Fixture {
         };
         let ini = format!(
             "[General]\nGameID={id}\nClient={}\n",
-            distribution.client_exe()
+            crate::tests::region(distribution).client_exe
         );
         let patcher = serde_json::json!({
             "gameResUrl": [server.base()], "branchName": "test", "appId": id
@@ -86,12 +86,11 @@ impl Fixture {
             dir.write(EXE, exe);
             dir.write(DATA, &data);
         }
-        let settings = Settings {
+        let settings = crate::tests::settings_with_game(
             distribution,
-            install_root: Some(dir.path().display().to_string()),
-            global_install_root: Some(dir.path().display().to_string()),
-            ..Settings::default()
-        };
+            Some(dir.path().to_path_buf()),
+            Some(dir.path().to_path_buf()),
+        );
         let mut app = crate::service::test_service();
         std::sync::Arc::get_mut(&mut app).unwrap().downloads = DownloadManager::default();
         std::sync::Arc::get_mut(&mut app).unwrap().state = AppState {
@@ -110,7 +109,9 @@ impl Fixture {
 
     fn plan(&self, install: bool) -> install::LauncherPlan {
         install::LauncherPlan {
-            root: self.dir.join(self.settings.distribution.launcher_dir()),
+            root: self
+                .dir
+                .join(crate::tests::region(self.settings.current().distribution).launcher_dir),
             version: "1.0".into(),
             files: if install { self.files.clone() } else { vec![] },
             download_bytes: self.files.iter().map(|file| file.zip_size.unwrap()).sum(),
@@ -143,7 +144,7 @@ impl Fixture {
     }
 
     fn ledger(&self) {
-        let id = if self.settings.distribution == Distribution::Cn {
+        let id = if self.settings.current().distribution == Distribution::Cn {
             "1289"
         } else {
             "3000001"
@@ -152,7 +153,7 @@ impl Fixture {
         self.dir.write(
             format!(
                 "{}/UserData/Patcher/PatcherSDK/ResList.xml",
-                self.settings.distribution.launcher_dir()
+                crate::tests::region(self.settings.current().distribution).launcher_dir
             ),
             game::pxml::encode(xml.as_bytes(), id).unwrap(),
         );
@@ -224,12 +225,28 @@ fn preload_marker_errors_are_returned_before_publishing_completion() {
 }
 
 #[test]
+fn download_tasks_reject_games_without_an_install_recipe() {
+    let fixture = Fixture::new(Distribution::Cn, true);
+    fixture.app.state.settings.lock().unwrap().active_game = nte_core::game_profile::GameId::Hsr;
+    let error = prepare_task(
+        &fixture.app.state,
+        &fixture.app.downloads,
+        "check",
+        false,
+        "manual",
+        &Arc::new(AtomicBool::new(false)),
+    )
+    .unwrap_err();
+    assert!(error.contains("尚未支持"), "{error}");
+}
+
+#[test]
 fn preload_disk_budget_uses_the_custom_cache_filesystem() {
     let fixture = Fixture::new(Distribution::Cn, true);
     let cache_root =
         std::path::Path::new("/dev/shm").join(format!("oddity-disk-test-{}", std::process::id()));
     let mut settings = fixture.settings.clone();
-    settings.preload_root = Some(cache_root.display().to_string());
+    settings.current_mut().preload_root = Some(cache_root.display().to_string());
     *fixture.app.state.settings.lock().unwrap() = settings.clone();
     let cancel = Arc::new(AtomicBool::new(false));
     prepare_task(
@@ -372,7 +389,10 @@ fn installs_from_an_empty_directory_for_both_regions() {
 #[test]
 fn launcher_mode_repairs_same_size_launcher_content_changes() {
     let fixture = Fixture::new(Distribution::Cn, true);
-    let relative = format!("{}/Config/Config.ini", Distribution::Cn.launcher_dir());
+    let relative = format!(
+        "{}/Config/Config.ini",
+        crate::tests::region(Distribution::Cn).launcher_dir
+    );
     let original = fixture.dir.read(&relative);
     let mut corrupted = original.clone();
     corrupted[0] ^= 0xff;
@@ -427,7 +447,7 @@ fn launcher_mode_keeps_the_previous_full_check_for_game_resources() {
             phase: "needs-update".into(),
             mode: "check".into(),
             distribution: "cn".into(),
-            install_root: fixture.settings.install_root.clone().unwrap(),
+            install_root: fixture.settings.current().install_root.clone().unwrap(),
             full: true,
             ..DownloadStatus::default()
         };
@@ -744,7 +764,14 @@ fn automatic_check_uses_detection_without_persisting_it() {
     let mut env = crate::tests::EnvGuard::new();
     let fixture = Fixture::new(Distribution::Cn, true);
     env.set("NTE_ROOT", fixture.dir.path());
-    fixture.app.state.settings.lock().unwrap().install_root = None;
+    fixture
+        .app
+        .state
+        .settings
+        .lock()
+        .unwrap()
+        .current_mut()
+        .install_root = None;
     let (status, effective, _) = prepare_task(
         &fixture.app.state,
         &fixture.app.downloads,
@@ -758,13 +785,14 @@ fn automatic_check_uses_detection_without_persisting_it() {
         status.install_root,
         fixture.dir.path().display().to_string()
     );
-    assert_eq!(effective.install_root, Some(status.install_root));
+    assert_eq!(effective.current().install_root, Some(status.install_root));
     assert!(fixture
         .app
         .state
         .settings
         .lock()
         .unwrap()
+        .current()
         .install_root
         .is_none());
 }
@@ -929,9 +957,15 @@ fn preload_includes_selected_optional_resources_without_touching_live_files() {
     let cache_root = TempDir::new("preload-cache-root");
     let custom_root = cache_root.path().to_path_buf();
     let mut fixture = fixture;
-    fixture.settings.preload_root = Some(custom_root.display().to_string());
-    fixture.app.state.settings.lock().unwrap().preload_root =
-        Some(custom_root.display().to_string());
+    fixture.settings.current_mut().preload_root = Some(custom_root.display().to_string());
+    fixture
+        .app
+        .state
+        .settings
+        .lock()
+        .unwrap()
+        .current_mut()
+        .preload_root = Some(custom_root.display().to_string());
 
     let catalog = game_resource_catalog(fixture.app.clone()).unwrap();
     assert_eq!(catalog.resources.len(), 1);

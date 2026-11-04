@@ -14,7 +14,7 @@ fn gamescope_preserves_the_umu_handoff_and_environment() {
         "#!/bin/sh\nwhile [ \"$1\" != -- ]; do printf '%s\\n' \"$1\" >> '{}'; shift; done\nshift\nexec \"$@\"\n", options_log.display()
     ));
     let mut settings = fixture.settings("direct");
-    settings.game_mode.gamescope = nte_core::game_mode::gamescope::Options {
+    settings.current_mut().game_mode.gamescope = nte_core::game_mode::gamescope::Options {
         enabled: true,
         game_width: 1280,
         game_height: 720,
@@ -108,13 +108,12 @@ impl LaunchFixture {
     }
 
     fn settings(&self, mode: &str) -> Settings {
-        Settings {
-            install_root: Some(self.launcher.display().to_string()),
-            runtime_environments: vec![self.profile.clone()],
-            active_environment: Some(self.profile.id.clone()),
-            launch_mode: mode.to_string(),
-            ..Default::default()
-        }
+        let mut settings =
+            crate::tests::settings_with_game(Distribution::Cn, Some(self.launcher.clone()), None);
+        settings.runtime_environments = vec![self.profile.clone()];
+        settings.current_mut().active_environment = Some(self.profile.id.clone());
+        settings.current_mut().launch_mode = mode.to_string();
+        settings
     }
 
     /// 等假 umu-run 把参数与环境变量写出来。
@@ -243,12 +242,13 @@ fn managed_environment_launch_uses_its_prefix_proton_and_log_directory() {
         Some((&fixture.prefix, &fixture.proton)),
         &target,
         &fixture.dir.join("install"),
+        nte_core::game_profile::GameId::Nte,
         Distribution::Cn,
         "新版测试",
     )
     .unwrap();
     let mut settings = fixture.settings("official");
-    settings.active_environment = Some(profile.id.clone());
+    settings.current_mut().active_environment = Some(profile.id.clone());
     settings.runtime_environments.push(profile.clone());
     let invocation = launch_impl(&settings).unwrap();
     let prefix = profile.prefix(&data_dir()).unwrap();
@@ -264,7 +264,7 @@ fn managed_environment_launch_uses_its_prefix_proton_and_log_directory() {
     assert!(nte_core::environment::lock_prefix(&prefix).is_ok());
     fixture.dir.write("GE-Proton-New/proton", "changed version");
     assert!(expect_launch_error(launch_impl(&settings)).contains("Proton 已变化"));
-    settings.active_environment = None;
+    settings.current_mut().active_environment = None;
     assert!(environment_commands::prefix(&settings)
         .unwrap_err()
         .contains("请先"));
@@ -339,10 +339,9 @@ fn launch_background_mode_configures_the_native_session() {
 #[test]
 fn launch_reports_a_configured_empty_root_as_not_installed() {
     let fixture = LaunchFixture::new("launch-empty-root");
-    let settings = Settings {
-        install_root: Some(fixture.dir.join("empty-install").display().to_string()),
-        ..fixture.settings("official")
-    };
+    let mut settings = fixture.settings("official");
+    settings.current_mut().install_root =
+        Some(fixture.dir.join("empty-install").display().to_string());
 
     let error = expect_launch_error(launch_impl(&settings));
     assert!(error.contains("尚未安装启动器文件"), "{error}");
@@ -515,7 +514,7 @@ fn launch_requires_the_expected_tools_and_files() {
     without_proton.runtime_environments[0].proton.path = fixture.dir.join("missing");
     assert!(expect_launch_error(launch_impl(&without_proton)).contains("Proton"));
     let mut unselected = settings.clone();
-    unselected.active_environment = None;
+    unselected.current_mut().active_environment = None;
     assert!(expect_launch_error(launch_impl(&unselected)).contains("请先"));
 
     // 官方启动器目录里没有 NTEGame.exe
@@ -523,26 +522,21 @@ fn launch_requires_the_expected_tools_and_files() {
     fixture
         .dir
         .write_text("bare-install/NTELauncher/Config/Config.ini", "[VERSION]\n");
-    let bare = Settings {
-        install_root: Some(
-            fixture
-                .dir
-                .join("bare-install/NTELauncher")
-                .display()
-                .to_string(),
-        ),
-        ..settings.clone()
-    };
-    let mut bare = bare;
+    let mut bare = settings.clone();
+    bare.current_mut().install_root = Some(
+        fixture
+            .dir
+            .join("bare-install/NTELauncher")
+            .display()
+            .to_string(),
+    );
     bare.runtime_environments[0].install_root = fixture.dir.join("bare-install");
     let error = expect_launch_error(launch_impl(&bare));
     assert!(error.contains("官方启动器不存在"), "{error}");
 
     // 直接模式找不到游戏可执行文件
-    let no_game = Settings {
-        launch_mode: "direct".to_string(),
-        ..bare.clone()
-    };
+    let mut no_game = bare.clone();
+    no_game.current_mut().launch_mode = "direct".to_string();
     let error = expect_launch_error(launch_impl(&no_game));
     assert!(error.contains("未找到 HTGame.exe"), "{error}");
 }
@@ -571,11 +565,9 @@ fn global_launch_handoff_uses_global_client_for_official_and_background_modes() 
             "install/NTEGlobal/Config/Config.ini",
             "[General]\nGameID=3000001\n",
         );
-        let mut settings = Settings {
-            distribution: Distribution::Global,
-            global_install_root: Some(global.display().to_string()),
-            ..fixture.settings(mode)
-        };
+        let mut settings = fixture.settings(mode);
+        settings.current_mut().distribution = Distribution::Global;
+        settings.current_mut().global_install_root = Some(global.display().to_string());
         settings.runtime_environments[0].distribution = Distribution::Global;
         // 注入测试坐标仅验证交接参数, 不代表国际服按钮已实机验证.
         let invocation = launch_impl_with_profile(&settings, |path| {
@@ -621,14 +613,16 @@ fn live_global_background_launch() {
 fn live_background_launch(distribution: Distribution, root_key: &str) {
     let read_path = |key| std::env::var(key).unwrap_or_else(|_| panic!("missing {key}"));
     let root = read_path(root_key);
-    let settings = Settings {
-        distribution,
-        install_root: (distribution == Distribution::Cn).then_some(root.clone()),
-        global_install_root: (distribution == Distribution::Global).then_some(root),
-        runtime_environments: load_settings().runtime_environments,
-        active_environment: Some(read_path("ODDITY_LIVE_ENVIRONMENT")),
-        ..Default::default()
-    };
+    let mut settings = Settings::default();
+    let game = settings.current_mut();
+    game.distribution = distribution;
+    if distribution == Distribution::Cn {
+        game.install_root = Some(root.clone());
+    } else {
+        game.global_install_root = Some(root);
+    }
+    settings.runtime_environments = load_settings().runtime_environments;
+    settings.current_mut().active_environment = Some(read_path("ODDITY_LIVE_ENVIRONMENT"));
     let invocation = launch_impl(&settings).expect("launch background");
     let session = invocation.background.clone().expect("background session");
     let monitored = session.clone();

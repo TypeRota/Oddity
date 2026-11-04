@@ -25,6 +25,7 @@ use native_session::NativeSession;
 use nte_core::bulletin::{self, BulletinFeed};
 use nte_core::config::{Ini, LauncherConfig};
 use nte_core::distribution::Distribution;
+use nte_core::game_profile::{GameProfile, RegionProfile};
 use nte_core::launch::background::{click_profile, ClickProfile};
 use nte_core::manifest::Manifest;
 use nte_core::settings::{Settings, UserPaths};
@@ -788,9 +789,17 @@ fn expand_path(raw: &str) -> PathBuf {
     PathBuf::from(raw)
 }
 
-fn install_seeds(base: &Path, distribution: Distribution, seeds: &mut Vec<PathBuf>) {
+fn install_seeds(
+    base: &Path,
+    profile: &GameProfile,
+    distribution: Distribution,
+    seeds: &mut Vec<PathBuf>,
+) {
+    let Some(region) = profile.region(distribution) else {
+        return;
+    };
     for name in [
-        distribution.default_install_name(),
+        region.default_install_name,
         "Neverness To Everness",
         "Neverness to Everness",
     ] {
@@ -799,13 +808,13 @@ fn install_seeds(base: &Path, distribution: Distribution, seeds: &mut Vec<PathBu
             base.join("Program Files"),
             base.to_path_buf(),
         ] {
-            let candidate = prefix.join(name).join(distribution.launcher_dir());
+            let candidate = prefix.join(name).join(region.launcher_dir);
             if !seeds.contains(&candidate) {
                 seeds.push(candidate);
             }
         }
     }
-    seeds.push(base.join(distribution.launcher_dir()));
+    seeds.push(base.join(region.launcher_dir));
 }
 
 fn data_base() -> PathBuf {
@@ -888,13 +897,14 @@ fn settings_path() -> PathBuf {
 
 fn load_settings() -> Settings {
     let path = settings_path();
-    match fs::read_to_string(&path) {
-        Ok(text) => {
-            let mut settings: Settings = serde_json::from_str(&text).unwrap_or_default();
+    match Settings::load(&path) {
+        Ok(mut settings) => {
             if settings.gamepad.validate().is_err() {
                 settings.gamepad = Default::default();
             }
-            settings.updates.normalize();
+            for game in settings.games.values_mut() {
+                game.updates.normalize();
+            }
             settings.snapshot_success_minutes =
                 nte_core::snapshots::normalize_success_minutes(settings.snapshot_success_minutes);
             settings
@@ -906,10 +916,13 @@ fn load_settings() -> Settings {
 fn persist_settings(settings: &Settings) -> Result<(), String> {
     let dir = config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let path = settings_path();
+    // 迁移写盘失败后第一次保存会覆盖旧文件, 这里先把原始内容补备份.
+    nte_core::settings::backup_legacy(&path).map_err(|error| format!("备份旧设置失败: {error}"))?;
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     let tmp = dir.join("settings.json.tmp");
     fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    fs::rename(&tmp, settings_path()).map_err(|e| format!("rename settings: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("rename settings: {e}"))?;
     Ok(())
 }
 
@@ -926,26 +939,40 @@ fn which(cmd: &str) -> Option<PathBuf> {
     None
 }
 
-fn configured_install_root(settings: &Settings) -> Option<&str> {
-    match settings.distribution {
-        Distribution::Cn => settings.install_root.as_deref(),
-        Distribution::Global => settings.global_install_root.as_deref(),
-    }
+fn game_profile(settings: &Settings) -> &'static GameProfile {
+    settings.active_game.profile()
 }
 
-fn default_install_root(distribution: Distribution) -> PathBuf {
-    home_dir()
-        .join("Games")
-        .join(distribution.default_install_name())
+fn current_region(settings: &Settings) -> Option<&'static RegionProfile> {
+    game_profile(settings).region(settings.current().distribution)
+}
+
+fn current_launcher_dir(settings: &Settings) -> &'static str {
+    current_region(settings).map_or("", |region| region.launcher_dir)
+}
+
+fn configured_install_root(settings: &Settings) -> Option<&str> {
+    let game = settings.current();
+    game.install_root_for(game.distribution)
+}
+
+fn default_install_root(profile: &GameProfile, distribution: Distribution) -> PathBuf {
+    let name = profile
+        .region(distribution)
+        .map_or(profile.name, |region| region.default_install_name);
+    home_dir().join("Games").join(name)
 }
 
 fn selected_install_root(settings: &Settings) -> PathBuf {
+    let Some(region) = current_region(settings) else {
+        return home_dir().join("Games");
+    };
     let path = configured_install_root(settings)
         .map(expand_path)
-        .unwrap_or_else(|| default_install_root(settings.distribution));
+        .unwrap_or_else(|| default_install_root(game_profile(settings), region.distribution));
     if path
         .file_name()
-        .is_some_and(|name| name == settings.distribution.launcher_dir())
+        .is_some_and(|name| name == region.launcher_dir)
     {
         path.parent().unwrap_or(&path).to_path_buf()
     } else {
@@ -964,20 +991,26 @@ fn effective_install_root(settings: &Settings, launcher_root: Option<&Path>) -> 
         .unwrap_or_else(|| selected_install_root(settings))
 }
 
-fn normalize_launcher_root_for(path: &Path, distribution: Distribution) -> Option<PathBuf> {
+fn normalize_launcher_root_for(
+    path: &Path,
+    profile: &GameProfile,
+    distribution: Distribution,
+) -> Option<PathBuf> {
+    let region = profile.region(distribution)?;
     let root = if path.join("Config").join("Config.ini").is_file() {
         path.to_path_buf()
     } else {
-        let nested = path.join(distribution.launcher_dir());
+        let nested = path.join(region.launcher_dir);
         if !nested.join("Config").join("Config.ini").is_file() {
             return None;
         }
         nested
     };
     if root.file_name().is_some_and(|name| {
-        [Distribution::Cn, Distribution::Global]
-            .into_iter()
-            .any(|other| other != distribution && name == other.launcher_dir())
+        profile
+            .regions
+            .iter()
+            .any(|other| other.distribution != distribution && name == other.launcher_dir)
     }) {
         return None;
     }
@@ -985,42 +1018,40 @@ fn normalize_launcher_root_for(path: &Path, distribution: Distribution) -> Optio
         Ok(config) => config.game_id,
         Err(_) => return Some(root),
     };
-    let expected = distribution.game_id();
-    (game_id == 0 || game_id == expected).then_some(root)
+    (game_id == 0 || game_id == region.app_id).then_some(root)
 }
 
 fn detect_launcher_root(settings: &Settings) -> Option<PathBuf> {
+    let profile = game_profile(settings);
+    let distribution = settings.current().distribution;
+    let region = profile.region(distribution)?;
     // 已配置安装目录时只认该目录. 找不到就是未安装, 不能静默改用其他副本.
     if let Some(raw) = configured_install_root(settings) {
-        return normalize_launcher_root_for(&expand_path(raw), settings.distribution);
+        return normalize_launcher_root_for(&expand_path(raw), profile, distribution);
     }
 
     for key in ["NTE_ROOT", "NTE_INSTALL"] {
         if let Some(raw) = std::env::var_os(key) {
             if let Some(root) = normalize_launcher_root_for(
                 &expand_path(&raw.to_string_lossy()),
-                settings.distribution,
+                profile,
+                distribution,
             ) {
                 return Some(root);
             }
         }
     }
 
-    let mut seeds: Vec<PathBuf> = vec![
-        default_install_root(settings.distribution).join(settings.distribution.launcher_dir())
-    ];
-    install_seeds(&home_dir().join("Games"), settings.distribution, &mut seeds);
-    if settings.distribution == Distribution::Cn {
-        seeds.push(
-            home_dir()
-                .join("Games/异环")
-                .join(settings.distribution.launcher_dir()),
-        );
+    let mut seeds: Vec<PathBuf> =
+        vec![default_install_root(profile, distribution).join(region.launcher_dir)];
+    install_seeds(&home_dir().join("Games"), profile, distribution, &mut seeds);
+    if distribution == Distribution::Cn {
+        seeds.push(home_dir().join("Games/异环").join(region.launcher_dir));
     }
 
     if let Ok(cwd) = std::env::current_dir() {
         for ancestor in cwd.ancestors() {
-            install_seeds(ancestor, settings.distribution, &mut seeds);
+            install_seeds(ancestor, profile, distribution, &mut seeds);
         }
     }
 
@@ -1031,10 +1062,10 @@ fn detect_launcher_root(settings: &Settings) -> Option<PathBuf> {
         if let Ok(entries) = fs::read_dir(mount_root) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                install_seeds(&path, settings.distribution, &mut seeds);
+                install_seeds(&path, profile, distribution, &mut seeds);
                 if let Ok(children) = fs::read_dir(&path) {
                     for child in children.flatten() {
-                        install_seeds(&child.path(), settings.distribution, &mut seeds);
+                        install_seeds(&child.path(), profile, distribution, &mut seeds);
                     }
                 }
             }
@@ -1042,7 +1073,7 @@ fn detect_launcher_root(settings: &Settings) -> Option<PathBuf> {
     }
 
     for seed in seeds {
-        if let Some(root) = normalize_launcher_root_for(&seed, settings.distribution) {
+        if let Some(root) = normalize_launcher_root_for(&seed, profile, distribution) {
             return Some(root);
         }
     }
@@ -1239,7 +1270,7 @@ fn bootstrap_impl(settings: &Settings) -> Bootstrap {
     let umu = which("umu-run");
     let official_exe = launcher_root
         .as_ref()
-        .map(|root| root.join(settings.distribution.client_exe()));
+        .and_then(|root| current_region(settings).map(|region| root.join(region.client_exe)));
     let official_ready = official_exe.as_ref().is_some_and(|path| path.is_file());
 
     let mut checks = Vec::new();
@@ -1433,7 +1464,7 @@ async fn check_update(state: &AppState, full: bool) -> Result<CheckResult, Strin
     let Some(root) = detected else {
         return Ok(CheckResult {
             installed: false,
-            distribution: settings.distribution.as_str().into(),
+            distribution: settings.current().distribution.as_str().into(),
             install_root: install_root.display().to_string(),
             remote_version: String::new(),
             local_version: String::new(),
@@ -1448,7 +1479,7 @@ async fn check_update(state: &AppState, full: bool) -> Result<CheckResult, Strin
             changed_preview: Vec::new(),
         });
     };
-    let distribution = settings.distribution;
+    let distribution = settings.current().distribution;
     crate::service::spawn_blocking(move || check_impl(&root, &install_root, distribution, full))
         .await
         .map_err(|e| format!("校验任务失败：{e}"))?
@@ -1460,11 +1491,17 @@ async fn fetch_bulletins(distribution: Distribution) -> Result<BulletinFeed, Str
         .map_err(|error| format!("公告抓取任务失败：{error}"))
 }
 
-/// 下载任务只依赖游戏地区和两个地区的安装目录.
+/// 下载任务只依赖当前游戏的地区和两个地区的安装目录.
 fn download_paths_changed(current: &Settings, next: &Settings) -> bool {
+    if current.active_game != next.active_game {
+        return true;
+    }
+    let current = current.current();
+    let next = next.current();
     current.distribution != next.distribution
         || current.install_root != next.install_root
         || current.global_install_root != next.global_install_root
+        || current.preload_root != next.preload_root
 }
 
 fn save_settings(app: &service::Service, settings: Settings) -> Result<Bootstrap, String> {
@@ -1478,16 +1515,17 @@ fn save_settings(app: &service::Service, settings: Settings) -> Result<Bootstrap
     next.snapshot_success_minutes =
         nte_core::snapshots::normalize_success_minutes(next.snapshot_success_minutes);
     next.gamepad.validate()?;
-    next.game_mode
+    next.current()
+        .game_mode
         .gamescope
         .validate()
         .map_err(|error| error.to_string())?;
-    next.updates.validate()?;
+    next.current().updates.validate()?;
     if !matches!(
-        next.launch_mode.as_str(),
+        next.current().launch_mode.as_str(),
         "official" | "background" | "direct"
     ) {
-        next.launch_mode = "background".into();
+        next.current_mut().launch_mode = "background".into();
     }
     if next.theme != "light" && next.theme != "dark" {
         next.theme = "light".into();
@@ -1844,7 +1882,13 @@ fn launch_impl_inner(
         nte_core::install_lock::InstallLock::acquire(&install_dir)
             .map_err(|error| error.to_string())?,
     );
-    let official_exe = launcher_root.join(settings.distribution.client_exe());
+    let region = current_region(settings).ok_or_else(|| {
+        format!(
+            "《{}》不支持当前地区, 请先在设置中切换地区.",
+            game_profile(settings).name
+        )
+    })?;
+    let official_exe = launcher_root.join(region.client_exe);
     let direct_exe = game_exe_for(&launcher_root);
     let prefix = environment_commands::prefix(settings)?;
     environment_commands::verify_proton(settings)?;
@@ -1863,7 +1907,7 @@ fn launch_impl_inner(
     ensure_sdk_link(&prefix, &install_dir)?;
 
     let (mode, exe, args, display_exe, helper_env, official_env) =
-        if settings.launch_mode == "direct" {
+        if settings.current().launch_mode == "direct" {
             let game_exe = direct_exe.ok_or_else(|| "未找到 HTGame.exe".to_string())?;
             if !game_exe.is_file() {
                 return Err(format!("游戏可执行文件不存在：{}", game_exe.display()));
@@ -1883,7 +1927,7 @@ fn launch_impl_inner(
                 Some((win_exe, win_cwd)),
                 None,
             )
-        } else if settings.launch_mode == "background" {
+        } else if settings.current().launch_mode == "background" {
             let official = official_exe;
             if !official.is_file() {
                 return Err(format!("官方启动器不存在：{}", official.display()));
@@ -1928,13 +1972,13 @@ fn launch_impl_inner(
             .join("UserData/Log")
             .join(format!(
                 "{}.log",
-                settings.distribution.client_exe().trim_end_matches(".exe")
+                region.client_exe.trim_end_matches(".exe")
             ));
         Some(NativeSession::prepare(
             &log_dir,
             &native_log,
             profile,
-            settings.game_mode.gamescope.enabled,
+            settings.current().game_mode.gamescope.enabled,
         )?)
     } else {
         None
@@ -2014,9 +2058,10 @@ fn launch_impl_inner(
     }
 
     let mut cmd = settings
+        .current()
         .game_mode
         .gamescope
-        .command(&umu, settings.game_mode.overlay)
+        .command(&umu, settings.current().game_mode.overlay)
         .map_err(|error| error.to_string())?;
     cmd.arg(&exe).args(&args);
     cmd.env("WINEPREFIX", &prefix)
@@ -2030,7 +2075,7 @@ fn launch_impl_inner(
     nte_core::launch::configure_display(
         &mut cmd,
         std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty()),
-        settings.game_mode.gamescope.enabled,
+        settings.current().game_mode.gamescope.enabled,
     );
     for key in [
         "NTE_GAME_EXE",
@@ -2077,7 +2122,7 @@ fn launch_impl_inner(
         .current_dir(install_dir);
     cmd.process_group(0);
     let game_mode = Arc::new(Mutex::new(nte_core::game_mode::Session::start(
-        &settings.game_mode,
+        &settings.current().game_mode,
         &mut cmd,
     )));
     let snapshot_id = match (snapshots, &snapshot_facts) {
@@ -2172,7 +2217,7 @@ fn launch_settings(state: &AppState) -> Result<Settings, String> {
 fn begin_launch(tracker: &mut GameTracker, settings: &Settings) -> Arc<AtomicBool> {
     let cancel = Arc::new(AtomicBool::new(false));
     tracker.starting = true;
-    let background = settings.launch_mode == "background";
+    let background = settings.current().launch_mode == "background";
     tracker.launch = background.then(|| LaunchProgress::new(now_millis()));
     tracker.launch_cancel = background.then(|| Arc::clone(&cancel));
     cancel
@@ -2231,7 +2276,7 @@ async fn start_launch(app: ServiceHandle, settings: Settings) -> Result<LaunchRe
         let state = &app.state;
         emit_game_status(&app, state);
     }
-    let distribution = settings.distribution;
+    let distribution = settings.current().distribution;
     let snapshot_success_after_ms =
         nte_core::snapshots::success_after_ms(settings.snapshot_success_minutes);
     let snapshots = app.snapshots.clone();
@@ -2340,7 +2385,7 @@ async fn external_launch_impl(
     .await
     .map_err(|e| e.to_string())??;
     let mut settings = selection.settings;
-    settings.launch_mode = request.mode.as_str().to_string();
+    settings.current_mut().launch_mode = request.mode.as_str().to_string();
     let result = start_launch(app.clone(), settings).await?;
     let _ = app.emit("host-hide", ());
     Ok(result)
@@ -2378,6 +2423,16 @@ async fn handle_external_launch(
 }
 
 fn launch_failure_summary(app: &ServiceHandle, request: &cli::LaunchRequest) -> String {
+    let profile = {
+        let state = &app.state;
+        state
+            .settings
+            .lock()
+            .ok()
+            .map(|settings| settings.active_game)
+            .unwrap_or_default()
+            .profile()
+    };
     let distribution = request.region.or_else(|| {
         let state = &app.state;
         let settings = state.settings.lock().ok()?;
@@ -2390,10 +2445,10 @@ fn launch_failure_summary(app: &ServiceHandle, request: &cli::LaunchRequest) -> 
                 return Some(environment.distribution);
             }
         }
-        Some(settings.distribution)
+        Some(settings.current().distribution)
     });
-    match distribution {
-        Some(distribution) => format!("{}启动失败", distribution.game_name()),
+    match distribution.and_then(|distribution| profile.region(distribution)) {
+        Some(region) => format!("{}启动失败", region.display_name),
         None => "Oddity 启动失败".to_string(),
     }
 }

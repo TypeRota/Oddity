@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 
 use crate::distribution::Distribution;
 use crate::game::check::UpdateItem;
+use crate::game_profile::GameId;
 
 /// 默认下载吞吐（字节/秒）。实测 2026-11-02 国服单连接 5.9–6.7 MB/s、
 /// 4–8 连接聚合 10–12 MB/s；这里取偏保守的聚合值。
@@ -99,11 +100,11 @@ impl Default for Throughput {
 
 impl Throughput {
     pub fn for_app_id(app_id: &str) -> Self {
-        let distribution = app_id
+        let region = app_id
             .parse::<i64>()
             .ok()
-            .and_then(Distribution::from_game_id);
-        let download = match distribution {
+            .and_then(|app_id| GameId::Nte.profile().region_for_app_id(app_id));
+        let download = match region.map(|region| region.distribution) {
             Some(Distribution::Global) => DEFAULT_DOWNLOAD_GLOBAL,
             _ => DEFAULT_DOWNLOAD_CN,
         };

@@ -244,12 +244,16 @@ fn reference_view(reference: &Reference) -> ReferenceView {
 pub(crate) fn current_inputs(settings: &Settings) -> snapshots::Inputs {
     let launcher_root = crate::detect_launcher_root(settings);
     let install_root = crate::effective_install_root(settings, launcher_root.as_deref());
-    let environment = settings.active_environment.as_ref().and_then(|id| {
-        settings
-            .runtime_environments
-            .iter()
-            .find(|environment| &environment.id == id)
-    });
+    let environment = settings
+        .current()
+        .active_environment
+        .as_ref()
+        .and_then(|id| {
+            settings
+                .runtime_environments
+                .iter()
+                .find(|environment| &environment.id == id)
+        });
     let proton_name = environment
         .and_then(|environment| environment.proton.path.file_name())
         .map(|name| name.to_string_lossy().into_owned());
@@ -271,9 +275,9 @@ pub(crate) fn current_inputs(settings: &Settings) -> snapshots::Inputs {
         .and_then(|root| LauncherConfig::load(root).ok())
         .map(|config| config.version);
     let umu = crate::which("umu-run");
-    let gamescope = &settings.game_mode.gamescope;
+    let gamescope = &settings.current().game_mode.gamescope;
     snapshots::Inputs {
-        distribution: settings.distribution,
+        distribution: settings.current().distribution,
         install_root: Some(install_root),
         launcher_root,
         game_version,
@@ -285,7 +289,7 @@ pub(crate) fn current_inputs(settings: &Settings) -> snapshots::Inputs {
         proton_ok,
         prefix,
         prefix_ok,
-        launch_mode: settings.launch_mode.clone(),
+        launch_mode: settings.current().launch_mode.clone(),
         gamescope: snapshots::Gamescope {
             enabled: gamescope.enabled,
             width: gamescope.game_width,

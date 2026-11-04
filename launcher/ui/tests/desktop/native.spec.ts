@@ -146,7 +146,13 @@ test("真实 Rust 命令、窗口、导航、手柄与退出", async ({}, info) 
       await window.oddity!.invoke("save_settings", {
         settings: {
           ...data.settings,
-          installRoot,
+          games: {
+            ...data.settings.games,
+            [data.settings.activeGame]: {
+              ...data.settings.games[data.settings.activeGame]!,
+              installRoot,
+            },
+          },
           theme: "dark",
           heroMedia: "photo",
         },
@@ -223,7 +229,16 @@ test("真实 Rust 命令、窗口、导航、手柄与退出", async ({}, info) 
     const failure = await page.evaluate(async () => {
       const data = await window.oddity!.invoke("bootstrap");
       await window.oddity!.invoke("save_settings", {
-        settings: { ...data.settings, distribution: "global" },
+        settings: {
+          ...data.settings,
+          games: {
+            ...data.settings.games,
+            [data.settings.activeGame]: {
+              ...data.settings.games[data.settings.activeGame]!,
+              distribution: "global" as const,
+            },
+          },
+        },
       });
       try {
         await window.oddity!.invoke("attendance_run");

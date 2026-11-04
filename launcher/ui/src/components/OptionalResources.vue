@@ -15,6 +15,7 @@ import {
   downloadBusy,
 } from "../core/controller";
 import type { OptionalResource } from "../types/launcher";
+import { gameSettings } from "../core/game";
 
 const { reduced, surface } = useControlMotion();
 const bodyId = useId();
@@ -112,15 +113,18 @@ watch(
 );
 
 watch(
-  () => [
-    active.value,
-    Boolean(state.bootstrap?.launcherRoot),
-    state.bootstrap?.settings.distribution,
-    state.bootstrap?.installRoot,
-    state.bootstrap?.settings.installRoot,
-    state.bootstrap?.settings.globalInstallRoot,
-    state.bootstrap?.settings.preloadRoot,
-  ],
+  () => {
+    const game = gameSettings(state.bootstrap?.settings);
+    return [
+      active.value,
+      Boolean(state.bootstrap?.launcherRoot),
+      game.distribution,
+      state.bootstrap?.installRoot,
+      game.installRoot,
+      game.globalInstallRoot,
+      game.preloadRoot,
+    ];
+  },
   () => {
     if (!active.value || !state.bootstrap?.launcherRoot) return;
     if (

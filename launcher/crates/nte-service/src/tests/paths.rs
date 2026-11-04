@@ -16,13 +16,23 @@ fn expands_home_paths_only() {
 #[test]
 fn install_seeds_cover_the_known_layouts() {
     let mut seeds = Vec::new();
-    install_seeds(Path::new("/mnt/games"), Distribution::Cn, &mut seeds);
+    install_seeds(
+        Path::new("/mnt/games"),
+        nte_core::game_profile::GameId::Nte.profile(),
+        Distribution::Cn,
+        &mut seeds,
+    );
     assert!(seeds.contains(&PathBuf::from(
         "/mnt/games/Program Files (x86)/Neverness To Everness/NTELauncher"
     )));
     assert!(seeds.contains(&PathBuf::from("/mnt/games/NTELauncher")));
     seeds.clear();
-    install_seeds(Path::new("/mnt/games"), Distribution::Global, &mut seeds);
+    install_seeds(
+        Path::new("/mnt/games"),
+        nte_core::game_profile::GameId::Nte.profile(),
+        Distribution::Global,
+        &mut seeds,
+    );
     assert!(seeds.contains(&PathBuf::from(
         "/mnt/games/Program Files (x86)/Neverness To Everness/NTEGlobal"
     )));
@@ -51,12 +61,20 @@ fn which_only_accepts_executable_files() {
 fn normalizes_launcher_roots() {
     let dir = TempDir::new("root-normalize");
     assert_eq!(
-        normalize_launcher_root_for(dir.path(), Distribution::Cn),
+        normalize_launcher_root_for(
+            dir.path(),
+            nte_core::game_profile::GameId::Nte.profile(),
+            Distribution::Cn,
+        ),
         None
     );
     dir.write_text("Config/Config.ini", "[VERSION]\n");
     assert_eq!(
-        normalize_launcher_root_for(dir.path(), Distribution::Cn),
+        normalize_launcher_root_for(
+            dir.path(),
+            nte_core::game_profile::GameId::Nte.profile(),
+            Distribution::Cn,
+        ),
         Some(dir.path().to_path_buf())
     );
 
@@ -64,7 +82,11 @@ fn normalizes_launcher_roots() {
     let install = TempDir::new("root-normalize-nested");
     install.write_text("NTELauncher/Config/Config.ini", "[VERSION]\n");
     assert_eq!(
-        normalize_launcher_root_for(install.path(), Distribution::Cn),
+        normalize_launcher_root_for(
+            install.path(),
+            nte_core::game_profile::GameId::Nte.profile(),
+            Distribution::Cn,
+        ),
         Some(install.join("NTELauncher"))
     );
 }
@@ -81,17 +103,16 @@ fn configured_root_is_authoritative() {
     install.write_text("NTELauncher/Config/Config.ini", "[VERSION]\n");
     let root = install.join("NTELauncher");
 
-    let settings = Settings {
-        install_root: Some(install.path().display().to_string()),
-        ..Default::default()
-    };
+    let settings = crate::tests::settings_with_game(
+        Distribution::Cn,
+        Some(install.path().to_path_buf()),
+        None,
+    );
     assert_eq!(detect_launcher_root(&settings), Some(root));
 
     // 配置目录无效时不能改用环境变量里的其他安装.
-    let stale = Settings {
-        install_root: Some("/nope".to_string()),
-        ..Default::default()
-    };
+    let stale =
+        crate::tests::settings_with_game(Distribution::Cn, Some(PathBuf::from("/nope")), None);
     env.set("NTE_ROOT", install.path());
     assert_eq!(detect_launcher_root(&stale), None);
 }
@@ -129,12 +150,11 @@ fn global_install_uses_its_own_root_and_game_id() {
     let install = TempDir::new("detect-global");
     install.write_text("NTELauncher/Config/Config.ini", "[General]\nGameID=1289\n");
     install.write_text("NTEGlobal/Config/Config.ini", "[General]\nGameID=3000001\n");
-    let settings = Settings {
-        install_root: Some(install.path().display().to_string()),
-        global_install_root: Some(install.path().display().to_string()),
-        distribution: Distribution::Global,
-        ..Default::default()
-    };
+    let settings = crate::tests::settings_with_game(
+        Distribution::Global,
+        Some(install.path().to_path_buf()),
+        Some(install.path().to_path_buf()),
+    );
     assert_eq!(
         detect_launcher_root(&settings),
         Some(install.join("NTEGlobal"))
@@ -142,7 +162,11 @@ fn global_install_uses_its_own_root_and_game_id() {
     assert_eq!(selected_install_root(&settings), install.path());
     install.write_text("NTEGlobal/Config/Config.ini", "[General]\nGameID=1289\n");
     assert_eq!(
-        normalize_launcher_root_for(install.path(), Distribution::Global),
+        normalize_launcher_root_for(
+            install.path(),
+            nte_core::game_profile::GameId::Nte.profile(),
+            Distribution::Global,
+        ),
         None
     );
 }
@@ -233,10 +257,8 @@ fn global_auto_detection_honors_environment_and_home_seeds() {
     env.set("HOME", home.path());
     env.remove("NTE_ROOT");
     env.remove("NTE_INSTALL");
-    let settings = Settings {
-        distribution: Distribution::Global,
-        ..Default::default()
-    };
+    let mut settings = Settings::default();
+    settings.current_mut().distribution = Distribution::Global;
     home.write_text(
         "Games/Neverness To Everness/NTEGlobal/Config/Config.ini",
         "[General]\nGameID=3000001\n",

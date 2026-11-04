@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::LauncherConfig;
 use crate::distribution::Distribution;
+use crate::game_profile::{GameId, RegionProfile};
 use crate::manifest::{Manifest, ManifestFile};
 use crate::{update, version, Error, Result};
 
@@ -36,6 +37,12 @@ fn mirror_url(url: &str, distribution: Distribution) -> String {
     }
 }
 
+fn region(distribution: Distribution) -> Result<&'static RegionProfile> {
+    GameId::Nte.profile().region(distribution).ok_or_else(|| {
+        Error::Unsupported(format!("内置的《异环》配置缺少{}", distribution.label()))
+    })
+}
+
 pub fn plan_launcher(
     distribution: Distribution,
     install_root: &Path,
@@ -50,26 +57,26 @@ pub fn plan_launcher_cancellable(
     full: bool,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<LauncherPlan> {
-    let urls = launcher_version_urls(distribution);
+    let urls = launcher_version_urls(distribution)?;
     let urls: Vec<&str> = urls.iter().map(String::as_str).collect();
     plan_launcher_with_urls_cancellable(distribution, install_root, full, &urls, cancelled)
 }
 
 /// 开发或联调时可用 ODDITY_LAUNCHER_VERSION_URL 指向本地虚拟 CDN.
 /// 发布构建忽略这个变量, 始终使用官方地址.
-fn launcher_version_urls(distribution: Distribution) -> Vec<String> {
+fn launcher_version_urls(distribution: Distribution) -> Result<Vec<String>> {
     #[cfg(debug_assertions)]
     if let Ok(value) = std::env::var("ODDITY_LAUNCHER_VERSION_URL") {
         let value = value.trim();
         if !value.is_empty() {
-            return vec![value.to_string()];
+            return Ok(vec![value.to_string()]);
         }
     }
-    distribution
-        .version_urls()
+    Ok(region(distribution)?
+        .version_urls
         .iter()
         .map(|url| (*url).to_string())
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -97,7 +104,7 @@ fn plan_launcher_with_urls_cancellable(
         Distribution::Global => Distribution::Cn,
     };
     if install_root
-        .join(other.launcher_dir())
+        .join(region(other)?.launcher_dir)
         .join("Config/Config.ini")
         .is_file()
     {
@@ -106,9 +113,9 @@ fn plan_launcher_with_urls_cancellable(
             install_root.display()
         )));
     }
-    let root = install_root.join(distribution.launcher_dir());
+    let root = install_root.join(region(distribution)?.launcher_dir);
     if let Ok(config) = LauncherConfig::load(&root) {
-        let expected = distribution.game_id();
+        let expected = region(distribution)?.app_id;
         if config.game_id != 0 && config.game_id != expected {
             return Err(Error::Integrity(format!(
                 "安装目录中的游戏地区与当前选择不一致: {}",
@@ -206,14 +213,20 @@ mod tests {
         for distribution in [Distribution::Cn, Distribution::Global] {
             let dir = TempDir::new("install-plan");
             let plan = plan_launcher_with_urls(distribution, dir.path(), false, &[&url]).unwrap();
-            assert_eq!(plan.root, dir.join(distribution.launcher_dir()));
+            assert_eq!(
+                plan.root,
+                dir.join(region(distribution).unwrap().launcher_dir)
+            );
             assert_eq!(plan.file_count(), 1);
             assert_eq!(plan.download_bytes, 100);
             assert_eq!(plan.required_disk_bytes(), 104);
             assert_eq!(plan.version, "1.0");
             assert_eq!(plan.zip_bases[0], server.url("/launcher"));
             dir.write(
-                format!("{}/Config/Config.ini", distribution.launcher_dir()),
+                format!(
+                    "{}/Config/Config.ini",
+                    region(distribution).unwrap().launcher_dir
+                ),
                 b"evil",
             );
             assert_eq!(
@@ -238,16 +251,22 @@ mod tests {
             (Distribution::Global, Distribution::Cn, 1289),
         ] {
             let dir = TempDir::new("install-region");
-            dir.write(format!("{}/Config/Config.ini", other.launcher_dir()), b"");
+            dir.write(
+                format!("{}/Config/Config.ini", region(other).unwrap().launcher_dir),
+                b"",
+            );
             assert!(
                 plan_launcher_with_urls(distribution, dir.path(), false, &[])
                     .unwrap_err()
                     .to_string()
                     .contains("另一地区")
             );
-            std::fs::remove_dir_all(dir.join(other.launcher_dir())).unwrap();
+            std::fs::remove_dir_all(dir.join(region(other).unwrap().launcher_dir)).unwrap();
             dir.write(
-                format!("{}/Config/Config.ini", distribution.launcher_dir()),
+                format!(
+                    "{}/Config/Config.ini",
+                    region(distribution).unwrap().launcher_dir
+                ),
                 format!("[General]\nGameID={game_id}\n"),
             );
             assert!(
@@ -297,11 +316,11 @@ mod tests {
             "http://127.0.0.1:9/Version.ini",
         );
         assert_eq!(
-            launcher_version_urls(Distribution::Cn),
+            launcher_version_urls(Distribution::Cn).unwrap(),
             vec!["http://127.0.0.1:9/Version.ini".to_string()]
         );
         env.set("ODDITY_LAUNCHER_VERSION_URL", "  ");
-        assert!(!launcher_version_urls(Distribution::Cn).is_empty());
+        assert!(!launcher_version_urls(Distribution::Cn).unwrap().is_empty());
     }
 
     #[test]

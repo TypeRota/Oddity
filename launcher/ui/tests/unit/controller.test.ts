@@ -5,7 +5,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { APP_VERSION } from "../../src/core/version";
-import { bootstrap, check, session, settings } from "./fixtures";
+import { bootstrap, check, session, settings, withGame } from "./fixtures";
+import { gameSettings } from "../../src/core/game";
+
+/** save_settings 里当前游戏字段的匹配器. */
+const savedGame = (overrides: Record<string, unknown>) =>
+  expect.objectContaining({
+    games: expect.objectContaining({
+      nte: expect.objectContaining(overrides),
+    }),
+  });
+
+const savedSettings = (
+  game: Record<string, unknown>,
+  rest: Record<string, unknown> = {},
+) =>
+  expect.objectContaining({
+    ...rest,
+    games: expect.objectContaining({
+      nte: expect.objectContaining(game),
+    }),
+  });
 import type {
   Bootstrap,
   CheckResult,
@@ -246,12 +266,13 @@ beforeEach(() => {
             ...backend.downloadStatus,
             mode: args!.mode,
             phase: "checking",
-            distribution: backend.data.settings.distribution,
+            distribution: gameSettings(backend.data.settings).distribution,
             installRoot:
-              backend.data.settings.distribution === "global"
-                ? backend.data.settings.globalInstallRoot ||
+              gameSettings(backend.data.settings).distribution === "global"
+                ? gameSettings(backend.data.settings).globalInstallRoot ||
                   backend.data.installRoot
-                : backend.data.settings.installRoot || backend.data.installRoot,
+                : gameSettings(backend.data.settings).installRoot ||
+                  backend.data.installRoot,
           };
           return structuredClone(backend.downloadStatus);
         }
@@ -283,9 +304,10 @@ beforeEach(() => {
         case "save_settings":
           backend.data.settings = { ...args!.settings };
           backend.data.installRoot =
-            args!.settings.distribution === "global"
-              ? args!.settings.globalInstallRoot || "/games/global"
-              : args!.settings.installRoot || "/game";
+            gameSettings(args!.settings).distribution === "global"
+              ? gameSettings(args!.settings).globalInstallRoot ||
+                "/games/global"
+              : gameSettings(args!.settings).installRoot || "/game";
           return structuredClone(backend.data);
         case "launch_official":
           backend.status = session({ running: true, pid: 123 });
@@ -378,7 +400,7 @@ it("环境操作先保存修改, 处理期间拒绝重入并同步新登记", as
     "save_settings",
   ]);
   expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-    settings: expect.objectContaining({ globalInstallRoot: "/new-install" }),
+    settings: savedGame({ globalInstallRoot: "/new-install" }),
   });
   releaseSave();
   await flushPromises();
@@ -402,6 +424,7 @@ it("环境操作先保存修改, 处理期间拒绝重入并同步新登记", as
           name: "测试环境",
           proton: { path: "/new-proton", identity: "pin" },
           installRoot: "/game",
+          game: "nte",
           distribution: "cn",
           createdAt: 1,
         },
@@ -423,7 +446,9 @@ it("环境操作失败时保留原选择并释放等待状态", async () => {
   expect(await c.runtimeEnvironmentAction("switch", "missing")).toBe(false);
   expect(c.runtimeEnvironmentError.value).toContain("Proton 已变化");
   expect(c.runtimeEnvironmentBusy.value).toBe(false);
-  expect(c.state.bootstrap?.settings.activeEnvironment).toBeNull();
+  expect(
+    gameSettings(c.state.bootstrap?.settings).activeEnvironment,
+  ).toBeNull();
 });
 const key = (value: string, options: KeyboardEventInit = {}) =>
   document.dispatchEvent(
@@ -478,7 +503,10 @@ describe("启动与设置", () => {
       installRoot: "",
       prefix: "",
       protonPath: "",
-      settings: { ...settings, theme: "", heroMedia: "", launchMode: "" },
+      settings: withGame(
+        { launchMode: "" },
+        { ...settings, theme: "", heroMedia: "" },
+      ),
     });
     const c = await boot();
     expect(button("setup-chip").hidden).toBe(false);
@@ -575,11 +603,11 @@ describe("启动与设置", () => {
     await c.saveSettings();
     expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
       settings: {
-        ...settings,
-        installRoot: "/new",
-        globalInstallRoot: null,
-        distribution: "cn",
-        launchMode: "background",
+        ...withGame({
+          installRoot: "/new",
+          globalInstallRoot: null,
+          launchMode: "background",
+        }),
         language: "zh-CN",
         theme: "dark",
         reduceMotion: false,
@@ -621,7 +649,7 @@ describe("启动与设置", () => {
       .at(-1);
     expect(saved).toBeDefined();
     expect(
-      (saved![1] as { settings: Settings }).settings.updates
+      gameSettings((saved![1] as { settings: Settings }).settings).updates
         .limitBytesPerSecond,
     ).toBe(13107200);
 
@@ -634,7 +662,7 @@ describe("启动与设置", () => {
       .filter(([command]) => command === "save_settings")
       .at(-1);
     expect(
-      (cleared![1] as { settings: Settings }).settings.updates
+      gameSettings((cleared![1] as { settings: Settings }).settings).updates
         .limitBytesPerSecond,
     ).toBe(0);
   });
@@ -656,7 +684,7 @@ describe("启动与设置", () => {
     await vi.advanceTimersByTimeAsync(1);
     await flushPromises();
     expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({ installRoot: "/auto-game" }),
+      settings: savedGame({ installRoot: "/auto-game" }),
     });
     expect(c.ui.saveState).toBe("saved");
     await vi.advanceTimersByTimeAsync(2000);
@@ -674,7 +702,7 @@ describe("启动与设置", () => {
     await vi.advanceTimersByTimeAsync(500);
     await flushPromises();
     expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({ installRoot: "/new-game" }),
+      settings: savedGame({ installRoot: "/new-game" }),
     });
     expect(backend.invoke).toHaveBeenCalledWith("check_update", {
       full: false,
@@ -698,7 +726,7 @@ describe("启动与设置", () => {
     await vi.advanceTimersByTimeAsync(500);
     await flushPromises();
     expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({ installRoot: "/update-game" }),
+      settings: savedGame({ installRoot: "/update-game" }),
     });
     expect(backend.invoke).toHaveBeenCalledWith("check_update", {
       full: false,
@@ -764,7 +792,7 @@ describe("启动与设置", () => {
     c.queueSettingsSave(0);
     await flushPromises();
     expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({
+      settings: savedGame({
         gameMode: {
           performance: true,
           inhibit: true,
@@ -825,11 +853,10 @@ describe("启动与设置", () => {
     c.queueSettingsSave(0);
     await flushPromises();
     expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({
-        installRoot: null,
-        globalInstallRoot: null,
-        theme: "dark",
-      }),
+      settings: savedSettings(
+        { installRoot: null, globalInstallRoot: null },
+        { theme: "dark" },
+      ),
     });
     expect(c.ui.saveState).toBe("saved");
     backend.downloadHandler({
@@ -900,7 +927,7 @@ describe("启动与设置", () => {
     );
     expect(saves).toHaveLength(2);
     expect(saves[1][1]).toMatchObject({
-      settings: { globalInstallRoot: "/second" },
+      settings: { games: { nte: { globalInstallRoot: "/second" } } },
     });
     expect(c.ui.saveState).toBe("saved");
   });
@@ -920,7 +947,7 @@ describe("启动与设置", () => {
     expect(backend.invoke).toHaveBeenLastCalledWith(
       "save_settings",
       expect.objectContaining({
-        settings: expect.objectContaining({ globalInstallRoot: "/retry" }),
+        settings: savedGame({ globalInstallRoot: "/retry" }),
       }),
     );
   });
@@ -1170,7 +1197,9 @@ describe("更新检查", () => {
     await c.saveSettings();
     resolve(bootstrap());
     await flushPromises();
-    expect(c.state.bootstrap?.settings.distribution).toBe("global");
+    expect(gameSettings(c.state.bootstrap?.settings).distribution).toBe(
+      "global",
+    );
     expect(c.form.distribution).toBe("global");
   });
 
@@ -1403,7 +1432,7 @@ describe("更新检查", () => {
     c.form.globalInstallRoot = "/games/global";
     await c.startGameDownload("apply", true);
     expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({
+      settings: savedGame({
         distribution: "global",
         globalInstallRoot: "/games/global",
       }),
@@ -1996,7 +2025,7 @@ describe("游戏会话", () => {
 
   it("启动反馈期间忽略事件和重复操作, 启动成功后收起窗口", async () => {
     // 前台启动没有暂停入口, 反馈期间的重复点击仍应被忽略。
-    backend.data.settings.launchMode = "official";
+    backend.data.settings.games.nte!.launchMode = "official";
     const c = await boot();
     button("launch-btn").click();
     expect(c.state.game).toBe("launching");
@@ -2052,7 +2081,7 @@ describe("游戏会话", () => {
   });
 
   it.each(["official", "direct"])("%s 启动不提供暂停入口", async (mode) => {
-    backend.data.settings.launchMode = mode;
+    backend.data.settings.games.nte!.launchMode = mode;
     const c = await boot();
     button("launch-btn").click();
     await nextTick();
@@ -2790,11 +2819,10 @@ it("切换地区后重新读取背景素材", async () => {
 
   backend.background = { video: global, image: null };
   backend.data.launcherRoot = "/games/global/launcher";
-  backend.data.settings = {
-    ...backend.data.settings,
-    distribution: "global",
-    globalInstallRoot: "/games/global",
-  };
+  backend.data.settings = withGame(
+    { distribution: "global", globalInstallRoot: "/games/global" },
+    backend.data.settings,
+  );
   c.form.distribution = "global";
   c.form.globalInstallRoot = "/games/global";
   await c.redetect();
@@ -2834,11 +2862,10 @@ it("切换地区时不复用旧地区的在途视频请求", async () => {
   expect(finishCn).toBeTypeOf("function");
 
   backend.data.launcherRoot = "/games/global/launcher";
-  backend.data.settings = {
-    ...backend.data.settings,
-    distribution: "global",
-    globalInstallRoot: "/games/global",
-  };
+  backend.data.settings = withGame(
+    { distribution: "global", globalInstallRoot: "/games/global" },
+    backend.data.settings,
+  );
   c.form.distribution = "global";
   c.form.globalInstallRoot = "/games/global";
   await c.redetect();
@@ -2875,11 +2902,10 @@ it("在二级界面切换地区时保留旧背景直到新素材就绪", async (
       : base(command, args),
   );
   backend.data.launcherRoot = "/games/global/launcher";
-  backend.data.settings = {
-    ...backend.data.settings,
-    distribution: "global",
-    globalInstallRoot: "/games/global",
-  };
+  backend.data.settings = withGame(
+    { distribution: "global", globalInstallRoot: "/games/global" },
+    backend.data.settings,
+  );
   c.form.distribution = "global";
   c.form.globalInstallRoot = "/games/global";
   const switching = c.redetect();
@@ -2912,11 +2938,10 @@ it("背景读取失败时保留当前背景", async () => {
       : base(command, args),
   );
   backend.data.launcherRoot = "/games/global/launcher";
-  backend.data.settings = {
-    ...backend.data.settings,
-    distribution: "global",
-    globalInstallRoot: "/games/global",
-  };
+  backend.data.settings = withGame(
+    { distribution: "global", globalInstallRoot: "/games/global" },
+    backend.data.settings,
+  );
   c.form.distribution = "global";
   c.form.globalInstallRoot = "/games/global";
   await c.redetect();
@@ -3005,7 +3030,9 @@ it("组件事件和双向绑定将用户操作传给控制器", async () => {
   await wrapper!.find("#set-hero-media").setValue("photo");
   await wrapper!.find("#set-motion").setValue(false);
   await flushPromises();
-  expect(backend.data.settings.installRoot).toBe("/component-game");
+  expect(gameSettings(backend.data.settings).installRoot).toBe(
+    "/component-game",
+  );
   expect(backend.data.settings.theme).toBe("dark");
   expect(backend.data.settings.reduceMotion).toBe(false);
   // 目录切换触发的统一刷新会启动只读资源检查, 这里模拟它完成.
@@ -3335,12 +3362,14 @@ it("签到保存失败明确提示并保留错误状态", async () => {
 it("外部启动切换地区后刷新设置表单", async () => {
   const c = await boot();
   const data = structuredClone(backend.data);
-  data.settings.distribution = "global";
-  data.settings.globalInstallRoot = "/games/global";
+  data.settings = withGame(
+    { distribution: "global", globalInstallRoot: "/games/global" },
+    data.settings,
+  );
   data.installRoot = "/games/global";
   backend.settingsHandler(data);
   await nextTick();
-  expect(c.state.bootstrap?.settings.distribution).toBe("global");
+  expect(gameSettings(c.state.bootstrap?.settings).distribution).toBe("global");
   expect(c.form.distribution).toBe("global");
 });
 
@@ -3435,7 +3464,7 @@ it("区服切换后隔离公告缓存并丢弃旧请求", async () => {
   c.form.globalInstallRoot = "/games/global";
   await c.saveSettings();
   await flushPromises();
-  expect(backend.data.settings.launchMode).toBe("background");
+  expect(gameSettings(backend.data.settings).launchMode).toBe("background");
   expect(c.state.bulletins).toEqual(globalFeed);
   finishCn({ items: [], errors: ["old cn feed"] });
   await pending;

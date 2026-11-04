@@ -51,6 +51,7 @@ fn global_environment() -> RuntimeEnvironment {
             identity: "identity".into(),
         },
         install_root: PathBuf::from("/tmp/install"),
+        game: nte_core::game_profile::GameId::Nte,
         distribution: Distribution::Global,
         created_at: 0,
     }
@@ -129,11 +130,8 @@ fn prepare_launch_clears_finished_sessions() {
 #[test]
 fn launch_summary_uses_region_environment_or_current_distribution() {
     let mut app = crate::service::test_service();
-    let settings = Settings {
-        distribution: Distribution::Cn,
-        runtime_environments: vec![global_environment()],
-        ..Default::default()
-    };
+    let mut settings = crate::tests::settings_with_game(Distribution::Cn, None, None);
+    settings.runtime_environments = vec![global_environment()];
     std::sync::Arc::get_mut(&mut app).unwrap().state =
         managed_state(settings, GameTracker::default());
 
@@ -195,17 +193,14 @@ fn take_launch_error_returns_and_clears_the_pending_error() {
 #[test]
 fn launch_settings_clones_the_current_settings() {
     let mut app = crate::service::test_service();
-    let settings = Settings {
-        distribution: Distribution::Global,
-        launch_mode: "direct".into(),
-        ..Default::default()
-    };
+    let mut settings = crate::tests::settings_with_game(Distribution::Global, None, None);
+    settings.current_mut().launch_mode = "direct".into();
     std::sync::Arc::get_mut(&mut app).unwrap().state =
         managed_state(settings, GameTracker::default());
 
     let settings = crate::launch_settings(&app.state).unwrap();
-    assert_eq!(settings.distribution, Distribution::Global);
-    assert_eq!(settings.launch_mode, "direct");
+    assert_eq!(settings.current().distribution, Distribution::Global);
+    assert_eq!(settings.current().launch_mode, "direct");
 }
 
 #[test]

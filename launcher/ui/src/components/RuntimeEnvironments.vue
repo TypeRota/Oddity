@@ -11,6 +11,7 @@ import {
   runtimeEnvironmentAction,
 } from "../core/controller";
 import type { RuntimeEnvironment } from "../types/launcher";
+import { activeGame, gameSettings } from "../core/game";
 import BaseInput from "./BaseInput.vue";
 import SettingGroup from "./settings/SettingGroup.vue";
 import BaseModal from "./BaseModal.vue";
@@ -26,9 +27,17 @@ const pendingRemoval = ref<RuntimeEnvironment | null>(null);
 const sourceId = ref("");
 const distribution = ref<"cn" | "global">("cn");
 const settings = computed(() => state.bootstrap?.settings);
-const profiles = computed(() => settings.value?.runtimeEnvironments ?? []);
-const active = computed(() => settings.value?.activeEnvironment ?? "");
-const stable = computed(() => settings.value?.stableEnvironment ?? "");
+const profiles = computed(() =>
+  (settings.value?.runtimeEnvironments ?? []).filter(
+    (entry) => entry.game === activeGame(settings.value),
+  ),
+);
+const active = computed(
+  () => gameSettings(settings.value).activeEnvironment ?? "",
+);
+const stable = computed(
+  () => gameSettings(settings.value).stableEnvironment ?? "",
+);
 const profile = computed(() =>
   profiles.value.find((entry) => entry.id === selected.value),
 );
@@ -92,7 +101,9 @@ watch(sourceId, () => {
 
 function openCreate() {
   const preferred =
-    profile.value?.distribution ?? settings.value?.distribution ?? "cn";
+    profile.value?.distribution ??
+    gameSettings(settings.value).distribution ??
+    "cn";
   distribution.value =
     installations.value.find(
       (entry) => entry.distribution === preferred && entry.installed,

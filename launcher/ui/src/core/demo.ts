@@ -1,4 +1,5 @@
 import type { Bootstrap } from "../types/launcher";
+import { activeGame, gameSettings } from "./game";
 
 // 演示构建在编译期注入, 普通预览与桌面版保持原来的初始化流程。
 export const isDemo = import.meta.env.VITE_DEMO === "1";
@@ -15,7 +16,8 @@ export function applyDemoPreview(
     name: "GE-Proton11-5",
     proton: { path: preview.protonPath, identity: "browser-preview" },
     installRoot: data.installRoot,
-    distribution: data.settings.distribution,
+    game: activeGame(data.settings),
+    distribution: gameSettings(data.settings).distribution,
     createdAt: Math.floor(Date.now() / 1000),
   };
   data.ok = true;
@@ -25,8 +27,9 @@ export function applyDemoPreview(
   data.protonPath = preview.protonPath;
   data.protonName = preview.protonName;
   data.settings.runtimeEnvironments = [environment];
-  data.settings.activeEnvironment = id;
-  data.settings.stableEnvironment = id;
+  const game = gameSettings(data.settings);
+  game.activeEnvironment = id;
+  game.stableEnvironment = id;
   for (const check of data.checks) {
     if (check.label === "Proton") {
       check.ok = true;

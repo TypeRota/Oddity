@@ -94,7 +94,7 @@ impl Drop for IdleInhibitor {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Options {
     pub performance: bool,
@@ -645,23 +645,23 @@ mod tests {
     #[test]
     fn settings_load_existing_and_partial_game_mode_options() {
         let old: crate::settings::Settings =
-            serde_json::from_str(r#"{"launchMode":"direct"}"#).unwrap();
+            serde_json::from_str(r#"{"games":{"nte":{"launchMode":"direct"}}}"#).unwrap();
         assert!(
-            !old.game_mode.performance
-                && !old.game_mode.inhibit
-                && !old.game_mode.notifications
-                && !old.game_mode.overlay
+            !old.current().game_mode.performance
+                && !old.current().game_mode.inhibit
+                && !old.current().game_mode.notifications
+                && !old.current().game_mode.overlay
         );
         let partial: crate::settings::Settings =
-            serde_json::from_str(r#"{"gameMode":{"inhibit":true}}"#).unwrap();
-        assert!(partial.game_mode.inhibit);
+            serde_json::from_str(r#"{"games":{"nte":{"gameMode":{"inhibit":true}}}}"#).unwrap();
+        assert!(partial.current().game_mode.inhibit);
         assert!(
-            !partial.game_mode.performance
-                && !partial.game_mode.notifications
-                && !partial.game_mode.overlay
+            !partial.current().game_mode.performance
+                && !partial.current().game_mode.notifications
+                && !partial.current().game_mode.overlay
         );
         let saved = serde_json::to_value(&partial).unwrap();
-        assert_eq!(saved["gameMode"]["inhibit"], true);
+        assert_eq!(saved["games"]["nte"]["gameMode"]["inhibit"], true);
     }
 
     #[test]

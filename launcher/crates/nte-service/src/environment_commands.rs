@@ -21,7 +21,7 @@ pub struct Installation {
 
 fn installation(settings: &Settings, distribution: Distribution) -> Installation {
     let mut target = settings.clone();
-    target.distribution = distribution;
+    target.current_mut().distribution = distribution;
     let launcher = detect_launcher_root(&target);
     Installation {
         distribution,
@@ -42,6 +42,7 @@ pub fn installations(settings: &Settings) -> Vec<Installation> {
 
 pub fn selected(settings: &Settings) -> Result<&RuntimeEnvironment, String> {
     let id = settings
+        .current()
         .active_environment
         .as_ref()
         .ok_or("请先在设置中创建并选择 Proton 运行环境")?;
@@ -56,7 +57,11 @@ pub fn prefix(settings: &Settings) -> Result<PathBuf, String> {
     let environment = selected(settings)?;
     let launcher = detect_launcher_root(settings);
     let install = effective_install_root(settings, launcher.as_deref());
-    if !environment.matches(&install, settings.distribution) {
+    if !environment.matches(
+        settings.active_game,
+        &install,
+        settings.current().distribution,
+    ) {
         return Err("运行环境与当前游戏地区或安装目录不匹配, 请切换环境".into());
     }
     environment
@@ -128,13 +133,14 @@ pub fn validate_settings_change(
     busy: bool,
 ) -> Result<(), String> {
     if current.runtime_environments != next.runtime_environments
-        || current.active_environment != next.active_environment
-        || current.stable_environment != next.stable_environment
+        || current.current().active_environment != next.current().active_environment
+        || current.current().stable_environment != next.current().stable_environment
     {
         return Err("运行环境已变化, 请重新检测后重试".into());
     }
     if busy
-        && (crate::download_paths_changed(current, next) || current.launch_mode != next.launch_mode)
+        && (crate::download_paths_changed(current, next)
+            || current.current().launch_mode != next.current().launch_mode)
     {
         return Err("游戏或运行环境任务正在进行, 暂时无法修改运行路径或启动方式".into());
     }
@@ -228,6 +234,7 @@ fn create_impl(
             .map(|(prefix, proton)| (prefix.as_path(), proton.as_path())),
         &expand_path(proton_path),
         &install,
+        snapshot.active_game,
         distribution,
         name,
     )
@@ -235,10 +242,10 @@ fn create_impl(
     let mut settings = state.settings.lock().map_err(|error| error.to_string())?;
     let mut next = settings.clone();
     // 首个环境创建后即可使用, 后续副本不改变当前选择.
-    if next.active_environment.is_none() {
-        next.distribution = distribution;
-        next.active_environment = Some(created.id.clone());
-        next.stable_environment = Some(created.id.clone());
+    if next.current().active_environment.is_none() {
+        next.current_mut().distribution = distribution;
+        next.current_mut().active_environment = Some(created.id.clone());
+        next.current_mut().stable_environment = Some(created.id.clone());
     }
     next.runtime_environments.push(created.clone());
     if let Err(error) = persist_settings(&next) {
@@ -296,21 +303,21 @@ fn action_impl(
         .ok_or("运行环境不存在")?;
     match action {
         "switch" => {
-            next.distribution = environment.distribution;
-            next.active_environment = Some(id);
+            next.current_mut().distribution = environment.distribution;
+            next.current_mut().active_environment = Some(id);
             validate_selection(&next)?;
         }
         "keep" => {
             let mut candidate = next.clone();
-            candidate.distribution = environment.distribution;
-            candidate.active_environment = Some(id.clone());
+            candidate.current_mut().distribution = environment.distribution;
+            candidate.current_mut().active_environment = Some(id.clone());
             validate_selection(&candidate)?;
-            next.stable_environment = Some(id);
+            next.current_mut().stable_environment = Some(id);
         }
         "discard" => {
             let entry = environment;
-            if next.active_environment.as_ref() == Some(&entry.id)
-                || next.stable_environment.as_ref() == Some(&entry.id)
+            if next.current().active_environment.as_ref() == Some(&entry.id)
+                || next.current().stable_environment.as_ref() == Some(&entry.id)
             {
                 return Err("不能删除当前环境或稳定环境, 请先切换并选择其他稳定环境".into());
             }
@@ -363,6 +370,12 @@ fn resolve_launch_target(
             }
             first
         };
+        if found.game != settings.active_game {
+            return Err(format!(
+                "运行环境「{}」属于其他游戏, 请重新选择环境.",
+                found.name
+            ));
+        }
         if let Some(region) = region {
             if found.distribution != region {
                 return Err(format!(
@@ -374,7 +387,7 @@ fn resolve_launch_target(
             }
         }
         let mut target = settings.clone();
-        target.distribution = found.distribution;
+        target.current_mut().distribution = found.distribution;
         let launcher = crate::detect_launcher_root(&target).ok_or_else(|| {
             format!(
                 "尚未找到{}安装, 请先在 Oddity 中完成安装.",
@@ -382,7 +395,7 @@ fn resolve_launch_target(
             )
         })?;
         let install = crate::effective_install_root(&target, Some(&launcher));
-        if !found.matches(&install, found.distribution) {
+        if !found.matches(settings.active_game, &install, found.distribution) {
             return Err(format!(
                 "运行环境「{}」与当前游戏安装目录不匹配, 请重新选择环境.",
                 found.name
@@ -393,14 +406,14 @@ fn resolve_launch_target(
 
     let region = region.ok_or("缺少游戏地区")?;
     let mut target = settings.clone();
-    target.distribution = region;
+    target.current_mut().distribution = region;
     let launcher = crate::detect_launcher_root(&target)
         .ok_or_else(|| format!("尚未找到{}安装, 请先在 Oddity 中完成安装.", region.label()))?;
     let install = crate::effective_install_root(&target, Some(&launcher));
     let candidates: Vec<&RuntimeEnvironment> = settings
         .runtime_environments
         .iter()
-        .filter(|entry| entry.matches(&install, region))
+        .filter(|entry| entry.matches(settings.active_game, &install, region))
         .collect();
     if candidates.is_empty() {
         return Err(format!(
@@ -408,8 +421,8 @@ fn resolve_launch_target(
             region.label()
         ));
     }
-    let active = settings.active_environment.as_deref();
-    let stable = settings.stable_environment.as_deref();
+    let active = settings.current().active_environment.as_deref();
+    let stable = settings.current().stable_environment.as_deref();
     let chosen = candidates
         .iter()
         .find(|entry| active == Some(entry.id.as_str()))
@@ -460,8 +473,8 @@ pub fn select_for_launch(
         .map_err(|error| error.to_string())?
         .clone();
     let (distribution, environment_id) = resolve_launch_target(&current, region, environment)?;
-    if current.distribution == distribution
-        && current.active_environment.as_deref() == Some(environment_id.as_str())
+    if current.current().distribution == distribution
+        && current.current().active_environment.as_deref() == Some(environment_id.as_str())
     {
         return Ok(LaunchSelection {
             settings: current,
@@ -473,8 +486,8 @@ pub fn select_for_launch(
     let mut settings = state.settings.lock().map_err(|error| error.to_string())?;
     let snapshot = settings.clone();
     let (distribution, environment_id) = resolve_launch_target(&snapshot, region, environment)?;
-    if snapshot.distribution == distribution
-        && snapshot.active_environment.as_deref() == Some(environment_id.as_str())
+    if snapshot.current().distribution == distribution
+        && snapshot.current().active_environment.as_deref() == Some(environment_id.as_str())
     {
         drop(settings);
         drop(task);
@@ -485,8 +498,8 @@ pub fn select_for_launch(
     }
 
     let mut next = snapshot;
-    next.distribution = distribution;
-    next.active_environment = Some(environment_id);
+    next.current_mut().distribution = distribution;
+    next.current_mut().active_environment = Some(environment_id);
     validate_selection(&next)?;
     persist_settings(&next)?;
     *settings = next.clone();
@@ -533,11 +546,11 @@ mod tests {
             fake_proton(directory.path(), "Proton-A");
             fake_proton(directory.path(), "Proton-B");
             let state = AppState {
-                settings: Mutex::new(Settings {
-                    install_root: Some(directory.join("install").display().to_string()),
-                    global_install_root: Some(directory.join("global").display().to_string()),
-                    ..Default::default()
-                }),
+                settings: Mutex::new(crate::tests::settings_with_game(
+                    Distribution::Cn,
+                    Some(directory.join("install")),
+                    Some(directory.join("global")),
+                )),
                 game: Mutex::new(GameTracker::default()),
             };
             Self {
@@ -611,8 +624,14 @@ mod tests {
         assert!(detect_proton(&original).is_none());
         let a = fixture.first();
         let settings = crate::load_settings();
-        assert_eq!(settings.active_environment.as_deref(), Some(a.id.as_str()));
-        assert_eq!(settings.stable_environment, settings.active_environment);
+        assert_eq!(
+            settings.current().active_environment.as_deref(),
+            Some(a.id.as_str())
+        );
+        assert_eq!(
+            settings.current().stable_environment,
+            settings.current().active_environment
+        );
         assert!(prefix(&settings)
             .unwrap()
             .ends_with(format!("{}/prefix", a.id)));
@@ -645,7 +664,7 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(
-            created.settings.active_environment.as_deref(),
+            created.settings.current().active_environment.as_deref(),
             Some(a.id.as_str())
         );
         fixture.action("switch", Some(&b.id)).unwrap();
@@ -657,11 +676,11 @@ mod tests {
             "A settings"
         );
         assert_eq!(
-            copied.settings.active_environment.as_deref(),
+            copied.settings.current().active_environment.as_deref(),
             Some(b.id.as_str())
         );
         assert_eq!(
-            copied.settings.stable_environment.as_deref(),
+            copied.settings.current().stable_environment.as_deref(),
             Some(a.id.as_str())
         );
         assert!(fixture
@@ -696,13 +715,16 @@ mod tests {
             .contains("Proton 已变化"));
         assert!(fixture.action("keep", Some(&b.id)).is_err());
         assert_eq!(
-            crate::load_settings().active_environment.as_deref(),
+            crate::load_settings()
+                .current()
+                .active_environment
+                .as_deref(),
             Some(a.id.as_str())
         );
         let mut settings = created.settings.clone();
-        settings.distribution = nte_core::distribution::Distribution::Global;
+        settings.current_mut().distribution = nte_core::distribution::Distribution::Global;
         assert!(prefix(&settings).unwrap_err().contains("不匹配"));
-        settings.active_environment = Some("missing".into());
+        settings.current_mut().active_environment = Some("missing".into());
         assert!(selected(&settings).is_err());
         assert!(verify_proton(&settings).is_err());
         assert!(detect_proton(&settings).is_none());
@@ -762,15 +784,18 @@ mod tests {
             std::fs::read_link(copied.join(relative)).unwrap(),
             global.install_root
         );
-        assert_eq!(created.settings.distribution, Distribution::Cn);
+        assert_eq!(created.settings.current().distribution, Distribution::Cn);
         assert_eq!(
-            created.settings.active_environment.as_deref(),
+            created.settings.current().active_environment.as_deref(),
             Some(a.id.as_str())
         );
         let kept = fixture.action("keep", Some(&global.id)).unwrap();
-        assert_eq!(kept.settings.distribution, Distribution::Cn);
+        assert_eq!(kept.settings.current().distribution, Distribution::Cn);
         let switched = fixture.action("switch", Some(&global.id)).unwrap();
-        assert_eq!(switched.settings.distribution, Distribution::Global);
+        assert_eq!(
+            switched.settings.current().distribution,
+            Distribution::Global
+        );
         assert_eq!(
             switched.install_root,
             global.install_root.display().to_string()
@@ -786,9 +811,9 @@ mod tests {
         let cn = back.settings.runtime_environments.last().unwrap();
         assert_eq!(cn.distribution, Distribution::Cn);
         assert_eq!(cn.install_root, a.install_root);
-        assert_eq!(back.settings.distribution, Distribution::Global);
+        assert_eq!(back.settings.current().distribution, Distribution::Global);
         let switched = fixture.action("switch", Some(&cn.id)).unwrap();
-        assert_eq!(switched.settings.distribution, Distribution::Cn);
+        assert_eq!(switched.settings.current().distribution, Distribution::Cn);
     }
 
     #[test]
@@ -797,14 +822,17 @@ mod tests {
         fixture.install_global();
         let created = fixture.create_global("国际服", None).unwrap();
         let global = &created.settings.runtime_environments[0];
-        assert_eq!(created.settings.distribution, Distribution::Global);
         assert_eq!(
-            created.settings.active_environment.as_deref(),
+            created.settings.current().distribution,
+            Distribution::Global
+        );
+        assert_eq!(
+            created.settings.current().active_environment.as_deref(),
             Some(global.id.as_str())
         );
         assert_eq!(
-            created.settings.active_environment,
-            created.settings.stable_environment
+            created.settings.current().active_environment,
+            created.settings.current().stable_environment
         );
         assert!(created.game_exists);
         assert!(created.ok);
@@ -817,7 +845,7 @@ mod tests {
         assert!(fixture.create("A", None, "Proton-A").is_err());
         let settings = fixture.state.settings.lock().unwrap();
         assert!(settings.runtime_environments.is_empty());
-        assert!(settings.active_environment.is_none());
+        assert!(settings.current().active_environment.is_none());
         assert_eq!(
             std::fs::read_dir(data_dir().join("environments"))
                 .unwrap()
@@ -844,6 +872,7 @@ mod tests {
                 .settings
                 .lock()
                 .unwrap()
+                .current()
                 .active_environment
                 .as_deref(),
             Some(a.id.as_str())
@@ -876,13 +905,13 @@ mod tests {
         }
         let original = Settings::default();
         let mut next = original.clone();
-        next.install_root = Some("/other".into());
+        next.current_mut().install_root = Some("/other".into());
         assert!(validate_settings_change(&original, &next, true).is_err());
         assert!(validate_settings_change(&original, &next, false).is_ok());
         next = original.clone();
         next.theme = "dark".into();
         assert!(validate_settings_change(&original, &next, true).is_ok());
-        next.active_environment = Some("foreign".into());
+        next.current_mut().active_environment = Some("foreign".into());
         assert!(validate_settings_change(&original, &next, false).is_err());
     }
 
@@ -924,7 +953,7 @@ mod tests {
             .last()
             .unwrap()
             .clone();
-        assert_eq!(created.settings.distribution, Distribution::Cn);
+        assert_eq!(created.settings.current().distribution, Distribution::Cn);
 
         let selection = select_for_launch(
             &fixture.state,
@@ -934,14 +963,23 @@ mod tests {
         )
         .unwrap();
         assert!(selection.changed);
-        assert_eq!(selection.settings.distribution, Distribution::Global);
         assert_eq!(
-            selection.settings.active_environment.as_deref(),
+            selection.settings.current().distribution,
+            Distribution::Global
+        );
+        assert_eq!(
+            selection.settings.current().active_environment.as_deref(),
             Some(global.id.as_str())
         );
-        assert_eq!(crate::load_settings().distribution, Distribution::Global);
         assert_eq!(
-            crate::load_settings().active_environment.as_deref(),
+            crate::load_settings().current().distribution,
+            Distribution::Global
+        );
+        assert_eq!(
+            crate::load_settings()
+                .current()
+                .active_environment
+                .as_deref(),
             Some(global.id.as_str())
         );
 
@@ -953,9 +991,9 @@ mod tests {
         )
         .unwrap();
         assert!(selection.changed);
-        assert_eq!(selection.settings.distribution, Distribution::Cn);
+        assert_eq!(selection.settings.current().distribution, Distribution::Cn);
         assert_eq!(
-            selection.settings.active_environment.as_deref(),
+            selection.settings.current().active_environment.as_deref(),
             Some(a.id.as_str())
         );
 
@@ -963,7 +1001,7 @@ mod tests {
             select_for_launch(&fixture.state, &fixture.downloads, None, Some("A")).unwrap();
         assert!(!selection.changed);
         assert_eq!(
-            selection.settings.active_environment.as_deref(),
+            selection.settings.current().active_environment.as_deref(),
             Some(a.id.as_str())
         );
     }
@@ -1000,7 +1038,7 @@ mod tests {
         .unwrap();
         assert!(!selection.changed);
         assert_eq!(
-            selection.settings.active_environment.as_deref(),
+            selection.settings.current().active_environment.as_deref(),
             Some(a.id.as_str())
         );
     }
@@ -1045,7 +1083,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            selection.settings.active_environment.as_deref(),
+            selection.settings.current().active_environment.as_deref(),
             Some(b.id.as_str())
         );
     }
@@ -1057,10 +1095,13 @@ mod tests {
         let before = crate::load_settings();
         let selection = select_for_launch(&fixture.state, &fixture.downloads, None, None).unwrap();
         assert!(!selection.changed);
-        assert_eq!(selection.settings.distribution, before.distribution);
         assert_eq!(
-            selection.settings.active_environment,
-            before.active_environment
+            selection.settings.current().distribution,
+            before.current().distribution
+        );
+        assert_eq!(
+            selection.settings.current().active_environment,
+            before.current().active_environment
         );
     }
 
@@ -1080,7 +1121,13 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("正在进行"));
         assert_eq!(
-            fixture.state.settings.lock().unwrap().distribution,
+            fixture
+                .state
+                .settings
+                .lock()
+                .unwrap()
+                .current()
+                .distribution,
             Distribution::Cn
         );
     }

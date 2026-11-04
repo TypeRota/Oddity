@@ -28,6 +28,7 @@ import {
   deletePreloadResources,
 } from "../core/controller";
 import OptionalResources from "../components/OptionalResources.vue";
+import { gameSettings } from "../core/game";
 import type { DownloadPhase } from "../types/launcher";
 
 const { surface, reduced } = useControlMotion();
@@ -85,14 +86,13 @@ const needsFullRepair = computed(
 
 const resolvedRoot = computed(() => {
   const data = state.bootstrap;
+  const saved = gameSettings(data?.settings);
   const root = currentRoot.value.trim();
-  const saved =
-    form.distribution === "cn"
-      ? data?.settings.installRoot
-      : data?.settings.globalInstallRoot;
-  return data?.settings.distribution === form.distribution &&
-    root === (saved || data.installRoot)
-    ? data.installRoot
+  const installRoot =
+    form.distribution === "cn" ? saved.installRoot : saved.globalInstallRoot;
+  return saved.distribution === form.distribution &&
+    root === (installRoot || data?.installRoot)
+    ? data?.installRoot || ""
     : root;
 });
 

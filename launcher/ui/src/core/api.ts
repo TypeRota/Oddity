@@ -29,7 +29,9 @@ import type {
   SnapshotReference,
   SnapshotSummary,
   IntegrityStatus,
+  GameSettings,
 } from "../types/launcher";
+import { activeGame, gameSettings } from "./game";
 export { isDesktop };
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
@@ -174,27 +176,33 @@ const mock: Bootstrap = {
     },
   ],
   settings: {
+    activeGame: "nte",
+    games: {
+      nte: {
+        distribution: "cn",
+        installRoot: null,
+        globalInstallRoot: null,
+        preloadRoot: null,
+        launchMode: "background",
+        gameMode: {
+          performance: false,
+          inhibit: false,
+          notifications: false,
+          overlay: false,
+          gamescope: { ...defaultGamescope },
+        },
+        updates: {
+          autoDownload: false,
+          metered: "ask",
+          limitBytesPerSecond: 0,
+          window: null,
+        },
+        activeEnvironment: null,
+        stableEnvironment: null,
+      },
+    },
     gamepad: defaultGamepadOptions(),
-    installRoot: null,
-    globalInstallRoot: null,
-    distribution: "cn",
     runtimeEnvironments: [],
-    activeEnvironment: null,
-    stableEnvironment: null,
-    launchMode: "background",
-    gameMode: {
-      performance: false,
-      inhibit: false,
-      notifications: false,
-      overlay: false,
-      gamescope: { ...defaultGamescope },
-    },
-    updates: {
-      autoDownload: false,
-      metered: "ask",
-      limitBytesPerSecond: 0,
-      window: null,
-    },
     language: "zh-CN",
     reduceMotion: false,
     stackBulletins: false,
@@ -203,7 +211,6 @@ const mock: Bootstrap = {
     minimizeToTrayOnClose: true,
     showLauncherAfterGameExit: true,
     snapshotSuccessMinutes: 1,
-    preloadRoot: null,
   },
   integrity: {
     state: "verified",
@@ -262,7 +269,8 @@ let previewSnapshotReference: SnapshotReference | null = {
 
 function previewSnapshotEnvironment() {
   const active = mock.settings.runtimeEnvironments.find(
-    (environment) => environment.id === mock.settings.activeEnvironment,
+    (environment) =>
+      environment.id === gameSettings(mock.settings).activeEnvironment,
   );
   return active?.name ?? null;
 }
@@ -383,20 +391,28 @@ function previewSnapshotSaveReference(label: string | null): SnapshotReference {
     capturedAt: now,
     environment: previewSnapshotEnvironment(),
     proton: previewSnapshotProton(),
-    distribution: mock.settings.distribution,
-    mode: mock.settings.launchMode,
+    distribution: gameSettings(mock.settings).distribution,
+    mode: gameSettings(mock.settings).launchMode,
   };
   return previewSnapshotReference;
 }
 
+function updateGameSettings(patch: Partial<GameSettings>) {
+  const game = activeGame(mock.settings);
+  mock.settings.games[game] = { ...gameSettings(mock.settings), ...patch };
+}
+
 function applyPreviewDistribution() {
-  if (mock.settings.distribution === "global")
+  if (gameSettings(mock.settings).distribution === "global")
     mock.installRoot =
-      mock.settings.globalInstallRoot || "~/Games/Neverness To Everness Global";
-  else mock.installRoot = mock.settings.installRoot || preview.installRoot;
+      gameSettings(mock.settings).globalInstallRoot ||
+      "~/Games/Neverness To Everness Global";
+  else
+    mock.installRoot =
+      gameSettings(mock.settings).installRoot || preview.installRoot;
   mock.launcherRoot = joinPath(
     mock.installRoot,
-    distributions[mock.settings.distribution].launcherDir,
+    distributions[gameSettings(mock.settings).distribution].launcherDir,
   );
   mock.sdkPath = joinPath(mock.launcherRoot, "WPGameClientSDK_64.dll");
   mock.gameExe = joinPath(
@@ -412,20 +428,20 @@ function applyPreviewDistribution() {
     ) {
       item.detail = joinPath(
         mock.launcherRoot,
-        distributions[mock.settings.distribution].clientExe,
+        distributions[gameSettings(mock.settings).distribution].clientExe,
       );
     }
   }
-  mockCheck.distribution = mock.settings.distribution;
+  mockCheck.distribution = gameSettings(mock.settings).distribution;
   mockCheck.installRoot = mock.installRoot;
 }
 
 function selectPreviewEnvironment(
   profile: Bootstrap["settings"]["runtimeEnvironments"][number],
 ) {
-  mock.settings.distribution = profile.distribution;
+  updateGameSettings({ distribution: profile.distribution });
   applyPreviewDistribution();
-  mock.settings.activeEnvironment = profile.id;
+  updateGameSettings({ activeEnvironment: profile.id });
   mock.prefix = joinPath(
     preview.prefix.replace(/\/prefix$/, ""),
     "environments",
@@ -767,12 +783,12 @@ let previewPreloadCompleted = false;
 
 function previewCatalog(): ResourceCatalog {
   return clone({
-    distribution: mock.settings.distribution,
+    distribution: gameSettings(mock.settings).distribution,
     installRoot:
-      mock.settings.distribution === "global"
-        ? mock.settings.globalInstallRoot ||
+      gameSettings(mock.settings).distribution === "global"
+        ? gameSettings(mock.settings).globalInstallRoot ||
           "~/Games/Neverness To Everness Global"
-        : mock.settings.installRoot || preview.installRoot,
+        : gameSettings(mock.settings).installRoot || preview.installRoot,
     version: "1.4.16",
     preloadVersion: "1.5.0",
     preloadAvailable: true,
@@ -979,12 +995,13 @@ async function previewInvoke(
         name: name.trim(),
         proton: { path: protonPath.trim(), identity: "browser-preview" },
         installRoot: target.installRoot,
+        game: activeGame(mock.settings),
         distribution,
         createdAt: Math.floor(Date.now() / 1000),
       };
       mock.settings.runtimeEnvironments.push(profile);
-      if (!mock.settings.activeEnvironment) {
-        mock.settings.stableEnvironment = profile.id;
+      if (!gameSettings(mock.settings).activeEnvironment) {
+        updateGameSettings({ stableEnvironment: profile.id });
         selectPreviewEnvironment(profile);
       }
       return clone(mock);
@@ -1003,12 +1020,12 @@ async function previewInvoke(
           throw new Error("运行环境与绑定的游戏目录不匹配");
         selectPreviewEnvironment(profile);
       } else if (action === "keep") {
-        mock.settings.stableEnvironment = id;
+        updateGameSettings({ stableEnvironment: id });
       } else {
         if (
           !id ||
-          id === mock.settings.activeEnvironment ||
-          id === mock.settings.stableEnvironment
+          id === gameSettings(mock.settings).activeEnvironment ||
+          id === gameSettings(mock.settings).stableEnvironment
         )
           throw new Error("不能删除当前环境或稳定环境");
         mock.settings.runtimeEnvironments =
@@ -1044,15 +1061,16 @@ async function previewInvoke(
       mock.runtimeInstallations = [
         {
           distribution: "cn",
-          installRoot: mock.settings.installRoot || preview.installRoot,
+          installRoot:
+            gameSettings(mock.settings).installRoot || preview.installRoot,
           installed: true,
         },
         {
           distribution: "global",
           installRoot:
-            mock.settings.globalInstallRoot ||
+            gameSettings(mock.settings).globalInstallRoot ||
             "~/Games/Neverness To Everness Global",
-          installed: Boolean(mock.settings.globalInstallRoot),
+          installed: Boolean(gameSettings(mock.settings).globalInstallRoot),
         },
       ];
       applyPreviewDistribution();
@@ -1146,7 +1164,7 @@ async function previewInvoke(
           pendingFiles: 0,
           diskRequiredBytes: 0,
           error: "",
-          distribution: mock.settings.distribution,
+          distribution: gameSettings(mock.settings).distribution,
           installRoot: mock.installRoot,
         });
         return clone(mockDownload);
@@ -1157,7 +1175,7 @@ async function previewInvoke(
         full: full || (mockDownload.full && mockDownload.phase !== "ready"),
         unverifiedFiles: 0,
         phase: mode === "check" ? "needs-update" : "game",
-        distribution: mock.settings.distribution,
+        distribution: gameSettings(mock.settings).distribution,
         installRoot: mock.installRoot,
         currentFile:
           mode === "check" ? "" : "Client/WindowsNoEditor/example.pak",
@@ -1227,7 +1245,7 @@ async function previewInvoke(
     case "open_directory":
       throw new Error("请在 Oddity 桌面应用中导出日志");
     case "launch_official":
-      if (!mock.settings.activeEnvironment)
+      if (!gameSettings(mock.settings).activeEnvironment)
         throw new Error("请先创建 Proton 运行环境");
       startPreviewLaunch();
       return {

@@ -4,15 +4,15 @@ use nte_core::attendance::{
 };
 
 fn require_cn(state: &crate::AppState) -> Result<()> {
-    let distribution = state
-        .settings
-        .lock()
-        .map_err(|_| Failure {
-            kind: FailureKind::Service,
-            message: "无法读取当前游戏地区".into(),
-        })?
-        .distribution;
-    if distribution != nte_core::distribution::Distribution::Cn {
+    let settings = state.settings.lock().map_err(|_| Failure {
+        kind: FailureKind::Service,
+        message: "无法读取当前游戏地区".into(),
+    })?;
+    let game = settings.active_game;
+    let distribution = settings.current().distribution;
+    if game != nte_core::game_profile::GameId::Nte
+        || distribution != nte_core::distribution::Distribution::Cn
+    {
         return Err(Failure {
             kind: FailureKind::Service,
             message: "塔吉多仅支持国服账号, 国际服请使用官方账号服务".into(),
@@ -171,9 +171,10 @@ mod tests {
     fn global_commands_reject_requests_before_account_access() {
         let mut app = crate::service::test_service();
         std::sync::Arc::get_mut(&mut app).unwrap().state = AppState {
-            settings: Mutex::new(Settings {
-                distribution: Distribution::Global,
-                ..Default::default()
+            settings: Mutex::new({
+                let mut settings = Settings::default();
+                settings.current_mut().distribution = Distribution::Global;
+                settings
             }),
             game: Mutex::new(GameTracker::default()),
         };
@@ -199,7 +200,14 @@ mod tests {
             }
         });
         let state = &app.state;
-        state.settings.lock().unwrap().distribution = Distribution::Cn;
+        state.settings.lock().unwrap().current_mut().distribution = Distribution::Cn;
+        assert!(require_cn(state).is_ok());
+        state.settings.lock().unwrap().active_game = nte_core::game_profile::GameId::Hsr;
+        assert!(require_cn(state)
+            .unwrap_err()
+            .message
+            .contains("仅支持国服"));
+        state.settings.lock().unwrap().active_game = nte_core::game_profile::GameId::Nte;
         assert!(require_cn(state).is_ok());
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _settings = state.settings.lock().unwrap();

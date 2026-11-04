@@ -444,26 +444,18 @@ fn game_status_clears_launch_for_a_dead_session() {
 #[test]
 fn begin_launch_creates_progress_only_for_background() {
     let mut background = GameTracker::default();
-    let cancel = begin_launch(
-        &mut background,
-        &Settings {
-            launch_mode: "background".into(),
-            ..Default::default()
-        },
-    );
+    let mut background_settings = Settings::default();
+    background_settings.current_mut().launch_mode = "background".into();
+    let cancel = begin_launch(&mut background, &background_settings);
     assert!(background.starting);
     assert!(background.launch.is_some());
     assert!(background.launch_cancel.is_some());
     assert!(!cancel.load(Ordering::Acquire));
 
     let mut official = GameTracker::default();
-    begin_launch(
-        &mut official,
-        &Settings {
-            launch_mode: "official".into(),
-            ..Default::default()
-        },
-    );
+    let mut official_settings = Settings::default();
+    official_settings.current_mut().launch_mode = "official".into();
+    begin_launch(&mut official, &official_settings);
     assert!(official.starting);
     assert!(official.launch.is_none());
     assert!(official.launch_cancel.is_none());

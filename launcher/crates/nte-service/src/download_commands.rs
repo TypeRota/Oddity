@@ -94,6 +94,7 @@ impl Default for DownloadStatus {
 
 fn preload_root_for(settings: &Settings, install_root: &Path) -> std::path::PathBuf {
     let configured = settings
+        .current()
         .preload_root
         .as_deref()
         .map(str::trim)
@@ -103,7 +104,7 @@ fn preload_root_for(settings: &Settings, install_root: &Path) -> std::path::Path
         Some(path) if path.is_absolute() => path,
         Some(path) => install_root.join(path),
         None => install_root
-            .join(settings.distribution.launcher_dir())
+            .join(crate::current_launcher_dir(settings))
             .join("UserData")
             .join("Patcher")
             .join("PatcherSDK")
@@ -140,10 +141,10 @@ pub struct ResourceCatalog {
 fn launcher_root_for(settings: &Settings) -> std::path::PathBuf {
     if crate::configured_install_root(settings).is_none() {
         crate::detect_launcher_root(settings).unwrap_or_else(|| {
-            selected_install_root(settings).join(settings.distribution.launcher_dir())
+            selected_install_root(settings).join(crate::current_launcher_dir(settings))
         })
     } else {
-        selected_install_root(settings).join(settings.distribution.launcher_dir())
+        selected_install_root(settings).join(crate::current_launcher_dir(settings))
     }
 }
 
@@ -203,7 +204,7 @@ fn catalog_payload(
     });
     let (preload_cached_version, preload_cached_bytes) = cached.unwrap_or((String::new(), 0));
     Ok(ResourceCatalog {
-        distribution: settings.distribution.as_str().into(),
+        distribution: settings.current().distribution.as_str().into(),
         install_root: config.install_root.display().to_string(),
         version: bundle.config.res_version.clone(),
         preload_version,
@@ -408,7 +409,10 @@ fn check_game(
         .map(|inner| current_throughput(inner.throughput.as_ref(), &game_config.app_id))
         .unwrap_or_else(|_| Throughput::for_app_id(&game_config.app_id));
     // 限速会拖长实际下载, 规划必须按受限后的速度估算, 否则可能误判整包更快。
-    let throughput = cap_download_throughput(throughput, settings.updates.limit_bytes_per_second);
+    let throughput = cap_download_throughput(
+        throughput,
+        settings.current().updates.limit_bytes_per_second,
+    );
     let plan = game::check::check_cancellable_with_estimates(
         &game_config,
         CheckOptions {
@@ -445,7 +449,7 @@ fn publish_game_plan(
     .ok();
     let disk_required_bytes = plan.required_disk_bytes();
     publish(app, |status| {
-        status.distribution = settings.distribution.as_str().into();
+        status.distribution = settings.current().distribution.as_str().into();
         status.remote_version = plan.remote_version.clone();
         status.optional_tags = plan
             .optional_versions
@@ -494,7 +498,7 @@ fn run_task(
         return run_preload_task(app, settings, full, cancel);
     }
     let launcher_plan = install::plan_launcher_cancellable(
-        settings.distribution,
+        settings.current().distribution,
         &install_root,
         launcher_plan_full(mode, full),
         &|| cancel.load(Ordering::Relaxed),
@@ -510,7 +514,7 @@ fn run_preload_task(
     full: bool,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
-    let root = selected_install_root(settings).join(settings.distribution.launcher_dir());
+    let root = selected_install_root(settings).join(crate::current_launcher_dir(settings));
     let launcher =
         LauncherConfig::load(&root).map_err(|error| format!("读取现有启动器配置失败: {error}"))?;
     let mut config = game::GameUpdateConfig::load(&root, launcher.game_id)
@@ -688,7 +692,7 @@ fn run_plan(
         install_launcher_files(
             app,
             &launcher_plan,
-            settings.updates.limit_bytes_per_second,
+            settings.current().updates.limit_bytes_per_second,
             cancel,
         )?;
     }
@@ -918,7 +922,7 @@ fn apply_game_plan(
         game_config,
         plan,
         &apply_options,
-        settings.updates.limit_bytes_per_second,
+        settings.current().updates.limit_bytes_per_second,
         &mut on_file,
         &mut on_bytes,
         &mut on_stage,
@@ -1001,16 +1005,31 @@ fn prepare_task(
             .lock()
             .map_err(|error| error.to_string())?
             .clone();
+        // 还没有安装配方的游戏不能继续规划下载, 否则会按 NTE 的布局写入错误目录.
+        if settings
+            .active_game
+            .profile()
+            .region(settings.current().distribution)
+            .is_none()
+        {
+            return Err(format!(
+                "《{}》尚未支持{}地区, 暂时无法检查或更新游戏资源.",
+                settings.active_game.profile().name,
+                settings.current().distribution.label()
+            ));
+        }
         // 未配置目录时沿用环境探测结果, 只用于本轮任务。
         if crate::configured_install_root(&settings).is_none() {
             if let Some(root) = crate::detect_launcher_root(&settings)
                 .and_then(|root| root.parent().map(Path::to_path_buf))
             {
                 let root = Some(root.display().to_string());
-                match settings.distribution {
-                    nte_core::distribution::Distribution::Cn => settings.install_root = root,
+                match settings.current().distribution {
+                    nte_core::distribution::Distribution::Cn => {
+                        settings.current_mut().install_root = root
+                    }
                     nte_core::distribution::Distribution::Global => {
-                        settings.global_install_root = root
+                        settings.current_mut().global_install_root = root
                     }
                 }
             }
@@ -1038,7 +1057,7 @@ fn prepare_task(
             disk::available_bytes(&install_root).ok()
         };
         let installed = install_root
-            .join(settings.distribution.launcher_dir())
+            .join(crate::current_launcher_dir(&settings))
             .join("UserData/Patcher/PatcherSDK/ResList.xml")
             .is_file();
         let install_root = install_root.display().to_string();
@@ -1046,7 +1065,7 @@ fn prepare_task(
             || (inner.status.full
                 && (inner.status.mode == "preload") == (mode == "preload")
                 && inner.status.phase != "ready"
-                && inner.status.distribution == settings.distribution.as_str()
+                && inner.status.distribution == settings.current().distribution.as_str()
                 && inner.status.install_root == install_root);
         inner.cancel = Some(cancel.clone());
         inner.last_progress = None;
@@ -1054,7 +1073,7 @@ fn prepare_task(
             phase: "checking".into(),
             mode: mode.into(),
             origin: origin.into(),
-            distribution: settings.distribution.as_str().into(),
+            distribution: settings.current().distribution.as_str().into(),
             install_root,
             installed,
             full,

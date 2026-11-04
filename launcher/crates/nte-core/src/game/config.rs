@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::{distribution::Distribution, Error, Result};
+use crate::game_profile::GameId;
+use crate::{Error, Result};
 
 #[derive(Debug, Clone)]
 pub struct CheckRule {
@@ -79,7 +80,10 @@ impl GameUpdateConfig {
                 "PatcherConfig.json appId 与游戏地区不一致".into(),
             ));
         }
-        let distribution = app_id.parse().ok().and_then(Distribution::from_game_id);
+        let region = app_id
+            .parse()
+            .ok()
+            .and_then(|app_id| GameId::Nte.profile().region_for_app_id(app_id));
         let mut cdns: Vec<String> = pc
             .game_res_url
             .into_iter()
@@ -94,17 +98,17 @@ impl GameUpdateConfig {
         }
         if cdns.is_empty() {
             let region =
-                distribution.ok_or_else(|| Error::Parse("未知 appId 缺少资源 CDN 配置".into()))?;
+                region.ok_or_else(|| Error::Parse("未知 appId 缺少资源 CDN 配置".into()))?;
             cdns = region
-                .resource_cdns()
-                .into_iter()
-                .map(str::to_string)
+                .resource_cdns
+                .iter()
+                .map(|url| (*url).to_string())
                 .collect();
         }
         let update_branch = pc
             .update_branch_name
             .filter(|s| !s.trim().is_empty())
-            .or_else(|| distribution.map(|region| region.update_branch().to_string()))
+            .or_else(|| region.map(|region| region.update_branch.to_string()))
             .ok_or_else(|| Error::Parse("PatcherConfig.json has no updateBranchName".into()))?;
 
         let path_json = fs::read_to_string(config_dir.join("PatcherPath.json"))
@@ -231,6 +235,7 @@ fn default_rules() -> Vec<CheckRule> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::distribution::Distribution;
     use crate::testing::TempDir;
 
     const PATCHER_DIR: &str = "install/NTELauncher/ResFilesM/1289/PatcherConfig";
@@ -310,7 +315,14 @@ mod tests {
             r#"{"branchName":"publish_ob","appId":"1289"}"#,
         );
         let cfg = GameUpdateConfig::load(&launcher_root(&dir), 0).expect("load config");
-        assert_eq!(cfg.cdns, Distribution::Cn.resource_cdns());
+        assert_eq!(
+            cfg.cdns,
+            GameId::Nte
+                .profile()
+                .region(Distribution::Cn)
+                .unwrap()
+                .resource_cdns
+        );
     }
 
     #[test]
@@ -320,7 +332,14 @@ mod tests {
         dir.write(path, r#"{"branchName":"PC_140","appId":"3000001"}"#);
         let root = dir.join("install/NTEGlobal");
         let cfg = GameUpdateConfig::load(&root, 3000001).unwrap();
-        assert_eq!(cfg.cdns, Distribution::Global.resource_cdns());
+        assert_eq!(
+            cfg.cdns,
+            GameId::Nte
+                .profile()
+                .region(Distribution::Global)
+                .unwrap()
+                .resource_cdns
+        );
         assert_eq!(cfg.update_branch, "Publish_Update");
         assert_eq!(cfg.branch, "PC_140");
         dir.write(path, r#"{"branchName":"PC_140","appId":"1289"}"#);

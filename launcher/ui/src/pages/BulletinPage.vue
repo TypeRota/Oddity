@@ -4,6 +4,7 @@ import { computed, ref } from "vue";
 import type { BulletinItem } from "../types/launcher";
 import { fetchBulletins, form, openUrl, state } from "../core/controller";
 import { distributions } from "../core/distribution";
+import { gameSettings } from "../core/game";
 import BaseButton from "../components/BaseButton.vue";
 import BaseTabs from "../components/BaseTabs.vue";
 import BaseView from "../components/BaseView.vue";
@@ -12,7 +13,7 @@ import BulletinGroup from "../components/BulletinGroup.vue";
 import BulletinSkeleton from "../components/BulletinSkeleton.vue";
 import { useControlMotion } from "../composables/useControlMotion";
 const global = computed(
-  () => state.bootstrap?.settings.distribution === "global",
+  () => gameSettings(state.bootstrap?.settings).distribution === "global",
 );
 const links = computed(() => distributions[global.value ? "global" : "cn"]);
 const items = computed(() => state.bulletins?.items ?? []);

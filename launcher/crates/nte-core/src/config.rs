@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::{distribution::Distribution, Result};
+use crate::distribution::Distribution;
+use crate::game_profile::GameId;
+use crate::{Error, Result};
 
 /// Minimal INI reader tolerant of UTF-8 BOM, CRLF, comments and duplicate keys.
 #[derive(Debug, Default, Clone)]
@@ -74,16 +76,28 @@ impl LauncherConfig {
     pub fn load(root: &Path) -> Result<Self> {
         let ini = Ini::load(&root.join("Config").join("Config.ini"))?;
         let game_id = ini.get_int("General", "GameID").unwrap_or(0);
-        let distribution = Distribution::from_game_id(game_id).unwrap_or_else(|| {
-            if root
-                .file_name()
-                .is_some_and(|name| name == Distribution::Global.launcher_dir())
-            {
-                Distribution::Global
-            } else {
-                Distribution::Cn
-            }
-        });
+        let profile = GameId::Nte.profile();
+        let global = profile.region(Distribution::Global);
+        let distribution = profile
+            .region_for_app_id(game_id)
+            .map(|region| region.distribution)
+            .unwrap_or_else(|| {
+                if global.is_some_and(|region| {
+                    root.file_name()
+                        .is_some_and(|name| name == region.launcher_dir)
+                }) {
+                    Distribution::Global
+                } else {
+                    Distribution::Cn
+                }
+            });
+        let Some(region) = profile.region(distribution) else {
+            return Err(Error::Unsupported(format!(
+                "内置的《{}》配置缺少{}",
+                profile.name,
+                distribution.label()
+            )));
+        };
         let version = ini.section("VERSION").cloned().unwrap_or_default();
         let ignored = version
             .get("PATCHER_IGNORED_SECTION")
@@ -94,24 +108,24 @@ impl LauncherConfig {
             launcher: ini
                 .get("General", "Launcher")
                 .filter(|value| !value.is_empty())
-                .unwrap_or(distribution.launcher_exe())
+                .unwrap_or(region.launcher_exe)
                 .to_string(),
             patcher: ini
                 .get("General", "Patcher")
                 .filter(|value| !value.is_empty())
-                .unwrap_or(distribution.patcher_exe())
+                .unwrap_or(region.patcher_exe)
                 .to_string(),
             client: ini
                 .get("General", "Client")
                 .filter(|value| !value.is_empty())
-                .unwrap_or(distribution.client_exe())
+                .unwrap_or(region.client_exe)
                 .to_string(),
             game_id: if game_id == 0
                 && root
                     .file_name()
-                    .is_some_and(|name| name == distribution.launcher_dir())
+                    .is_some_and(|name| name == region.launcher_dir)
             {
-                distribution.game_id()
+                region.app_id
             } else {
                 game_id
             },
@@ -122,18 +136,18 @@ impl LauncherConfig {
                 .get("VersionInfoFileURL")
                 .cloned()
                 .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| distribution.version_urls()[0].to_string()),
+                .unwrap_or_else(|| region.version_urls[0].to_string()),
             backup_version_url: ini
                 .get("VERSION", "BackupVersionURL")
                 .or_else(|| ini.get("UPDATE_CONFIG", "BackupVersionURL"))
                 .filter(|value| !value.is_empty())
-                .unwrap_or(distribution.version_urls()[1])
+                .unwrap_or(region.version_urls[1])
                 .to_string(),
             branch: ini
                 .get("VERSION", "Branch")
                 .or_else(|| ini.get("UPDATE_CONFIG", "Branch"))
                 .filter(|value| !value.is_empty())
-                .unwrap_or(distribution.launcher_branch())
+                .unwrap_or(region.launcher_branch)
                 .to_string(),
             patcher_ignored_sections: ignored
                 .split(',')
@@ -249,8 +263,12 @@ PATCHER_IGNORED_SECTION= A , ,B
         assert_eq!(cfg.launch_type, 0);
         assert_eq!(cfg.version, "");
         assert_eq!(cfg.build, "");
-        assert_eq!(cfg.version_url, Distribution::Cn.version_urls()[0]);
-        assert_eq!(cfg.backup_version_url, Distribution::Cn.version_urls()[1]);
+        let cn = GameId::Nte
+            .profile()
+            .region(Distribution::Cn)
+            .expect("NTE CN");
+        assert_eq!(cfg.version_url, cn.version_urls[0]);
+        assert_eq!(cfg.backup_version_url, cn.version_urls[1]);
         assert_eq!(cfg.branch, "publish_ob");
         assert_eq!(cfg.mutex_name, "");
         assert!(cfg.patcher_ignored_sections.is_empty());
@@ -264,17 +282,18 @@ PATCHER_IGNORED_SECTION= A , ,B
         assert_eq!(cfg.launcher, "NTEGlobalLauncher.exe");
         assert_eq!(cfg.patcher, "NTEGlobalUpdate.exe");
         assert_eq!(cfg.client, "NTEGlobalGame.exe");
-        assert_eq!(cfg.version_url, Distribution::Global.version_urls()[0]);
+        let global = GameId::Nte
+            .profile()
+            .region(Distribution::Global)
+            .expect("NTE Global");
+        assert_eq!(cfg.version_url, global.version_urls[0]);
         assert_eq!(cfg.backup_version_url, "https://backup.test/global.ini");
         assert_eq!(cfg.branch, "global_branch");
         dir.write("NTEGlobal/Config/Config.ini", "[General]\n");
         let cfg = LauncherConfig::load(&dir.join("NTEGlobal")).unwrap();
-        assert_eq!(cfg.game_id, Distribution::Global.game_id());
+        assert_eq!(cfg.game_id, global.app_id);
         assert_eq!(cfg.branch, "publish_PC");
-        assert_eq!(
-            cfg.backup_version_url,
-            Distribution::Global.version_urls()[1]
-        );
+        assert_eq!(cfg.backup_version_url, global.version_urls[1]);
     }
 
     #[test]

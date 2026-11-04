@@ -134,17 +134,24 @@ export interface UpdateSettings {
   limitBytesPerSecond: number;
   window: UpdateWindow | null;
 }
-export interface Settings {
+export type GameId = "nte" | "hsr";
+export interface GameSettings {
+  distribution: "cn" | "global";
   installRoot: string | null;
   globalInstallRoot: string | null;
-  distribution: "cn" | "global";
-  runtimeEnvironments: RuntimeEnvironment[];
-  activeEnvironment: string | null;
-  stableEnvironment: string | null;
+  /** 自定义预下载缓存目录, 空值使用安装目录内的默认路径. */
+  preloadRoot: string | null;
   launchMode: string;
   gameMode: GameModeOptions;
-  gamepad: GamepadOptions;
   updates: UpdateSettings;
+  activeEnvironment: string | null;
+  stableEnvironment: string | null;
+}
+export interface Settings {
+  activeGame: GameId;
+  games: Partial<Record<GameId, GameSettings>>;
+  runtimeEnvironments: RuntimeEnvironment[];
+  gamepad: GamepadOptions;
   language: string;
   reduceMotion: boolean;
   stackBulletins: boolean;
@@ -154,8 +161,6 @@ export interface Settings {
   minimizeToTrayOnClose: boolean;
   showLauncherAfterGameExit: boolean;
   snapshotSuccessMinutes: number;
-  /** 自定义预下载缓存目录, 空值使用安装目录内的默认路径. */
-  preloadRoot: string | null;
 }
 export interface PlaytimeSession {
   startedAt: number;
@@ -182,6 +187,7 @@ export interface RuntimeEnvironment {
   name: string;
   proton: ProtonPin;
   installRoot: string;
+  game: GameId;
   distribution: "cn" | "global";
   createdAt: number;
 }

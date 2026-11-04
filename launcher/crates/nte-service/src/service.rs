@@ -164,10 +164,12 @@ pub fn run() {
     });
     let (input, jobs) = mpsc::sync_channel(256);
     let app = Arc::new(Service::new(settings, output, input, &crate::data_dir()));
-    if !compatible
-        && app.state.settings.lock().unwrap().distribution
-            == nte_core::distribution::Distribution::Cn
-    {
+    let launch_attendance = {
+        let settings = app.state.settings.lock().unwrap();
+        settings.active_game == nte_core::game_profile::GameId::Nte
+            && settings.current().distribution == nte_core::distribution::Distribution::Cn
+    };
+    if !compatible && launch_attendance {
         crate::attendance_commands::on_launch();
     }
     crate::integrity_commands::start(app.clone());

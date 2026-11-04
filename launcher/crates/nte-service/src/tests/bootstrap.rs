@@ -33,10 +33,7 @@ impl Install {
     }
 
     fn settings(&self) -> Settings {
-        Settings {
-            install_root: Some(self.launcher.display().to_string()),
-            ..Default::default()
-        }
+        crate::tests::settings_with_game(Distribution::Cn, Some(self.launcher.clone()), None)
     }
 }
 
@@ -78,11 +75,9 @@ fn bootstrap_reports_a_complete_install() {
     env.set("PATH", &bin);
 
     let profile = managed_environment(&proton, &install.dir.join("install"), Distribution::Cn);
-    let settings = Settings {
-        runtime_environments: vec![profile.clone()],
-        active_environment: Some(profile.id.clone()),
-        ..install.settings()
-    };
+    let mut settings = install.settings();
+    settings.runtime_environments = vec![profile.clone()];
+    settings.current_mut().active_environment = Some(profile.id.clone());
     let bootstrap = bootstrap_impl(&settings);
 
     assert!(bootstrap.ok);
@@ -138,7 +133,10 @@ fn bootstrap_reports_a_complete_install() {
             .display()
             .to_string()
     );
-    assert_eq!(bootstrap.settings.install_root, settings.install_root);
+    assert_eq!(
+        bootstrap.settings.current().install_root,
+        settings.current().install_root
+    );
     assert_eq!(bootstrap.app_version, env!("CARGO_PKG_VERSION"));
     assert!(bootstrap.os.starts_with(std::env::consts::OS));
 }
@@ -263,10 +261,7 @@ fn bootstrap_does_not_fall_back_from_a_configured_empty_root() {
         "[VERSION]\nVersion=1.4.16\n",
     );
     let selected = dir.join("new-install");
-    let settings = Settings {
-        install_root: Some(selected.display().to_string()),
-        ..Default::default()
-    };
+    let settings = crate::tests::settings_with_game(Distribution::Cn, Some(selected.clone()), None);
 
     let bootstrap = bootstrap_impl(&settings);
     assert_eq!(bootstrap.install_root, selected.display().to_string());

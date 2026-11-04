@@ -3,17 +3,18 @@ import { defaultGamescope } from "../../src/core/gameMode";
 import type {
   Bootstrap,
   CheckResult,
+  GameSettings,
   GameStatus,
   Settings,
 } from "../../src/types/launcher";
 
-export const settings: Settings = {
+export const defaultGame = (
+  overrides: Partial<GameSettings> = {},
+): GameSettings => ({
+  distribution: "cn",
   installRoot: null,
   globalInstallRoot: null,
-  distribution: "cn",
-  runtimeEnvironments: [],
-  activeEnvironment: null,
-  stableEnvironment: null,
+  preloadRoot: null,
   launchMode: "background",
   gameMode: {
     performance: false,
@@ -22,13 +23,37 @@ export const settings: Settings = {
     overlay: false,
     gamescope: { ...defaultGamescope },
   },
-  gamepad: defaultGamepadOptions(),
   updates: {
     autoDownload: false,
     metered: "ask",
     limitBytesPerSecond: 0,
     window: null,
   },
+  activeEnvironment: null,
+  stableEnvironment: null,
+  ...overrides,
+});
+
+/** 返回当前游戏字段被覆盖的设置副本. */
+export function withGame(
+  overrides: Partial<GameSettings>,
+  base: Settings = settings,
+): Settings {
+  const game = base.activeGame;
+  return {
+    ...base,
+    games: {
+      ...base.games,
+      [game]: { ...defaultGame(base.games[game]), ...overrides },
+    },
+  };
+}
+
+export const settings: Settings = {
+  activeGame: "nte",
+  games: { nte: defaultGame() },
+  runtimeEnvironments: [],
+  gamepad: defaultGamepadOptions(),
   language: "zh-CN",
   reduceMotion: true,
   stackBulletins: false,
@@ -38,7 +63,6 @@ export const settings: Settings = {
   minimizeToTrayOnClose: true,
   showLauncherAfterGameExit: true,
   snapshotSuccessMinutes: 1,
-  preloadRoot: null,
 };
 export const bootstrap = (overrides: Partial<Bootstrap> = {}): Bootstrap => ({
   ok: true,
@@ -61,7 +85,7 @@ export const bootstrap = (overrides: Partial<Bootstrap> = {}): Bootstrap => ({
     { distribution: "cn", installRoot: "/game", installed: true },
     { distribution: "global", installRoot: "/global-game", installed: false },
   ],
-  settings: { ...settings },
+  settings: structuredClone(settings),
   integrity: {
     state: "verified",
     source: "online",
