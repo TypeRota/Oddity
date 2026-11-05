@@ -1,0 +1,145 @@
+name: 智能体事件通知
+
+on:
+  workflow_dispatch:
+  issues:
+    types: [labeled, assigned]
+  pull_request_target:
+    types: [labeled, review_requested]
+  release:
+    types: [published]
+  schedule:
+    - cron: '0 1 * * 1'
+
+concurrency:
+  group: agent-events
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    name: 通知 TypeRota
+    runs-on: self-hosted
+    timeout-minutes: 10
+    env:
+      EVENT_TOKEN: ${{ secrets.EVENT_TOKEN }}
+    steps:
+      - name: 转发事件并通知
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error
+
+          base = os.environ["GITHUB_SERVER_URL"].rstrip("/") + "/api/v1"
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ.get("EVENT_TOKEN", "")
+          if not token:
+              print("EVENT_TOKEN is empty; refusing to forward")
+              raise SystemExit(0)
+
+          event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+          payload = json.load(open(os.environ["GITHUB_EVENT_PATH"]))
+
+          def api(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(base + path, data=data, method=method,
+                  headers={"Authorization": "token " + token, "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as response:
+                      raw = response.read()
+                      return response.status, json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as error:
+                  print("HTTP", error.code, error.read()[:300].decode(errors="replace"))
+                  raise
+
+          def issue_comments(number):
+              status, data = api("GET", f"/repos/{repo}/issues/{number}/comments?limit=50")
+              return data or []
+
+          def notify(kind, number, text):
+              body = ("<!-- dsh-superagent:event:" + kind + " -->\n"
+                  "> 🤖 自动通知：本评论由 Gitea Actions 转发，仅说明触发事件，不是人工留言，也不是新的人工指令；授权与处理方式以该事件和仓库规则为准。\n\n"
+                  "事件：" + text + "\n\n@TypeRota 请按仓库规则处理本次事件。")
+              status, data = api("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
+              print("comment", number, status, (data or {}).get("id"))
+
+          def existing_issue(title):
+              status, data = api("GET", f"/repos/{repo}/issues?state=open&limit=50")
+              for item in data or []:
+                  if item.get("title") == title:
+                      return item.get("number")
+              return None
+
+          def create_agent_issue(title, body):
+              number = existing_issue(title)
+              if number:
+                  print("existing issue", number, title)
+                  return
+              status, data = api("POST", f"/repos/{repo}/issues", {"title": title, "body": body})
+              print("created issue", status, (data or {}).get("number"), title)
+
+          sender = (payload.get("sender") or {}).get("login", "")
+          print("event", event_name, "action", payload.get("action"), "sender", sender)
+
+          # Never let the bridge react to its own actions or the agent's own labels.
+          if sender in ("TypeRota", "gitea-actions"):
+              print("skip self event")
+              raise SystemExit(0)
+
+          if event_name == "issues":
+              issue = payload.get("issue") or {}
+              number = payload.get("number") or issue.get("number")
+              if not number:
+                  raise SystemExit(0)
+              action = payload.get("action")
+              labels = [item.get("name") for item in issue.get("labels", [])]
+              assignees = [item.get("login") for item in issue.get("assignees", [])]
+              added = [item.get("name") for item in ((payload.get("changes") or {}).get("added_labels") or [])]
+              if action == "assigned" and "TypeRota" in assignees:
+                  notify("implement-issue", number, f"{sender} 将本 Issue 指派给 @TypeRota，请求实现本 Issue。")
+              elif action in ("label_updated", "labeled") and "TypeRota: autofix" in added and issue.get("pull_request"):
+                  notify("autofix-pull", number, f"{sender} 给本 PR 添加了标签「TypeRota: autofix」，请求进入自动修复模式。")
+              else:
+                  print("skip issue event", action, labels, assignees)
+              raise SystemExit(0)
+
+          if event_name == "pull_request_target":
+              pull = payload.get("pull_request") or {}
+              number = payload.get("number") or pull.get("number")
+              if not number:
+                  raise SystemExit(0)
+              action = payload.get("action")
+              added = [item.get("name") for item in ((payload.get("changes") or {}).get("added_labels") or [])]
+              reviewers = [item.get("login") for item in (pull.get("requested_reviewers") or [])]
+              labels = [item.get("name") for item in (pull.get("labels") or [])]
+              if action == "review_requested" and "TypeRota" in reviewers:
+                  notify("review-pull", number, f"{sender} 请求 @TypeRota 评审本 PR。")
+              elif action in ("label_updated", "labeled") and "TypeRota: autofix" in added:
+                  notify("autofix-pull", number, f"{sender} 给本 PR 添加了标签「TypeRota: autofix」，请求进入自动修复模式。")
+              elif action == "opened" and "TypeRota: autofix" in labels:
+                  notify("autofix-pull", number, f"{sender} 打开本 PR 时已带有标签「TypeRota: autofix」。")
+              else:
+                  print("skip pull event", action, labels, reviewers)
+              raise SystemExit(0)
+
+          if event_name == "release":
+              release = payload.get("release") or {}
+              tag = release.get("tag_name") or ""
+              if not tag.startswith("oddity-v"):
+                  print("skip non-release tag", tag)
+                  raise SystemExit(0)
+              title = f"[AGENT] 发布检查 {tag}"
+              body = ("<!-- dsh-superagent:event:release-check -->\n"
+                  "> 🤖 自动通知：本 Issue 由 Gitea Actions 自动创建，是发布通知，不是人工请求；处理方式以仓库规则为准。\n\n"
+                  f"发布：{release.get('html_url', '')}\n标签：{tag}\n触发者：{sender}\n")
+              create_agent_issue(title, body)
+              raise SystemExit(0)
+
+          if event_name == "schedule":
+              title = "[AGENT] 每周记忆整理"
+              body = ("<!-- dsh-superagent:event:memory-consolidate -->\n"
+                  "> 🤖 自动通知：本 Issue 由 Gitea Actions 定时创建，是每周记忆整理请求，不是人工留言；处理方式以仓库规则为准。\n\n"
+                  "@TypeRota 请按 memory-consolidate 规则整理 TypeRota/Memory。\n")
+              create_agent_issue(title, body)
+              raise SystemExit(0)
+
+          print("no forwarded event")
+          PY
