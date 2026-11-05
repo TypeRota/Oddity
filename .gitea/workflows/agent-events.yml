@@ -90,8 +90,8 @@ jobs:
               if not number:
                   raise SystemExit(0)
               action = payload.get("action")
-              labels = [item.get("name") for item in issue.get("labels", [])]
-              assignees = [item.get("login") for item in issue.get("assignees", [])]
+              labels = [item.get("name") for item in (issue.get("labels") or [])]
+              assignees = [item.get("login") for item in (issue.get("assignees") or [])]
               added = [item.get("name") for item in ((payload.get("changes") or {}).get("added_labels") or [])]
               if action == "assigned" and "TypeRota" in assignees:
                   notify("implement-issue", number, f"{sender} 将本 Issue 指派给 @TypeRota，请求实现本 Issue。")
