@@ -95,6 +95,8 @@ jobs:
               added = [item.get("name") for item in ((payload.get("changes") or {}).get("added_labels") or [])]
               if action == "assigned" and "TypeRota" in assignees:
                   notify("implement-issue", number, f"{sender} 将本 Issue 指派给 @TypeRota，请求实现本 Issue。")
+              elif action in ("label_updated", "labeled") and "TypeRota: implement" in added and not issue.get("pull_request"):
+                  notify("implement-issue", number, f"{sender} 给本 Issue 添加了标签「TypeRota: implement」，请求实现本 Issue。")
               elif action in ("label_updated", "labeled") and "TypeRota: autofix" in added and issue.get("pull_request"):
                   notify("autofix-pull", number, f"{sender} 给本 PR 添加了标签「TypeRota: autofix」，请求进入自动修复模式。")
               else:
@@ -112,6 +114,8 @@ jobs:
               labels = [item.get("name") for item in (pull.get("labels") or [])]
               if action == "review_requested" and "TypeRota" in reviewers:
                   notify("review-pull", number, f"{sender} 请求 @TypeRota 评审本 PR。")
+              elif action in ("label_updated", "labeled") and "TypeRota: review" in added:
+                  notify("review-pull", number, f"{sender} 给本 PR 添加了标签「TypeRota: review」，请求评审本 PR。")
               elif action in ("label_updated", "labeled") and "TypeRota: autofix" in added:
                   notify("autofix-pull", number, f"{sender} 给本 PR 添加了标签「TypeRota: autofix」，请求进入自动修复模式。")
               elif action == "opened" and "TypeRota: autofix" in labels:
