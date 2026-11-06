@@ -2,7 +2,7 @@
 
 浏览器演示在浏览器中展示 Oddity 的界面与主要交互流程, 使用示例数据, 不需要安装 Electron 或游戏资源.
 
-在线体验: [lat-sky.github.io/Oddity](https://lat-sky.github.io/Oddity/)
+在线体验: [io.miprota.cc/preview/Oddity/Oddity](https://io.miprota.cc/preview/Oddity/Oddity/)
 
 ![浏览器演示界面](assets/browser-demo-home.png)
 
@@ -15,7 +15,7 @@
 
 ![浏览器演示手柄设置](assets/browser-demo-gamepad.png)
 
-演示站会随 `launcher/ui` 的界面改动自动更新.
+演示站是 `launcher/ui` 的静态构建, 界面改动合并后需要重新构建并部署才会更新.
 
 ## 限制
 
@@ -45,12 +45,12 @@ pnpm run test:demo
 
 ## 部署
 
-推送到 `main` 且改动涉及 `launcher/ui` 时, [浏览器演示工作流](../.github/workflows/pages.yml) 会自动构建并部署到 GitHub Pages. 也可以在 Actions 页面手动运行“浏览器演示”工作流.
+演示站部署在 `io.miprota.cc` 的 `/preview/Oddity/Oddity/` 静态路径, 使用 `pnpm run build:demo` 的产物. 构建使用相对 base, 静态文件可以直接放在该子路径下.
 
-首次启用时, 在仓库 Settings → Pages 的 Source 中选择 "GitHub Actions". 构建使用相对 base, 演示站位于项目子路径 `/Oddity/`, 无需额外配置仓库名.
+当前由维护者手动更新: 构建后把 `launcher/ui/dist` 的内容复制到服务器上对应的静态目录. 仓库的 CI 不会自动发布演示站.
 
 ## 维护
 
-界面改动合并到 `main` 后会自动出现在演示站, 无需单独更新.
+界面改动合并到 `main` 后, 需要重新构建并部署静态文件, 才会出现在演示站.
 
 示例数据主要在 `launcher/ui/src/core/api.ts` 与 `launcher/ui/src/core/demo.ts`, 新增界面需要补充示例数据时修改这两个文件.

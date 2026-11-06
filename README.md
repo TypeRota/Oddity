@@ -11,7 +11,7 @@
 
 [![Release](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgit.miprota.cc%2Fapi%2Fv1%2Frepos%2FOddity%2FOddity%2Ftags&query=%24%5B0%5D.name&label=release&color=blue)](https://git.miprota.cc/Oddity/Oddity/releases)
 [![Platform](https://img.shields.io/badge/platform-Linux-informational)](https://git.miprota.cc/Oddity/Oddity)
-[![在线体验](https://img.shields.io/badge/demo-online-brightgreen)](https://lat-sky.github.io/Oddity/)
+[![在线体验](https://img.shields.io/badge/demo-online-brightgreen)](https://io.miprota.cc/preview/Oddity/Oddity/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
 </div>
@@ -43,7 +43,7 @@ Oddity 通过 `umu-run` 和 Proton 管理游戏运行环境，并集成了资源
 
 无需安装，即可在浏览器中体验 Oddity。
 
-**[在线试用 Oddity](https://lat-sky.github.io/Oddity/)**
+**[在线试用 Oddity](https://io.miprota.cc/preview/Oddity/Oddity/)**
 
 在线演示保留了启动器的主要界面与交互，使用模拟数据运行。
 
@@ -93,8 +93,6 @@ NixOS 和 Gentoo 请参阅 [Nix 指南](docs/nix.md) 与 [Gentoo 指南](docs/ge
   <img src="docs/assets/taygedo-records.png" width="48%" alt="塔吉多战绩面板">
   <img src="docs/assets/launcher-settings.png" width="48%" alt="设置界面">
 </p>
-
-不想安装也可以先在[浏览器演示](https://lat-sky.github.io/Oddity/)中体验界面；演示使用示例数据，安装、下载、更新与签到等功能仅桌面版可用，详见[浏览器演示文档](docs/demo.md)。
 
 # _Technical Differences_
 
