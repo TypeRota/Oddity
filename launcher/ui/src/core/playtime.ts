@@ -113,6 +113,7 @@ export function playModeLabel(mode: string): string {
 export function buildPlaytimeStats(
   history: PlaytimeHistory,
   now = Date.now(),
+  relativeHeatmap = true,
 ): PlaytimeStats {
   const sessions = history.sessions
     .filter(
@@ -170,7 +171,7 @@ export function buildPlaytimeStats(
     activeMs,
     dayMs,
     months: buildMonths(dayMs, sessions, activeMs > 0 ? active : null, now),
-    heatmap: buildHeatmap(dayMs, now),
+    heatmap: buildHeatmap(dayMs, now, relativeHeatmap),
   };
 }
 
@@ -237,6 +238,7 @@ function buildMonths(
 function buildHeatmap(
   dayMs: Record<string, number>,
   now: number,
+  relative: boolean,
 ): PlaytimeHeatmap {
   const currentWeek = startOfWeek(now);
   const first = addDays(currentWeek, -7 * (HEATMAP_WEEKS - 1));
@@ -256,7 +258,7 @@ function buildHeatmap(
         key,
         date,
         ms,
-        level: heatLevel(ms),
+        level: 0,
         future,
       });
     }
@@ -270,12 +272,34 @@ function buildHeatmap(
   if (months.length > 1 && months[months.length - 1].label === months[0].label)
     months.shift();
   while (months.length > 12) months.shift();
+  const cells = weeks.flat();
+  if (relative) assignRelativeLevels(cells);
+  else for (const day of cells) day.level = heatLevel(day.ms);
   return {
     weeks,
     months,
     start: first,
     end: addDays(first, HEATMAP_WEEKS * 7 - 1),
   };
+}
+
+// 按窗口内已游玩日子的分位分档, 单次长时间游玩不会把日常时长压在最浅一档。
+function assignRelativeLevels(cells: PlaytimeDay[]) {
+  const played = cells.filter((day) => !day.future && day.ms > 0);
+  if (!played.length) return;
+  const counts = new Map<number, number>();
+  for (const day of played) counts.set(day.ms, (counts.get(day.ms) ?? 0) + 1);
+  // 并列时长取平均名次, 深浅只跟其他游玩日比较。
+  const span = played.length - 1;
+  const levels = new Map<number, number>();
+  let below = 0;
+  for (const value of [...counts.keys()].sort((left, right) => left - right)) {
+    const count = counts.get(value) ?? 0;
+    const rank = below + (count - 1) / 2;
+    levels.set(value, span === 0 ? 5 : 1 + Math.round((rank / span) * 4));
+    below += count;
+  }
+  for (const day of played) day.level = levels.get(day.ms) ?? 0;
 }
 
 function heatLevel(ms: number): number {

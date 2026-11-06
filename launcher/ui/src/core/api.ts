@@ -210,6 +210,7 @@ const mock: Bootstrap = {
     theme: "light",
     heroMedia: "video",
     pauseHeroOnBlur: true,
+    relativeHeatmap: true,
     minimizeToTrayOnClose: true,
     showLauncherAfterGameExit: true,
     snapshotSuccessMinutes: 1,

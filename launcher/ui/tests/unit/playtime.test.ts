@@ -217,6 +217,7 @@ describe("热力图", () => {
         session(at(2026, 9, 23, 0), at(2026, 9, 23, 0) + 5 * HOUR),
       ]),
       now,
+      false,
     );
     const days = stats.heatmap.weeks.flat();
     expect(days.some((day) => day.future)).toBe(true);
@@ -225,6 +226,59 @@ describe("热力图", () => {
     expect(days.find((day) => day.key === "2026-10-25")?.level).toBe(3);
     expect(days.find((day) => day.key === "2026-10-24")?.level).toBe(4);
     expect(days.find((day) => day.key === "2026-10-23")?.level).toBe(5);
+  });
+
+  it("按最近 12 个月的相对时长分档, 不受窗口外记录影响", () => {
+    const now = at(2026, 9, 28, 12);
+    const minutes = [5, 10, 15, 20, 25];
+    const played = minutes.map((value, index) =>
+      session(
+        at(2026, 9, 20 + index, 19),
+        at(2026, 9, 20 + index, 19) + value * MINUTE,
+      ),
+    );
+    const keys = minutes.map((_, index) => `2026-10-${20 + index}`);
+    const levels = (data: ReturnType<typeof buildPlaytimeStats>) =>
+      keys.map(
+        (key) =>
+          data.heatmap.weeks.flat().find((day) => day.key === key)?.level,
+      );
+    const relative = buildPlaytimeStats(
+      history([session(at(2020, 0, 1), at(2020, 0, 1, 8)), ...played]),
+      now,
+      true,
+    );
+    expect(levels(relative)).toEqual([1, 2, 3, 4, 5]);
+
+    const absolute = buildPlaytimeStats(history(played), now, false);
+    expect(levels(absolute)).toEqual([1, 1, 1, 1, 1]);
+  });
+
+  it("并列时长取平均名次, 只有一天记录时使用最深一档", () => {
+    const now = at(2026, 9, 28, 12);
+    const day = (value: number, minutes: number) =>
+      session(
+        at(2026, 9, value, 19),
+        at(2026, 9, value, 19) + minutes * MINUTE,
+      );
+    const levelOf = (
+      data: ReturnType<typeof buildPlaytimeStats>,
+      key: string,
+    ) => data.heatmap.weeks.flat().find((cell) => cell.key === key)?.level;
+
+    const tied = buildPlaytimeStats(
+      history([day(20, 10), day(21, 10), day(22, 10)]),
+      now,
+      true,
+    );
+    expect([
+      levelOf(tied, "2026-10-20"),
+      levelOf(tied, "2026-10-21"),
+      levelOf(tied, "2026-10-22"),
+    ]).toEqual([3, 3, 3]);
+
+    const single = buildPlaytimeStats(history([day(20, 10)]), now, true);
+    expect(levelOf(single, "2026-10-20")).toBe(5);
   });
 });
 
@@ -428,6 +482,7 @@ describe("游玩记录边界", () => {
     const stats = buildPlaytimeStats(
       history([session(start, start + ms)]),
       start + 12 * HOUR,
+      false,
     );
     expect(
       stats.heatmap.weeks.flat().find((day) => day.key === "2026-06-15"),

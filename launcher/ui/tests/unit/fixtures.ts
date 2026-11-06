@@ -61,6 +61,7 @@ export const settings: Settings = {
   heroMedia: "photo",
   pauseHeroOnBlur: true,
   adaptiveTheme: true,
+  relativeHeatmap: true,
   minimizeToTrayOnClose: true,
   showLauncherAfterGameExit: true,
   snapshotSuccessMinutes: 1,

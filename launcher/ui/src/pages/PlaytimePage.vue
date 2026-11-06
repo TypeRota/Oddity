@@ -26,6 +26,7 @@ const stats = computed(() =>
   buildPlaytimeStats(
     playtime.history ?? { sessions: [], active: null },
     statsNow.value,
+    form.relativeHeatmap,
   ),
 );
 const heatmapDays = computed(

@@ -44,6 +44,13 @@ export const settingsEntries = [
     keywords: "主题色 自适应 取色 磨砂 颜色 主视觉",
   },
   {
+    id: "relative-heatmap",
+    category: "appearance",
+    label: "热力图相对深浅",
+    description: "按最近 12 个月的相对游玩时长着色, 关闭后按固定时长分档.",
+    keywords: "记录 热力图 深浅 相对 绝对 游玩 时长",
+  },
+  {
     id: "bulletins",
     category: "appearance",
     label: "堆叠公告",

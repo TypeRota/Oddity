@@ -159,6 +159,7 @@ export interface Settings {
   heroMedia: string;
   pauseHeroOnBlur: boolean;
   adaptiveTheme?: boolean;
+  relativeHeatmap?: boolean;
   minimizeToTrayOnClose: boolean;
   showLauncherAfterGameExit: boolean;
   snapshotSuccessMinutes: number;

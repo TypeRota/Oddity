@@ -469,6 +469,7 @@ export const form = reactive({
   heroMedia: "video",
   pauseHeroOnBlur: true,
   adaptiveTheme: true,
+  relativeHeatmap: true,
   reduceMotion: false,
   stackBulletins: false,
   minimizeToTrayOnClose: true,
@@ -1495,6 +1496,7 @@ function applyBootstrap(
   form.stackBulletins = settings.stackBulletins;
   form.pauseHeroOnBlur = settings.pauseHeroOnBlur ?? true;
   form.adaptiveTheme = settings.adaptiveTheme ?? true;
+  form.relativeHeatmap = settings.relativeHeatmap ?? true;
   applyReduceMotion(Boolean(settings.reduceMotion));
   applyHeroMedia(settings.heroMedia || "video");
   form.minimizeToTrayOnClose = settings.minimizeToTrayOnClose ?? true;
@@ -2433,6 +2435,7 @@ function currentSettings(): Settings {
     heroMedia: HERO_MEDIA.has(form.heroMedia) ? form.heroMedia : "video",
     pauseHeroOnBlur: form.pauseHeroOnBlur,
     adaptiveTheme: form.adaptiveTheme,
+    relativeHeatmap: form.relativeHeatmap,
     minimizeToTrayOnClose: form.minimizeToTrayOnClose,
     showLauncherAfterGameExit: form.showLauncherAfterGameExit,
     snapshotSuccessMinutes: form.snapshotSuccessMinutes,

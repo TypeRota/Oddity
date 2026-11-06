@@ -73,6 +73,8 @@ pub struct Settings {
     pub hero_media: String,
     pub pause_hero_on_blur: bool,
     pub adaptive_theme: bool,
+    /// 热力图按最近 12 个月的相对游玩时长着色; 关闭后按固定时长分档.
+    pub relative_heatmap: bool,
     pub minimize_to_tray_on_close: bool,
     pub show_launcher_after_game_exit: bool,
     pub snapshot_success_minutes: u64,
@@ -92,6 +94,7 @@ impl Default for Settings {
             hero_media: "video".to_string(),
             pause_hero_on_blur: true,
             adaptive_theme: true,
+            relative_heatmap: true,
             minimize_to_tray_on_close: true,
             show_launcher_after_game_exit: true,
             snapshot_success_minutes: crate::snapshots::DEFAULT_SUCCESS_MINUTES,

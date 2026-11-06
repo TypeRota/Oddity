@@ -575,6 +575,22 @@ const integritySummary = computed(() => {
                     />
                   </SettingRow>
                   <SettingRow
+                    data-setting="relative-heatmap"
+                    tabindex="-1"
+                    :label="entry('relative-heatmap').label"
+                    :description="entry('relative-heatmap').description"
+                    for="set-relative-heatmap"
+                    v-slot="{ describedby }"
+                  >
+                    <BaseSwitch
+                      id="set-relative-heatmap"
+                      v-model="form.relativeHeatmap"
+                      :label="entry('relative-heatmap').label"
+                      :describedby="describedby"
+                      @change="queueSettingsSave(0)"
+                    />
+                  </SettingRow>
+                  <SettingRow
                     data-setting="bulletins"
                     tabindex="-1"
                     :label="entry('bulletins').label"
