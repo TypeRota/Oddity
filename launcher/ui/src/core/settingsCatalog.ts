@@ -118,7 +118,14 @@ export const settingsEntries = [
     category: "game",
     label: "启动方式",
     description: "选择后台启动、前台启动或直接启动.",
-    keywords: "官方 登录 后台 前台 开发",
+    keywords: "官方 登录 后台 前台 直接",
+  },
+  {
+    id: "game-account",
+    category: "game",
+    label: "游戏账号",
+    description: "选择直接启动使用的游戏账号.",
+    keywords: "登录 手机号 验证码 密码 账号切换 记住账号",
   },
   {
     id: "preload-dir",

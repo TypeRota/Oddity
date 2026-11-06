@@ -22,6 +22,7 @@ coverage-summary.txt
 # ============================================================
 # Internal reverse-engineering notes, probes, dossiers, caches and
 # generated artifacts live here. Only user-facing docs belong in docs/.
+# internal/ 是独立文档仓库 (Documents) 的检出目录.
 internal/
 research/
 *.snap.json

@@ -13,7 +13,7 @@ fn gamescope_preserves_the_umu_handoff_and_environment() {
     write_script(&fixture.dir.join("bin"), "gamescope", &format!(
         "#!/bin/sh\nwhile [ \"$1\" != -- ]; do printf '%s\\n' \"$1\" >> '{}'; shift; done\nshift\nexec \"$@\"\n", options_log.display()
     ));
-    let mut settings = fixture.settings("direct");
+    let mut settings = fixture.settings("official");
     settings.current_mut().game_mode.gamescope = nte_core::game_mode::gamescope::Options {
         enabled: true,
         game_width: 1280,
@@ -23,7 +23,7 @@ fn gamescope_preserves_the_umu_handoff_and_environment() {
     };
     let invocation = launch_impl(&settings).unwrap();
     let dump = fixture.dump();
-    assert!(dump.contains("HTGame.exe") && dump.contains("WINEPREFIX="));
+    assert!(dump.contains("NTEGame.exe") && dump.contains("WINEPREFIX="));
     assert_eq!(env_value(&dump, "PROTON_ENABLE_WAYLAND"), Some("0"));
     assert_eq!(env_value(&dump, "PROTON_USE_WAYLAND"), Some("0"));
     let options = std::fs::read_to_string(options_log).unwrap();
@@ -399,43 +399,11 @@ fn launch_reports_unwritable_runtime_config_before_starting_the_game() {
 }
 
 #[test]
-fn launch_direct_mode_targets_the_game_executable() {
+fn direct_launch_rejects_missing_sdk_before_starting_processes() {
     let fixture = LaunchFixture::new("launch-direct");
-    let game = fixture
-        .dir
-        .join("install/Client/WindowsNoEditor/HT/Binaries/Win64/HTGame.exe");
-    // 直接模式不碰官方启动器的配置，这里放一个内容不变的文件作为对照
-    let config = fixture.launcher.join("UserData/Config/Config.ini");
-    std::fs::create_dir_all(config.parent().expect("config parent")).expect("create config dir");
-    std::fs::write(&config, "[Setting]\nautoLogin=1\n").expect("write config");
-
-    let invocation = launch_impl(&fixture.settings("direct")).expect("launch");
-    assert_eq!(invocation.result.mode, "direct");
-    assert!(invocation.result.exe.ends_with("HTGame.exe"));
-
-    let dump = fixture.dump();
-    assert_eq!(
-        env_value(&dump, "NTE_GAME_EXE"),
-        Some(windows_path(&game).as_str())
-    );
-    assert_eq!(
-        env_value(&dump, "NTE_GAME_CWD"),
-        Some(windows_path(game.parent().expect("game parent")).as_str())
-    );
-    assert_eq!(
-        env_value(&dump, "NTE_GAME_ARGS"),
-        Some("/Game/LoginAndCreate/Map/Updater/Updater_P -SAVEWINPOS=1")
-    );
-    assert!(env_value(&dump, "NTE_BRIDGE_EXE").is_none());
-
-    // 直接模式不改官方启动器配置，也不去动 Wine 托盘
-    assert_eq!(
-        std::fs::read_to_string(&config).expect("read config"),
-        "[Setting]\nautoLogin=1\n"
-    );
-    assert!(!fixture.wine_log.exists());
-
-    fixture.stop(invocation);
+    let error = expect_launch_error(launch_impl(&fixture.settings("direct")));
+    assert!(error.contains("缺少直接启动所需的官方SDK组件"), "{error}");
+    assert!(!fixture.dump.exists());
 }
 
 #[test]
@@ -476,9 +444,6 @@ fn launch_reports_an_immediate_exit_with_the_log_tail() {
     let error = expect_launch_error(launch_impl(&fixture.settings("official")));
     assert!(error.contains("官方启动器启动失败（退出码 1）"), "{error}");
     assert!(error.contains("cannot find"), "{error}");
-
-    let error = expect_launch_error(launch_impl(&fixture.settings("direct")));
-    assert!(error.contains("游戏启动失败（退出码 1）"), "{error}");
 
     let mut invocation = launch_impl_with_profile(&fixture.settings("background"), |_| {
         Ok(ClickProfile {
@@ -669,19 +634,19 @@ fn launch_records_an_environment_snapshot() {
     let fixture = LaunchFixture::new("snapshot-launch");
     let snapshots = snapshot_commands::Snapshots::load(&data_dir());
     let invocation = launch_impl_with_snapshots(
-        &fixture.settings("direct"),
+        &fixture.settings("official"),
         &snapshots,
         &AtomicBool::new(false),
     )
     .unwrap();
     let dump = fixture.dump();
-    assert!(dump.contains("HTGame.exe"), "{dump}");
+    assert!(dump.contains("NTEGame.exe"), "{dump}");
 
     let overview = snapshots.overview().unwrap();
     let latest = overview.latest.expect("snapshot");
     assert_eq!(latest.environment.as_deref(), Some("测试环境"));
     assert_eq!(latest.proton.as_deref(), Some("GE-Proton9-1"));
-    assert_eq!(latest.mode, "direct");
+    assert_eq!(latest.mode, "official");
     assert_eq!(latest.status, nte_core::snapshots::Status::Starting);
     let log = std::fs::read_to_string(&invocation.result.log).unwrap();
     assert!(log.contains("oddity="), "{log}");
@@ -723,7 +688,7 @@ fn immediate_exit_marks_the_snapshot_failed() {
     write_script(&fixture.dir.join("bin"), "umu-run", "#!/bin/sh\nexit 3\n");
     let snapshots = snapshot_commands::Snapshots::load(&data_dir());
     let error = expect_launch_error(launch_impl_with_snapshots(
-        &fixture.settings("direct"),
+        &fixture.settings("official"),
         &snapshots,
         &AtomicBool::new(false),
     ));

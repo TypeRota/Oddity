@@ -1,5 +1,9 @@
 import type { Commands } from "../src/types/launcher";
 export const commands = {
+  game_accounts: true,
+  game_send_code: true,
+  game_login: true,
+  game_account_remove: true,
   browse_files: true,
   gamepad_poll: true,
   gamepad_release_idle: true,

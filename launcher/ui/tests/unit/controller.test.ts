@@ -2102,6 +2102,7 @@ describe("游戏会话", () => {
 
   it.each(["official", "direct"])("%s 启动不提供暂停入口", async (mode) => {
     backend.data.settings.games.nte!.launchMode = mode;
+    backend.data.settings.games.nte!.gameAccountId = "synthetic-account";
     const c = await boot();
     button("launch-btn").click();
     await nextTick();

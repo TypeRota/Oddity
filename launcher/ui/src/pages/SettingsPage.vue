@@ -25,6 +25,8 @@ import {
 import { useControlMotion } from "../composables/useControlMotion";
 import { useScrubNavigation } from "../composables/useScrubNavigation";
 import RuntimeEnvironments from "../components/RuntimeEnvironments.vue";
+import GameAccountDialog from "../components/GameAccountDialog.vue";
+import { activeGame } from "../core/game";
 import TaygedoSettings from "../components/TaygedoSettings.vue";
 import BaseSelect from "../components/BaseSelect.vue";
 import BaseSwitch from "../components/BaseSwitch.vue";
@@ -41,6 +43,7 @@ import BaseDisclosure from "../components/BaseDisclosure.vue";
 import type { IntegrityState, MeteredPolicy } from "../types/launcher";
 
 const root = ref<HTMLElement | null>(null);
+const gameAccountsOpen = ref(false);
 const { control, surface, reduced } = useControlMotion();
 const [, animate] = useAnimate();
 // 分类面板按首次访问挂载, 避免启动时构建全部设置项。
@@ -68,7 +71,12 @@ const mediaOptions = [
   { label: "动态视频", value: "video" },
   { label: "静态照片", value: "photo" },
 ];
-const launchOptions = [
+const directSupported = computed(
+  () =>
+    form.distribution === "cn" &&
+    activeGame(state.bootstrap?.settings) === "nte",
+);
+const launchOptions = computed(() => [
   {
     label: "后台启动 (推荐)",
     value: "background",
@@ -80,13 +88,16 @@ const launchOptions = [
     hint: "显示官方窗口, 请从该窗口点击启动游戏.",
   },
   {
-    label: "直接启动 (开发中)",
+    label: "直接启动",
     value: "direct",
-    hint: "跳过官方登录, 开发中.",
+    hint: "使用所选游戏账号登录并直接启动游戏. 目前仅支持国服.",
+    disabled: !directSupported.value,
   },
-];
+]);
 const launchModeHint = computed(
-  () => launchOptions.find((option) => option.value === form.launchMode)?.hint,
+  () =>
+    launchOptions.value.find((option) => option.value === form.launchMode)
+      ?.hint,
 );
 const meteredOptions = [
   {
@@ -772,8 +783,25 @@ const integritySummary = computed(() => {
                       v-model="form.launchMode"
                       :options="launchOptions"
                       :disabled="runtimePathsLocked"
-                      @change="queueSettingsSave(0)" /></SettingRow
-                ></SettingGroup>
+                      @change="queueSettingsSave(0)"
+                  /></SettingRow>
+                  <SettingRow
+                    data-setting="game-account"
+                    tabindex="-1"
+                    label="游戏账号"
+                    :description="
+                      directSupported
+                        ? '用于下次直接启动, 与塔吉多账号分别保存.'
+                        : '游戏账号登录目前仅支持《异环》国服.'
+                    "
+                  >
+                    <BaseButton
+                      :disabled="!directSupported"
+                      @click="gameAccountsOpen = true"
+                      >管理游戏账号</BaseButton
+                    >
+                  </SettingRow>
+                </SettingGroup>
                 <SettingGroup title="资源更新">
                   <div
                     class="settings-path"
@@ -1031,4 +1059,14 @@ const integritySummary = computed(() => {
       </div>
     </div>
   </motion.section>
+  <GameAccountDialog
+    v-model:open="gameAccountsOpen"
+    :selected="form.gameAccountId"
+    :theme="form.theme"
+    :reduce-motion="form.reduceMotion"
+    @select="
+      form.gameAccountId = $event;
+      queueSettingsSave(0);
+    "
+  />
 </template>

@@ -13,6 +13,7 @@ pub mod distribution;
 pub mod environment;
 pub mod error;
 pub mod game;
+pub mod game_auth;
 pub mod game_mode;
 pub mod game_profile;
 pub mod gamepad;

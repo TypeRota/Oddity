@@ -142,6 +142,7 @@ export interface GameSettings {
   /** 自定义预下载缓存目录, 空值使用安装目录内的默认路径. */
   preloadRoot: string | null;
   launchMode: string;
+  gameAccountId: string | null;
   gameMode: GameModeOptions;
   updates: UpdateSettings;
   activeEnvironment: string | null;
@@ -163,6 +164,10 @@ export interface Settings {
   minimizeToTrayOnClose: boolean;
   showLauncherAfterGameExit: boolean;
   snapshotSuccessMinutes: number;
+}
+export interface GameAccount {
+  accountId: string;
+  maskedPhone: string;
 }
 export interface PlaytimeSession {
   startedAt: number;
@@ -496,6 +501,10 @@ export interface Commands {
   gamepad_profile_load: Profile;
   gamepad_profile_save: void;
   attendance_status: AttendanceStatus;
+  game_accounts: GameAccount[];
+  game_send_code: string;
+  game_login: GameAccount;
+  game_account_remove: null;
   attendance_refresh_game_records: AttendanceStatus;
   attendance_login: AttendanceStatus;
   attendance_send_code: string;
@@ -571,6 +580,15 @@ export interface CommandArgs {
     rememberPassword: boolean;
   };
   attendance_configure: { preferences: AttendancePreferences };
+  game_accounts: undefined;
+  game_send_code: { phone: string };
+  game_login: {
+    phone: string;
+    secret: string;
+    password: boolean;
+    deviceId: string;
+  };
+  game_account_remove: { accountId: string };
   attendance_run: undefined;
   attendance_logout: { accountId: string };
   attendance_keyring_check: undefined;

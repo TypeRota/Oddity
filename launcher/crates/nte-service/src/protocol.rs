@@ -18,7 +18,11 @@ pub struct Request {
 fn requires_current_game(command: &str) -> bool {
     matches!(
         command,
-        "attendance_refresh_game_records"
+        "game_accounts"
+            | "game_send_code"
+            | "game_login"
+            | "game_account_remove"
+            | "attendance_refresh_game_records"
             | "attendance_login"
             | "attendance_send_code"
             | "attendance_login_sms"
@@ -87,6 +91,60 @@ pub async fn dispatch(
         }
     }
     match command.as_str() {
+        "game_accounts" => serde_json::to_value(
+            crate::game_auth_commands::accounts(&app.state)
+                .await
+                .map_err(|e| json!(e))?,
+        )
+        .map_err(|_| json!("游戏账号状态格式无效")),
+        "game_send_code" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args {
+                phone: String,
+            }
+            let args: Args =
+                serde_json::from_value(args).map_err(|_| json!("游戏账号请求参数无效"))?;
+            Ok(json!(crate::game_auth_commands::send_code(
+                &app.state, args.phone
+            )
+            .await
+            .map_err(|e| json!(e))?))
+        }
+        "game_login" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                phone: String,
+                secret: String,
+                password: bool,
+                device_id: String,
+            }
+            let args: Args =
+                serde_json::from_value(args).map_err(|_| json!("游戏账号请求参数无效"))?;
+            Ok(json!(crate::game_auth_commands::login(
+                &app.state,
+                args.phone,
+                args.secret,
+                args.password,
+                args.device_id
+            )
+            .await
+            .map_err(|e| json!(e))?))
+        }
+        "game_account_remove" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                account_id: String,
+            }
+            let args: Args =
+                serde_json::from_value(args).map_err(|_| json!("游戏账号请求参数无效"))?;
+            crate::game_auth_commands::remove(&app.state, args.account_id)
+                .await
+                .map_err(|e| json!(e))?;
+            Ok(Value::Null)
+        }
         "attendance_status" => serde_json::to_value(
             crate::attendance_commands::attendance_status()
                 .await

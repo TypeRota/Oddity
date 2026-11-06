@@ -35,6 +35,7 @@ fn session(closing: bool, alive: bool) -> GameSession {
         _install_lock: None,
         _prefix_lock: None,
         background: None,
+        direct: None,
         game_mode: None,
         snapshot: None,
         snapshot_success_after_ms: 0,

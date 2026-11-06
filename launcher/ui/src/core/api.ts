@@ -185,6 +185,7 @@ const mock: Bootstrap = {
         globalInstallRoot: null,
         preloadRoot: null,
         launchMode: "background",
+        gameAccountId: null,
         gameMode: {
           performance: false,
           inhibit: false,
@@ -854,6 +855,13 @@ async function previewInvoke(
   args?: CommandArgs[keyof CommandArgs],
 ): Promise<Commands[keyof Commands]> {
   switch (command) {
+    case "game_accounts":
+      return [];
+    case "game_send_code":
+    case "game_login":
+      throw new Error("游戏账号登录需要在桌面启动器中操作.");
+    case "game_account_remove":
+      return null;
     case "attendance_status":
       return clone(previewAttendance);
     case "attendance_refresh_game_records":

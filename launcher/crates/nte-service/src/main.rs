@@ -1,7 +1,7 @@
 //! Oddity native Linux launcher shell.
 //!
-//! 常驻 Rust 后端. nte-core 负责官方文件安装和资源更新，
-//! 官方 Windows 组件通过 Proton 完成登录与游戏启动。
+//! 常驻 Rust 后端. nte-core 负责资源更新与国服直接启动认证,
+//! Windows 游戏与组件通过 Proton 运行.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -36,9 +36,11 @@ mod protocol;
 mod service;
 use service::ServiceHandle;
 mod cli;
+mod direct_session;
 mod download_commands;
 mod environment_commands;
 mod file_commands;
+mod game_auth_commands;
 mod game_mode_commands;
 mod gamepad_commands;
 mod integrity_commands;
@@ -88,6 +90,7 @@ struct GameSession {
     _install_lock: Option<Arc<nte_core::install_lock::InstallLock>>,
     _prefix_lock: Option<Arc<nte_core::environment::PrefixLock>>,
     background: Option<Arc<NativeSession>>,
+    direct: Option<Arc<direct_session::DirectSession>>,
     game_mode: Option<Arc<Mutex<nte_core::game_mode::Session>>>,
     snapshot: Option<String>,
     snapshot_success_after_ms: u64,
@@ -227,6 +230,7 @@ struct LaunchInvocation {
     child: Child,
     pgid: i32,
     background: Option<Arc<NativeSession>>,
+    direct: Option<Arc<direct_session::DirectSession>>,
     game_mode: Option<Arc<Mutex<nte_core::game_mode::Session>>>,
     snapshot: Option<String>,
     launcher_root: Option<PathBuf>,
@@ -609,6 +613,9 @@ fn finalize_game_session(
         return;
     }
     session.monitor_done.store(true, Ordering::Release);
+    if let Some(direct) = &session.direct {
+        direct.close();
+    }
     if let Some(id) = session.snapshot.as_deref() {
         app.snapshots.finish(id, failure);
     }
@@ -1877,6 +1884,9 @@ fn launch_impl_inner(
     snapshots: Option<&snapshot_commands::Snapshots>,
     cancel: &AtomicBool,
 ) -> Result<LaunchInvocation, String> {
+    if settings.current().launch_mode == "direct" {
+        game_auth_commands::require_supported(settings)?;
+    }
     if cancel.load(Ordering::Acquire) {
         return Err(LAUNCH_CANCELLED.into());
     }
@@ -1977,6 +1987,7 @@ fn launch_impl_inner(
 
     let log_dir = environment_commands::log_dir(settings)?;
     fs::create_dir_all(&log_dir).map_err(|e| format!("create log dir: {e}"))?;
+    let patcher_log_dir = log_dir.join("patcher-game");
     let background = if mode == "background" {
         let profile = profile_provider(&display_exe)?;
         let native_log = display_exe
@@ -2070,13 +2081,77 @@ fn launch_impl_inner(
         return Err(LAUNCH_CANCELLED.into());
     }
 
+    let direct = if mode == "direct" {
+        use nte_core::game_auth::{Client, Vault};
+        // 共享安装里的官方日志可能不可写, 会导致游戏资源SDK初始化失败.
+        fs::create_dir_all(&patcher_log_dir)
+            .map_err(|e| format!("无法创建游戏资源日志目录: {e}"))?;
+        for path in [
+            launcher_root.join("WPGameClientSDK_64.dll"),
+            display_exe.with_file_name("WPOneSDK_64.dll"),
+        ] {
+            if !path.is_file() {
+                return Err("缺少直接启动所需的官方SDK组件, 请先检查游戏资源.".into());
+            }
+        }
+        let client = Client::load(&launcher_root).map_err(|e| e.to_string())?;
+        for path in [
+            launcher_root.join("ResFilesM/1289/PatcherConfig/PatcherConfig.json"),
+            launcher_root.join("UserData/Patcher/PatcherSDK/ResList.xml"),
+        ] {
+            if !path.is_file() {
+                return Err(
+                    "缺少直接启动所需的资源初始化信息, 请先完成资源更新或使用后台启动.".into(),
+                );
+            }
+        }
+        if fs::canonicalize(prefix.join("dosdevices/z:"))
+            .ok()
+            .as_deref()
+            != Some(Path::new("/"))
+        {
+            return Err("直接启动需要运行环境将Z:映射到Linux根目录, 请检查运行环境配置.".into());
+        }
+        let record = Vault::load(settings.current().game_account_id.as_deref())
+            .map_err(|e| e.to_string())?;
+        let session = client.exchange(record).map_err(|e| e.to_string())?;
+        let host_exe = ensure_helper(
+            "nte-sdk-host.exe",
+            include_bytes!("../../../helpers/nte-sdk-host.exe"),
+        )?;
+        let mut host = Command::new(&umu);
+        host.arg(windows_path(&host_exe))
+            .env("WINEPREFIX", &prefix)
+            .env("PROTONPATH", &proton.root)
+            .env("GAMEID", "0")
+            .env("PROTON_VERB", "run")
+            .env("PROTON_LOG", "0")
+            .env("UMU_LOG", "error")
+            .current_dir(&install_dir);
+        nte_core::launch::configure_display(
+            &mut host,
+            std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty()),
+            settings.current().game_mode.gamescope.enabled,
+        );
+        Some(direct_session::DirectSession::start(
+            client, session, &mut host, &log_clone,
+        )?)
+    } else {
+        None
+    };
+
     let mut cmd = settings
         .current()
         .game_mode
         .gamescope
         .command(&umu, settings.current().game_mode.overlay)
         .map_err(|error| error.to_string())?;
-    cmd.arg(&exe).args(&args);
+    if mode == "direct" {
+        cmd.arg(windows_path(&exe));
+    } else {
+        cmd.arg(&exe);
+    }
+    cmd.args(&args);
     cmd.env("WINEPREFIX", &prefix)
         .env("PROTONPATH", &proton.root)
         .env("GAMEID", "0")
@@ -2108,6 +2183,32 @@ fn launch_impl_inner(
     }
     if let Some(background) = &background {
         background.configure(&mut cmd, &ensure_launch_helper()?);
+    }
+    if let Some((direct, pid)) = &direct {
+        for (name, _) in std::env::vars_os() {
+            let text = name.to_string_lossy();
+            if ["Arc", "CoreGame", "anchor_", "_PATCHER_", "NTE_BRIDGE_"]
+                .iter()
+                .any(|prefix| text.starts_with(prefix))
+            {
+                cmd.env_remove(name);
+            }
+        }
+        for name in [
+            "SDKFILEPATH",
+            "gameRealOemId",
+            "dxtools",
+            "ODDITY_HANDOFF_NONCE",
+        ] {
+            cmd.env_remove(name);
+        }
+        direct.configure_game(
+            &mut cmd,
+            &launcher_root,
+            &install_dir,
+            *pid,
+            &patcher_log_dir,
+        );
     }
     if let Some((win_exe, win_cwd)) = &helper_env {
         // The helper uses CreateProcessW(lpApplicationName=exe, lpCommandLine=args)
@@ -2212,6 +2313,7 @@ fn launch_impl_inner(
         child,
         pgid,
         background,
+        direct: direct.map(|(session, _)| session),
         game_mode: Some(game_mode),
         snapshot: snapshot_id,
         launcher_root: Some(launcher_root),
@@ -2352,6 +2454,7 @@ async fn start_launch(app: ServiceHandle, settings: Settings) -> Result<LaunchRe
             _install_lock: Some(Arc::clone(&invocation.install_lock)),
             _prefix_lock: Some(Arc::clone(&invocation.prefix_lock)),
             background: invocation.background.clone(),
+            direct: invocation.direct.clone(),
             game_mode: invocation.game_mode.clone(),
             snapshot: invocation.snapshot.clone(),
             snapshot_success_after_ms,

@@ -699,6 +699,7 @@ def record(text):
             _install_lock: None,
             _prefix_lock: None,
             background: Some(Arc::clone(&background)),
+            direct: None,
             game_mode: None,
             snapshot: None,
             snapshot_success_after_ms: nte_core::snapshots::SUCCESS_AFTER_MS,

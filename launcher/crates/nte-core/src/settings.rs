@@ -19,6 +19,7 @@ pub struct GameSettings {
     /// 自定义预下载缓存目录; 空值使用安装目录内的默认路径.
     pub preload_root: Option<String>,
     pub launch_mode: String,
+    pub game_account_id: Option<String>,
     pub game_mode: crate::game_mode::Options,
     pub updates: crate::updates::Options,
     pub active_environment: Option<String>,
@@ -33,6 +34,7 @@ impl Default for GameSettings {
             global_install_root: None,
             preload_root: None,
             launch_mode: "background".to_string(),
+            game_account_id: None,
             game_mode: crate::game_mode::Options::default(),
             updates: crate::updates::Options::default(),
             active_environment: None,

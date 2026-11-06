@@ -450,6 +450,7 @@ export const form = reactive({
   globalInstallRoot: "",
   distribution: "cn" as "cn" | "global",
   launchMode: "background",
+  gameAccountId: "",
   gameMode: {
     performance: false,
     inhibit: false,
@@ -1474,6 +1475,7 @@ function applyBootstrap(
     "";
   form.distribution = saved.distribution || "cn";
   form.launchMode = saved.launchMode || "background";
+  form.gameAccountId = saved.gameAccountId || "";
   Object.assign(
     form.gameMode,
     {
@@ -2195,6 +2197,13 @@ async function syncGameStatus() {
 async function launchGame() {
   const epoch = generation;
   if (state.game !== "idle" || runtimeEnvironmentBusy.value) return;
+  if (form.launchMode === "direct") {
+    if (!form.gameAccountId) {
+      openSettings("game");
+      notify("请先在游戏与启动设置中选择游戏账号.", "error");
+      return;
+    }
+  }
   if (!state.bootstrap?.prefixExists) {
     openSettings("runtime");
     notify("请先在设置中创建并选择 Proton 运行环境.", "error", 6500, {
@@ -2216,6 +2225,14 @@ async function launchGame() {
   const launchStartedAt = Date.now();
   lastLaunchStartedAt = launchStartedAt;
   try {
+    if (form.launchMode === "direct") {
+      if (!(await saveSettings(true))) {
+        setLaunchState("idle");
+        launchHidePending = false;
+        return;
+      }
+      if (epoch !== generation) return;
+    }
     const result = await invoke("launch_official");
     if (epoch !== generation) return;
     state.session = result;
@@ -2405,6 +2422,7 @@ function currentSettings(): Settings {
     distribution: persisted ? savedGame.distribution : form.distribution,
     preloadRoot: form.preloadRoot.trim() || null,
     launchMode,
+    gameAccountId: form.gameAccountId || null,
     gameMode: {
       ...form.gameMode,
       gamescope: { ...form.gameMode.gamescope },

@@ -7,6 +7,7 @@ const DEFAULT_GAME_SETTINGS: GameSettings = {
   globalInstallRoot: null,
   preloadRoot: null,
   launchMode: "background",
+  gameAccountId: null,
   gameMode: {
     performance: false,
     inhibit: false,

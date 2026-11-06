@@ -16,6 +16,7 @@ export const defaultGame = (
   globalInstallRoot: null,
   preloadRoot: null,
   launchMode: "background",
+  gameAccountId: null,
   gameMode: {
     performance: false,
     inhibit: false,
