@@ -6,6 +6,7 @@ use nte_core::game;
 use nte_core::game::check::CheckOptions;
 use nte_core::game::download::ApplyOptions;
 use nte_core::game::optional::OptionalSelection;
+use nte_core::game_profile::GameId;
 use nte_core::manifest::Manifest;
 use nte_core::{update, updates, version};
 
@@ -62,7 +63,11 @@ fn main() -> Result<()> {
     let root = flag_value(&args, "--root")
         .map(PathBuf::from)
         .ok_or_else(|| anyhow!("missing --root <launcher install dir>"))?;
-    let config = LauncherConfig::load(&root)
+    let game = match flag_value(&args, "--game") {
+        Some(value) => value.parse::<GameId>().map_err(|error| anyhow!(error))?,
+        None => GameId::default(),
+    };
+    let config = LauncherConfig::load(game, &root)
         .with_context(|| format!("load {}/Config/Config.ini", root.display()))?;
 
     match command.as_str() {
@@ -148,11 +153,14 @@ fn apply(config: &LauncherConfig, only: Option<String>) -> Result<()> {
 }
 
 fn game_config(config: &LauncherConfig) -> Result<game::GameUpdateConfig> {
-    game::GameUpdateConfig::load(&config.root, config.game_id).with_context(|| {
-        format!(
-            "load PatcherConfig under {}",
-            config.root.join("ResFilesM").display()
-        )
+    game::GameUpdateConfig::load(config.game, &config.root, config.game_id).with_context(|| {
+        let location = config
+            .game
+            .profile()
+            .layout()
+            .map(|layout| layout.res_path(&config.root).display().to_string())
+            .unwrap_or_else(|| config.root.display().to_string());
+        format!("load PatcherConfig under {location}")
     })
 }
 
@@ -464,7 +472,7 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 fn usage() -> Result<()> {
     println!("nte-cli recovery [diagnose|export <目录>|reset-interface --confirm [--reset-invalid]|stop --confirm|start-compatible]");
     println!("nte-cli attendance [--config <签到配置目录>]\nnte-cli keyring-check");
-    println!("nte-cli <check|apply|doctor|game-resources|game-check|game-apply|game-preload> --root <launcher install dir> [--quick] [--full] [--optional <tag> ... | --include-optional] [--preload] [--clear-selection] [--only <substr>] [--dry-run] [--force]");
+    println!("nte-cli <check|apply|doctor|game-resources|game-check|game-apply|game-preload> --root <launcher install dir> [--game <nte|hsr>] [--quick] [--full] [--optional <tag> ... | --include-optional] [--preload] [--clear-selection] [--only <substr>] [--dry-run] [--force]");
     Ok(())
 }
 

@@ -25,7 +25,7 @@ use native_session::NativeSession;
 use nte_core::bulletin::{self, BulletinFeed};
 use nte_core::config::{Ini, LauncherConfig};
 use nte_core::distribution::Distribution;
-use nte_core::game_profile::{GameProfile, RegionProfile};
+use nte_core::game_profile::{GameId, GameProfile, RegionProfile};
 use nte_core::launch::background::{click_profile, ClickProfile};
 use nte_core::manifest::Manifest;
 use nte_core::settings::{Settings, UserPaths};
@@ -1023,7 +1023,7 @@ fn normalize_launcher_root_for(
     }) {
         return None;
     }
-    let game_id = match LauncherConfig::load(&root) {
+    let game_id = match LauncherConfig::load(profile.id, &root) {
         Ok(config) => config.game_id,
         Err(_) => return Some(root),
     };
@@ -1109,23 +1109,32 @@ fn find_ci(base: &Path, components: &[&str]) -> Option<PathBuf> {
     Some(current)
 }
 
-fn game_exe_for(launcher_root: &Path) -> Option<PathBuf> {
-    let install = launcher_root.parent()?;
-    find_ci(
-        install,
-        &[
-            "Client",
-            "WindowsNoEditor",
-            "HT",
-            "Binaries",
-            "Win64",
-            "HTGame.exe",
-        ],
-    )
+fn find_relative_ci(base: &Path, relative: &str) -> Option<PathBuf> {
+    let components: Vec<&str> = relative
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect();
+    find_ci(base, &components)
 }
 
-fn find_sdk(launcher_root: &Path) -> Option<PathBuf> {
-    find_ci(launcher_root, &["WPGameClientSDK_64.dll"])
+fn game_exe_for(profile: &GameProfile, launcher_root: &Path) -> Option<PathBuf> {
+    let layout = profile.layout()?;
+    find_relative_ci(launcher_root.parent()?, layout.game_exe)
+}
+
+fn find_sdk(profile: &GameProfile, launcher_root: &Path) -> Option<PathBuf> {
+    let recipe = profile.launch()?;
+    find_ci(launcher_root, &[recipe.sdk_dll])
+}
+
+fn game_exe_missing_hint(profile: &GameProfile) -> String {
+    match profile
+        .layout()
+        .and_then(|layout| Path::new(layout.game_exe).file_name())
+    {
+        Some(name) => format!("未找到 {}（注意 Win64 大小写）", name.to_string_lossy()),
+        None => "未找到游戏可执行文件".to_string(),
+    }
 }
 
 fn game_version_for(launcher_root: &Path) -> String {
@@ -1164,7 +1173,10 @@ fn detect_proton(settings: &Settings) -> Option<ProtonInstall> {
     environment_commands::proton_path(settings).and_then(proton_install)
 }
 
-fn ensure_sdk_link(prefix: &Path, install_dir: &Path) -> Result<(), String> {
+fn ensure_sdk_link(profile: &GameProfile, prefix: &Path, install_dir: &Path) -> Result<(), String> {
+    let Some(recipe) = profile.launch() else {
+        return Ok(());
+    };
     let drive_c = prefix.join("drive_c");
     if !drive_c.is_dir() {
         return Err(format!(
@@ -1172,9 +1184,7 @@ fn ensure_sdk_link(prefix: &Path, install_dir: &Path) -> Result<(), String> {
             prefix.display()
         ));
     }
-    let link = drive_c
-        .join("Program Files (x86)")
-        .join("Neverness To Everness");
+    let link = drive_c.join(recipe.prefix_install_link);
     if let Ok(meta) = link.symlink_metadata() {
         if meta.file_type().is_symlink() {
             let good = fs::read_link(&link)
@@ -1194,14 +1204,17 @@ fn ensure_sdk_link(prefix: &Path, install_dir: &Path) -> Result<(), String> {
     symlink(install_dir, &link).map_err(|e| format!("symlink {}: {e}", link.display()))
 }
 
-fn check_game_write_access(game_exe: &Path) -> Result<(), String> {
+fn check_game_write_access(profile: &GameProfile, game_exe: &Path) -> Result<(), String> {
+    let Some(recipe) = profile.launch() else {
+        return Ok(());
+    };
     let bin = game_exe
         .parent()
         .ok_or_else(|| "游戏可执行文件目录异常".to_string())?;
     for (path, mode) in [
         (bin.to_path_buf(), libc::W_OK | libc::X_OK),
-        (bin.join("GameLauncher.config"), libc::W_OK),
-        (bin.join("patchersdk_serverlist"), libc::W_OK | libc::X_OK),
+        (bin.join(recipe.launcher_config), libc::W_OK),
+        (bin.join(recipe.serverlist), libc::W_OK | libc::X_OK),
     ] {
         match fs::metadata(&path) {
             Ok(_) => {}
@@ -1241,7 +1254,7 @@ fn bootstrap_impl(settings: &Settings) -> Bootstrap {
     let mut launcher_version = String::new();
     let mut launcher_build = String::new();
     if let Some(root) = &launcher_root {
-        match LauncherConfig::load(root) {
+        match LauncherConfig::load(settings.active_game, root) {
             Ok(cfg) => {
                 launcher_version = cfg.version;
                 launcher_build = cfg.build;
@@ -1263,13 +1276,13 @@ fn bootstrap_impl(settings: &Settings) -> Bootstrap {
         .unwrap_or_default();
     let game_exe = launcher_root
         .as_ref()
-        .and_then(|p| game_exe_for(p))
+        .and_then(|p| game_exe_for(game_profile(settings), p))
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     let game_exists = !game_exe.is_empty() && Path::new(&game_exe).is_file();
     let sdk_path = launcher_root
         .as_ref()
-        .and_then(|p| find_sdk(p))
+        .and_then(|p| find_sdk(game_profile(settings), p))
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     if let Err(message) = environment_commands::verify_proton(settings) {
@@ -1297,7 +1310,7 @@ fn bootstrap_impl(settings: &Settings) -> Bootstrap {
         detail: if game_exists {
             game_exe.clone()
         } else {
-            "未找到 HTGame.exe（注意 Win64 大小写）".into()
+            game_exe_missing_hint(game_profile(settings))
         },
     });
     checks.push(CheckItem {
@@ -1370,13 +1383,14 @@ fn bootstrap_impl(settings: &Settings) -> Bootstrap {
 }
 
 fn check_impl(
+    game: GameId,
     launcher_root: &Path,
     install_root: &Path,
     distribution: Distribution,
     full: bool,
 ) -> Result<CheckResult, String> {
-    let cfg =
-        LauncherConfig::load(launcher_root).map_err(|e| format!("读取启动器配置失败：{e}"))?;
+    let cfg = LauncherConfig::load(game, launcher_root)
+        .map_err(|e| format!("读取启动器配置失败：{e}"))?;
     let started = Instant::now();
     let remote =
         version::fetch(&cfg.version_url).map_err(|e| format!("拉取 Version.ini 失败：{e}"))?;
@@ -1435,7 +1449,7 @@ fn launcher_background_paths(
     settings: &Settings,
 ) -> Option<nte_core::background::LauncherBackground> {
     let root = detect_launcher_root(settings)?;
-    nte_core::background::resolve(&root)
+    nte_core::background::resolve(settings.active_game, &root)
 }
 
 fn launcher_background(state: &AppState) -> LauncherBackgroundMedia {
@@ -1498,9 +1512,12 @@ async fn check_update(state: &AppState, full: bool) -> Result<CheckResult, Strin
         });
     };
     let distribution = settings.current().distribution;
-    crate::service::spawn_blocking(move || check_impl(&root, &install_root, distribution, full))
-        .await
-        .map_err(|e| format!("校验任务失败：{e}"))?
+    let game = settings.active_game;
+    crate::service::spawn_blocking(move || {
+        check_impl(game, &root, &install_root, distribution, full)
+    })
+    .await
+    .map_err(|e| format!("校验任务失败：{e}"))?
 }
 
 async fn fetch_bulletins(distribution: Distribution) -> Result<BulletinFeed, String> {
@@ -1890,6 +1907,7 @@ fn launch_impl_inner(
     if cancel.load(Ordering::Acquire) {
         return Err(LAUNCH_CANCELLED.into());
     }
+    let profile = game_profile(settings);
     let launcher_root = detect_launcher_root(settings).ok_or_else(|| {
         if configured_install_root(settings).is_some() {
             format!(
@@ -1897,7 +1915,7 @@ fn launch_impl_inner(
                 selected_install_root(settings).display()
             )
         } else {
-            "尚未找到《异环》启动器安装目录".to_string()
+            format!("尚未找到《{}》启动器安装目录", profile.name)
         }
     })?;
     let install_dir = effective_install_root(settings, Some(&launcher_root));
@@ -1905,14 +1923,10 @@ fn launch_impl_inner(
         nte_core::install_lock::InstallLock::acquire(&install_dir)
             .map_err(|error| error.to_string())?,
     );
-    let region = current_region(settings).ok_or_else(|| {
-        format!(
-            "《{}》不支持当前地区, 请先在设置中切换地区.",
-            game_profile(settings).name
-        )
-    })?;
+    let region = current_region(settings)
+        .ok_or_else(|| format!("《{}》不支持当前地区, 请先在设置中切换地区.", profile.name))?;
     let official_exe = launcher_root.join(region.client_exe);
-    let direct_exe = game_exe_for(&launcher_root);
+    let direct_exe = game_exe_for(profile, &launcher_root);
     let prefix = environment_commands::prefix(settings)?;
     environment_commands::verify_proton(settings)?;
     let umu = which("umu-run").ok_or_else(|| "PATH 中未找到 umu-run".to_string())?;
@@ -1925,23 +1939,24 @@ fn launch_impl_inner(
         nte_core::environment::lock_prefix(&prefix).map_err(|error| format!("{error:#}"))?,
     );
     if let Some(game_exe) = &direct_exe {
-        check_game_write_access(game_exe)?;
+        check_game_write_access(profile, game_exe)?;
     }
-    ensure_sdk_link(&prefix, &install_dir)?;
+    ensure_sdk_link(profile, &prefix, &install_dir)?;
 
     let (mode, exe, args, display_exe, helper_env, official_env) =
         if settings.current().launch_mode == "direct" {
-            let game_exe = direct_exe.ok_or_else(|| "未找到 HTGame.exe".to_string())?;
+            let game_exe = direct_exe.ok_or_else(|| game_exe_missing_hint(profile))?;
             if !game_exe.is_file() {
                 return Err(format!("游戏可执行文件不存在：{}", game_exe.display()));
             }
             let helper = ensure_launch_helper()?;
             let win_exe = windows_path(&game_exe);
-            let win_cwd = windows_path(
-                game_exe
-                    .parent()
-                    .ok_or_else(|| "HTGame.exe 没有父目录".to_string())?,
-            );
+            let win_cwd = windows_path(game_exe.parent().ok_or_else(|| {
+                format!(
+                    "{} 没有父目录",
+                    game_exe.file_name().unwrap_or_default().to_string_lossy()
+                )
+            })?);
             (
                 "direct".to_string(),
                 helper,
@@ -2086,18 +2101,26 @@ fn launch_impl_inner(
         // 共享安装里的官方日志可能不可写, 会导致游戏资源SDK初始化失败.
         fs::create_dir_all(&patcher_log_dir)
             .map_err(|e| format!("无法创建游戏资源日志目录: {e}"))?;
+        let recipe = profile
+            .launch()
+            .ok_or_else(|| format!("《{}》缺少启动配方", profile.name))?;
         for path in [
-            launcher_root.join("WPGameClientSDK_64.dll"),
-            display_exe.with_file_name("WPOneSDK_64.dll"),
+            launcher_root.join(recipe.sdk_dll),
+            display_exe.with_file_name(recipe.one_sdk_dll),
         ] {
             if !path.is_file() {
                 return Err("缺少直接启动所需的官方SDK组件, 请先检查游戏资源.".into());
             }
         }
         let client = Client::load(&launcher_root).map_err(|e| e.to_string())?;
+        let layout = profile
+            .layout()
+            .ok_or_else(|| format!("《{}》缺少安装布局", profile.name))?;
         for path in [
-            launcher_root.join("ResFilesM/1289/PatcherConfig/PatcherConfig.json"),
-            launcher_root.join("UserData/Patcher/PatcherSDK/ResList.xml"),
+            layout
+                .patcher_config_path(&launcher_root, region.app_id)
+                .join("PatcherConfig.json"),
+            layout.patcher_sdk_path(&launcher_root).join("ResList.xml"),
         ] {
             if !path.is_file() {
                 return Err(
@@ -2184,7 +2207,7 @@ fn launch_impl_inner(
     if let Some(background) = &background {
         background.configure(&mut cmd, &ensure_launch_helper()?);
     }
-    if let Some((direct, pid)) = &direct {
+    if let Some((_, pid)) = &direct {
         for (name, _) in std::env::vars_os() {
             let text = name.to_string_lossy();
             if ["Arc", "CoreGame", "anchor_", "_PATCHER_", "NTE_BRIDGE_"]
@@ -2202,8 +2225,10 @@ fn launch_impl_inner(
         ] {
             cmd.env_remove(name);
         }
-        direct.configure_game(
+        direct_session::DirectSession::configure_game(
             &mut cmd,
+            profile,
+            region,
             &launcher_root,
             &install_dir,
             *pid,
@@ -2213,12 +2238,13 @@ fn launch_impl_inner(
     if let Some((win_exe, win_cwd)) = &helper_env {
         // The helper uses CreateProcessW(lpApplicationName=exe, lpCommandLine=args)
         // so UE does not mistake the executable path for the map URL.
+        let args_line = profile
+            .launch()
+            .map(|recipe| recipe.args_line())
+            .unwrap_or_default();
         cmd.env("NTE_GAME_EXE", win_exe)
             .env("NTE_GAME_CWD", win_cwd)
-            .env(
-                "NTE_GAME_ARGS",
-                "/Game/LoginAndCreate/Map/Updater/Updater_P -SAVEWINPOS=1",
-            );
+            .env("NTE_GAME_ARGS", args_line);
     }
     if let Some((win_exe, win_cwd)) = &official_env {
         // NTE_BRIDGE_* 是 helper 的官方启动器交接协议, 与桥接目录设置无关.

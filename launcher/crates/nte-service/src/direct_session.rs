@@ -1,5 +1,6 @@
 //! 独立SDK宿主与本轮游戏共存, 凭据仅经认证的本机连接交接.
 use nte_core::game_auth::{self, Client, Session};
+use nte_core::game_profile::{GameProfile, RegionProfile};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::process::CommandExt;
@@ -119,26 +120,30 @@ impl DirectSession {
         Ok((host, pid))
     }
     pub fn configure_game(
-        &self,
         command: &mut Command,
+        profile: &GameProfile,
+        region: &RegionProfile,
         root: &Path,
         install: &Path,
         pid: u32,
         patcher_log: &Path,
     ) {
+        let (Some(layout), Some(recipe)) = (profile.layout(), profile.launch()) else {
+            return;
+        };
         let userdata = root.join("UserData");
         command.env("ArcGameP", format!("OdditySdkPipe_{pid}")).env(
             "ArcGameSDKSharePath",
-            crate::windows_path(&root.join("WPGameClientSDK")),
+            crate::windows_path(&root.join(recipe.sdk_share_dir)),
         );
         for (name, path) in [
             (
                 "_PATCHER_CONFIG_PATH_",
-                root.join("ResFilesM/1289/PatcherConfig"),
+                layout.patcher_config_path(root, region.app_id),
             ),
             ("_PATCHER_USERDATA_PATH_", userdata.clone()),
             ("_PATCHER_RES_PATH_", install.to_path_buf()),
-            ("_PATCHER_SDK_PATH_", userdata.join("Patcher/PatcherSDK")),
+            ("_PATCHER_SDK_PATH_", layout.patcher_sdk_path(root)),
             ("_PATCHER_LOG_PATH_", patcher_log.to_path_buf()),
         ] {
             command.env(name, format!("{}/", crate::windows_path(&path)));

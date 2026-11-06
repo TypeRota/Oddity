@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::game_profile::{GameId, LaunchRecipe};
+use crate::{Error, Result};
+
 pub mod background;
 
 pub const OFFICIAL_ARGS: [&str; 2] = ["/launcher", "/directly"];
@@ -18,12 +21,6 @@ pub fn configure_display(command: &mut Command, wayland_available: bool, gamesco
         .env("PROTON_USE_WAYLAND", enabled);
 }
 
-/// UE map and extra args observed in NTEGame.log when the launcher starts the game.
-pub const GAME_ARGS: [&str; 2] = [
-    "/Game/LoginAndCreate/Map/Updater/Updater_P",
-    "-SAVEWINPOS=1",
-];
-
 #[derive(Debug, Clone)]
 pub struct ProtonLaunch {
     pub runner: PathBuf,
@@ -34,17 +31,20 @@ pub struct ProtonLaunch {
 }
 
 impl ProtonLaunch {
-    pub fn umu(prefix: &Path, exe: &Path) -> Self {
-        Self {
+    pub fn umu(game: GameId, prefix: &Path, exe: &Path) -> Result<Self> {
+        let recipe = game.profile().launch().ok_or_else(|| {
+            Error::Unsupported(format!("内置的《{}》配置缺少启动配方", game.profile().name))
+        })?;
+        Ok(Self {
             runner: PathBuf::from("umu-run"),
             prefix: prefix.to_path_buf(),
             exe: exe.to_path_buf(),
-            args: GAME_ARGS.iter().map(|s| s.to_string()).collect(),
+            args: recipe.args.iter().map(|s| s.to_string()).collect(),
             env: vec![
                 ("WINEPREFIX".into(), prefix.display().to_string()),
                 ("PROTON_ENABLE_WAYLAND".into(), "1".into()),
             ],
-        }
+        })
     }
 
     pub fn command(&self) -> Command {
@@ -56,11 +56,14 @@ impl ProtonLaunch {
         cmd
     }
 
-    /// The shipped launcher writes GameLauncher.config as one line holding the
-    /// path of WPGameClientSDK_64.dll before starting HTGame.exe.
-    pub fn write_game_launcher_config(game_bin_dir: &Path, sdk_dll: &Path) -> std::io::Result<()> {
+    /// 官方启动器在拉起游戏前把 SDK DLL 路径写成单行配置文件.
+    pub fn write_game_launcher_config(
+        recipe: &LaunchRecipe,
+        game_bin_dir: &Path,
+        sdk_dll: &Path,
+    ) -> std::io::Result<()> {
         std::fs::write(
-            game_bin_dir.join("GameLauncher.config"),
+            game_bin_dir.join(recipe.launcher_config),
             sdk_dll.display().to_string(),
         )
     }
@@ -97,11 +100,19 @@ mod tests {
 
     #[test]
     fn umu_launch_carries_prefix_and_game_args() {
-        let launch = ProtonLaunch::umu(Path::new("/prefix"), Path::new("/tmp/NTEGame.exe"));
+        let launch = ProtonLaunch::umu(
+            GameId::Nte,
+            Path::new("/prefix"),
+            Path::new("/tmp/NTEGame.exe"),
+        )
+        .expect("NTE launch");
         assert_eq!(launch.runner, PathBuf::from("umu-run"));
         assert_eq!(launch.prefix, PathBuf::from("/prefix"));
         assert_eq!(launch.exe, PathBuf::from("/tmp/NTEGame.exe"));
-        assert_eq!(launch.args, GAME_ARGS.to_vec());
+        assert_eq!(
+            launch.args,
+            GameId::Nte.profile().launch().unwrap().args.to_vec()
+        );
         assert!(launch
             .env
             .contains(&("WINEPREFIX".to_string(), "/prefix".to_string())));
@@ -119,8 +130,8 @@ mod tests {
             args,
             vec![
                 "/tmp/NTEGame.exe".to_string(),
-                GAME_ARGS[0].to_string(),
-                GAME_ARGS[1].to_string()
+                GameId::Nte.profile().launch().unwrap().args[0].to_string(),
+                GameId::Nte.profile().launch().unwrap().args[1].to_string()
             ]
         );
         let envs: Vec<(String, Option<String>)> = cmd
@@ -137,11 +148,19 @@ mod tests {
     }
 
     #[test]
+    fn game_without_a_launch_recipe_cannot_launch() {
+        let error = ProtonLaunch::umu(GameId::Hsr, Path::new("/prefix"), Path::new("/hsr.exe"))
+            .unwrap_err();
+        assert!(matches!(error, Error::Unsupported(_)), "{error:?}");
+    }
+
+    #[test]
     fn writes_a_single_line_game_launcher_config() {
         let dir = TempDir::new("launch");
         let bin_dir = dir.join("Binaries/Win64");
         std::fs::create_dir_all(&bin_dir).expect("create bin dir");
         ProtonLaunch::write_game_launcher_config(
+            GameId::Nte.profile().launch().unwrap(),
             &bin_dir,
             Path::new("Z:\\game\\WPGameClientSDK_64.dll"),
         )

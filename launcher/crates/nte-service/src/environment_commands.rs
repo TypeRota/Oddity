@@ -29,7 +29,7 @@ fn installation(settings: &Settings, distribution: Distribution) -> Installation
         install_root: effective_install_root(&target, launcher.as_deref()),
         installed: launcher
             .as_deref()
-            .and_then(crate::game_exe_for)
+            .and_then(|root| crate::game_exe_for(settings.active_game.profile(), root))
             .is_some_and(|game| game.is_file()),
     }
 }

@@ -304,6 +304,7 @@ mod tests {
             check_dirs: Vec::new(),
             max_threads: 5,
             preload_root: None,
+            layout: crate::game_profile::GameId::Nte.profile().layout().unwrap(),
         }
     }
 

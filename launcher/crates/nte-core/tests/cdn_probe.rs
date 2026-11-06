@@ -29,6 +29,10 @@ fn config(dir: &TempDir, server: &HttpServer) -> GameUpdateConfig {
         check_dirs: Vec::new(),
         max_threads: 1,
         preload_root: None,
+        layout: nte_core::game_profile::GameId::Nte
+            .profile()
+            .layout()
+            .unwrap(),
     }
 }
 

@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use sha2::{Digest, Sha256};
 
+use crate::game_profile::GameProfile;
 use crate::{Error, Result};
 
 /// 源目录中不随迁移复制到其他文件系统的 NTFS 兼容属性.
@@ -636,6 +637,7 @@ pub fn rewrite_registry(prefix: &Path, old: &Path, new: &Path) -> Result<()> {
 pub fn rewrite_official(
     install_root: &Path,
     launcher_dir: &str,
+    profile: &GameProfile,
     old: &Path,
     new: &Path,
 ) -> Result<()> {
@@ -649,17 +651,15 @@ pub fn rewrite_official(
     if config.is_file() {
         rewrite_ini(&config, &old_win, &new_win)?;
     }
-    let game_config = install_root
-        .join("Client")
-        .join("WindowsNoEditor")
-        .join("HT")
-        .join("Binaries")
-        .join("Win64")
-        .join("GameLauncher.config");
-    if game_config.is_file() {
-        let text = fs::read_to_string(&game_config)?;
-        if text.contains(&old_win) {
-            write_private(&game_config, text.replace(&old_win, &new_win).as_bytes())?;
+    if let (Some(layout), Some(recipe)) = (profile.layout(), profile.launch()) {
+        let game_config = layout
+            .game_exe_path(install_root)
+            .with_file_name(recipe.launcher_config);
+        if game_config.is_file() {
+            let text = fs::read_to_string(&game_config)?;
+            if text.contains(&old_win) {
+                write_private(&game_config, text.replace(&old_win, &new_win).as_bytes())?;
+            }
         }
     }
     Ok(())
@@ -980,6 +980,7 @@ mod tests {
         rewrite_official(
             &dir.join("source"),
             "NTELauncher",
+            crate::game_profile::GameId::Nte.profile(),
             Path::new(old),
             Path::new(new),
         )
@@ -1219,7 +1220,14 @@ mod tests {
         let path = root.join("Client/WindowsNoEditor/HT/Binaries/Win64/GameLauncher.config");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, format!("path={}", wine_path(Path::new(old)))).unwrap();
-        rewrite_official(&root, "NTELauncher", Path::new(old), Path::new(new)).unwrap();
+        rewrite_official(
+            &root,
+            "NTELauncher",
+            crate::game_profile::GameId::Nte.profile(),
+            Path::new(old),
+            Path::new(new),
+        )
+        .unwrap();
         assert!(std::fs::read_to_string(path)
             .unwrap()
             .contains(&wine_path(Path::new(new))));

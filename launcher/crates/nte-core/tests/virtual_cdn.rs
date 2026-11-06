@@ -17,6 +17,7 @@ use nte_core::game::check::{check, CheckOptions};
 use nte_core::game::download::{apply_plan_observed_full, ApplyOptions};
 use nte_core::game::pxml;
 use nte_core::game::GameUpdateConfig;
+use nte_core::game_profile::GameId;
 use nte_core::update::md5_bytes;
 
 const APP_ID: &str = "1289";
@@ -351,7 +352,8 @@ fn fixture(files: &[(&str, usize, u8)]) -> Fixture {
     );
     server.route(format!("{base}/version/{VERSION}/ResList.bin.zip"), zip);
 
-    let config = GameUpdateConfig::load(&launcher, APP_ID.parse().unwrap()).expect("加载游戏配置");
+    let config = GameUpdateConfig::load(GameId::Nte, &launcher, APP_ID.parse().unwrap())
+        .expect("加载游戏配置");
     Fixture {
         _dir: dir,
         install,

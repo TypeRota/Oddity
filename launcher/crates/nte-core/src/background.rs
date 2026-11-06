@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 
 use crate::config::LauncherConfig;
+use crate::game_profile::GameId;
 
 /// 官方启动器提供的本地背景素材。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,14 +34,15 @@ struct BackgroundImage {
 }
 
 /// 在官方启动器根目录中查找视频和静态壁纸。
-pub fn resolve(launcher_root: &Path) -> Option<LauncherBackground> {
-    let res_root = launcher_root.join("ResFilesM");
-    let game_id = LauncherConfig::load(launcher_root)
+pub fn resolve(game: GameId, launcher_root: &Path) -> Option<LauncherBackground> {
+    let layout = game.profile().layout()?;
+    let res_root = layout.res_path(launcher_root);
+    let game_id = LauncherConfig::load(game, launcher_root)
         .ok()
         .map(|config| config.game_id)
         .filter(|id| *id > 0);
 
-    let preferred = game_id.map(|id| res_root.join(id.to_string()).join("bgimgs"));
+    let preferred = game_id.map(|id| layout.background_path(launcher_root, id));
     if let Some(dir) = &preferred {
         return read_background(dir);
     }
@@ -48,7 +50,7 @@ pub fn resolve(launcher_root: &Path) -> Option<LauncherBackground> {
     let mut candidates: Vec<PathBuf> = std::fs::read_dir(&res_root)
         .ok()?
         .flatten()
-        .map(|entry| entry.path().join("bgimgs"))
+        .map(|entry| entry.path().join(layout.background_dir))
         .collect();
     candidates.sort();
     candidates
@@ -138,7 +140,7 @@ mod tests {
             r#"{"video":"bg.mp4","imgs":[{"file":"bg_0.png"},{"file":"bg_1.png"}],"first":1}"#,
         );
 
-        let background = resolve(&root).expect("find background");
+        let background = resolve(GameId::Nte, &root).expect("find background");
         assert_eq!(background.video, Some(bgimgs.join("bg.mp4")));
         assert_eq!(background.image, Some(bgimgs.join("bg_1.png")));
     }
@@ -154,7 +156,7 @@ mod tests {
             r#"{"video":"../../outside.png","imgs":[{"file":"../outside.png"}],"noVideoBg":"bg_0.png"}"#,
         );
 
-        let background = resolve(&root).expect("find background");
+        let background = resolve(GameId::Nte, &root).expect("find background");
         assert_eq!(background.video, None);
         assert_eq!(
             background.image,
@@ -169,7 +171,7 @@ mod tests {
         dir.write("launcher/ResFilesM/1289/bgimgs/bg.mp4", b"video");
         dir.write("launcher/ResFilesM/1289/bgimgs/bg_0.png", b"image");
 
-        let background = resolve(&root).expect("find background");
+        let background = resolve(GameId::Nte, &root).expect("find background");
         assert_eq!(
             background.video,
             Some(background_dir(&dir, "1289").join("bg.mp4"))
@@ -190,7 +192,7 @@ mod tests {
             r#"{"imgs":[{"file":"missing.png"}],"noVideoBg":"bg_0.png"}"#,
         );
 
-        let background = resolve(&root).expect("find background");
+        let background = resolve(GameId::Nte, &root).expect("find background");
         assert_eq!(
             background.image,
             Some(background_dir(&dir, "1289").join("bg_0.png"))
@@ -207,7 +209,7 @@ mod tests {
             r#"{"video":"bg.mp4"}"#,
         );
 
-        let background = resolve(&root).expect("find background");
+        let background = resolve(GameId::Nte, &root).expect("find background");
         assert_eq!(
             background.video,
             Some(dir.join("launcher/ResFilesM/3000001/bgimgs/bg.mp4"))
@@ -220,7 +222,15 @@ mod tests {
         let dir = TempDir::new("background-region");
         let root = launcher(&dir, "3000001");
         dir.write("launcher/ResFilesM/1289/bgimgs/bg.mp4", b"cn video");
-        assert_eq!(resolve(&root), None);
+        assert_eq!(resolve(GameId::Nte, &root), None);
+    }
+
+    #[test]
+    fn games_without_a_layout_have_no_background() {
+        let dir = TempDir::new("background-hsr");
+        let root = launcher(&dir, "1289");
+        dir.write("launcher/ResFilesM/1289/bgimgs/bg.mp4", b"video");
+        assert_eq!(resolve(GameId::Hsr, &root), None);
     }
 
     #[test]
@@ -231,6 +241,6 @@ mod tests {
             "launcher/ResFilesM/1289/bgimgs/config.json",
             r#"{"video":"bg.mp4","imgs":[{"file":"bg_0.png"}]}"#,
         );
-        assert_eq!(resolve(&root), None);
+        assert_eq!(resolve(GameId::Nte, &root), None);
     }
 }

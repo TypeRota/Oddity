@@ -94,16 +94,16 @@ pub struct Throughput {
 
 impl Default for Throughput {
     fn default() -> Self {
-        Self::for_app_id("1289")
+        Self::for_app_id(GameId::Nte, "1289")
     }
 }
 
 impl Throughput {
-    pub fn for_app_id(app_id: &str) -> Self {
+    pub fn for_app_id(game: GameId, app_id: &str) -> Self {
         let region = app_id
             .parse::<i64>()
             .ok()
-            .and_then(|app_id| GameId::Nte.profile().region_for_app_id(app_id));
+            .and_then(|app_id| game.profile().region_for_app_id(app_id));
         let download = match region.map(|region| region.distribution) {
             Some(Distribution::Global) => DEFAULT_DOWNLOAD_GLOBAL,
             _ => DEFAULT_DOWNLOAD_CN,
@@ -431,9 +431,9 @@ mod tests {
 
     #[test]
     fn defaults_follow_the_distribution() {
-        let cn = Throughput::for_app_id("1289");
-        let global = Throughput::for_app_id("3000001");
-        let unknown = Throughput::for_app_id("nope");
+        let cn = Throughput::for_app_id(GameId::Nte, "1289");
+        let global = Throughput::for_app_id(GameId::Nte, "3000001");
+        let unknown = Throughput::for_app_id(GameId::Nte, "nope");
         assert_eq!(cn.download_bytes_per_second, DEFAULT_DOWNLOAD_CN);
         assert_eq!(global.download_bytes_per_second, DEFAULT_DOWNLOAD_GLOBAL);
         assert_eq!(unknown.download_bytes_per_second, DEFAULT_DOWNLOAD_CN);

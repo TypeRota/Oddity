@@ -272,7 +272,7 @@ pub(crate) fn current_inputs(settings: &Settings) -> snapshots::Inputs {
         .filter(|version| !version.is_empty());
     let launcher_version = launcher_root
         .as_ref()
-        .and_then(|root| LauncherConfig::load(root).ok())
+        .and_then(|root| LauncherConfig::load(settings.active_game, root).ok())
         .map(|config| config.version);
     let umu = crate::which("umu-run");
     let gamescope = &settings.current().game_mode.gamescope;

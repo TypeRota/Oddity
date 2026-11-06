@@ -79,10 +79,13 @@ fn install_root(settings: &Settings) -> std::path::PathBuf {
 }
 
 fn installed(settings: &Settings) -> bool {
-    install_root(settings)
-        .join(crate::current_launcher_dir(settings))
-        .join("UserData/Patcher/PatcherSDK/ResList.xml")
-        .is_file()
+    let launcher_root = install_root(settings).join(crate::current_launcher_dir(settings));
+    settings
+        .active_game
+        .profile()
+        .layout()
+        .map(|layout| layout.patcher_sdk_path(&launcher_root).join("ResList.xml"))
+        .is_some_and(|path| path.is_file())
 }
 
 fn snapshot(app: &ServiceHandle) -> Option<DownloadStatus> {

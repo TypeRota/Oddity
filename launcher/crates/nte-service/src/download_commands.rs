@@ -11,6 +11,7 @@ use nte_core::game::check::CheckOptions;
 use nte_core::game::download::ApplyOptions;
 use nte_core::game::optional::OptionalSelection;
 use nte_core::game::plan::{StageTimings, Throughput};
+use nte_core::game_profile::GameId;
 use nte_core::throttle::RateLimiter;
 use nte_core::{disk, game, install, update, updates};
 
@@ -103,12 +104,16 @@ fn preload_root_for(settings: &Settings, install_root: &Path) -> std::path::Path
     match configured {
         Some(path) if path.is_absolute() => path,
         Some(path) => install_root.join(path),
-        None => install_root
-            .join(crate::current_launcher_dir(settings))
-            .join("UserData")
-            .join("Patcher")
-            .join("PatcherSDK")
-            .join("preload"),
+        None => {
+            let launcher_root = install_root.join(crate::current_launcher_dir(settings));
+            let patcher = settings
+                .active_game
+                .profile()
+                .layout()
+                .map(|layout| layout.patcher_sdk_path(&launcher_root))
+                .unwrap_or_else(|| launcher_root.join("UserData/Patcher/PatcherSDK"));
+            patcher.join("preload")
+        }
     }
 }
 
@@ -158,9 +163,9 @@ fn load_catalog_context(
         .map_err(|error| error.to_string())?
         .clone();
     let root = launcher_root_for(&settings);
-    let launcher =
-        LauncherConfig::load(&root).map_err(|error| format!("读取现有启动器配置失败: {error}"))?;
-    let mut config = game::GameUpdateConfig::load(&root, launcher.game_id)
+    let launcher = LauncherConfig::load(settings.active_game, &root)
+        .map_err(|error| format!("读取现有启动器配置失败: {error}"))?;
+    let mut config = game::GameUpdateConfig::load(settings.active_game, &root, launcher.game_id)
         .map_err(|error| format!("读取游戏资源配置失败: {error}"))?;
     apply_preload_root(&mut config, &settings);
     let bundle = game::check::load_remote(&config)
@@ -356,15 +361,20 @@ fn publish_cancelled(app: &ServiceHandle) {
 }
 
 /// 当前游戏可用的吞吐估计; 没有历史样本时退回到该游戏的默认值。
-fn current_throughput(current: Option<&(String, Throughput)>, app_id: &str) -> Throughput {
+fn current_throughput(
+    game: GameId,
+    current: Option<&(String, Throughput)>,
+    app_id: &str,
+) -> Throughput {
     match current {
         Some((id, throughput)) if id == app_id => *throughput,
-        _ => Throughput::for_app_id(app_id),
+        _ => Throughput::for_app_id(game, app_id),
     }
 }
 
 /// 用本次任务的实测耗时校准估计; 切换游戏时从新游戏的默认值重新累积。
 fn next_throughput(
+    game: GameId,
     current: Option<&(String, Throughput)>,
     app_id: &str,
     timings: &StageTimings,
@@ -373,7 +383,7 @@ fn next_throughput(
         // 没有有效样本时保留已有估计, 不用默认值覆盖已校准的结果。
         return current.cloned();
     }
-    let mut throughput = current_throughput(current, app_id);
+    let mut throughput = current_throughput(game, current, app_id);
     throughput.observe(timings);
     Some((app_id.to_string(), throughput))
 }
@@ -396,9 +406,9 @@ fn check_game(
     full: bool,
     cancel: &AtomicBool,
 ) -> Result<game::UpdatePlan, String> {
-    let config =
-        LauncherConfig::load(root).map_err(|error| format!("读取启动器配置失败: {error}"))?;
-    let mut game_config = game::GameUpdateConfig::load(root, config.game_id)
+    let config = LauncherConfig::load(settings.active_game, root)
+        .map_err(|error| format!("读取启动器配置失败: {error}"))?;
+    let mut game_config = game::GameUpdateConfig::load(settings.active_game, root, config.game_id)
         .map_err(|error| format!("读取游戏资源配置失败: {error}"))?;
     apply_preload_root(&mut game_config, settings);
     // 锁只用于复制估计, 资源检查可能持续数秒, 不能持锁等待。
@@ -406,8 +416,14 @@ fn check_game(
         .downloads
         .inner
         .lock()
-        .map(|inner| current_throughput(inner.throughput.as_ref(), &game_config.app_id))
-        .unwrap_or_else(|_| Throughput::for_app_id(&game_config.app_id));
+        .map(|inner| {
+            current_throughput(
+                settings.active_game,
+                inner.throughput.as_ref(),
+                &game_config.app_id,
+            )
+        })
+        .unwrap_or_else(|_| Throughput::for_app_id(settings.active_game, &game_config.app_id));
     // 限速会拖长实际下载, 规划必须按受限后的速度估算, 否则可能误判整包更快。
     let throughput = cap_download_throughput(
         throughput,
@@ -498,6 +514,7 @@ fn run_task(
         return run_preload_task(app, settings, full, cancel);
     }
     let launcher_plan = install::plan_launcher_cancellable(
+        settings.active_game,
         settings.current().distribution,
         &install_root,
         launcher_plan_full(mode, full),
@@ -515,9 +532,9 @@ fn run_preload_task(
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     let root = selected_install_root(settings).join(crate::current_launcher_dir(settings));
-    let launcher =
-        LauncherConfig::load(&root).map_err(|error| format!("读取现有启动器配置失败: {error}"))?;
-    let mut config = game::GameUpdateConfig::load(&root, launcher.game_id)
+    let launcher = LauncherConfig::load(settings.active_game, &root)
+        .map_err(|error| format!("读取现有启动器配置失败: {error}"))?;
+    let mut config = game::GameUpdateConfig::load(settings.active_game, &root, launcher.game_id)
         .map_err(|error| format!("读取游戏资源配置失败: {error}"))?;
     apply_preload_root(&mut config, settings);
     let preload = game::check::load_preload_remote(&config)
@@ -726,8 +743,10 @@ fn run_plan(
         publish_cancelled(app);
         return Ok(());
     }
-    if plan.items.is_empty() && game_exe_for(&launcher_plan.root).is_none() {
-        return Err("资源清单未发现待下载文件，但本地缺少 HTGame.exe".into());
+    if plan.items.is_empty()
+        && game_exe_for(settings.active_game.profile(), &launcher_plan.root).is_none()
+    {
+        return Err("资源清单未发现待下载文件，但本地缺少游戏可执行文件".into());
     }
     if mode == "check" || mode == "launcher" {
         publish(app, |status| {
@@ -742,11 +761,14 @@ fn run_plan(
         });
         return Ok(());
     }
-    let launcher_config = LauncherConfig::load(&launcher_plan.root)
+    let launcher_config = LauncherConfig::load(settings.active_game, &launcher_plan.root)
         .map_err(|error| format!("读取启动器配置失败: {error}"))?;
-    let mut game_config =
-        game::GameUpdateConfig::load(&launcher_plan.root, launcher_config.game_id)
-            .map_err(|error| format!("读取游戏资源配置失败: {error}"))?;
+    let mut game_config = game::GameUpdateConfig::load(
+        settings.active_game,
+        &launcher_plan.root,
+        launcher_config.game_id,
+    )
+    .map_err(|error| format!("读取游戏资源配置失败: {error}"))?;
     apply_preload_root(&mut game_config, settings);
     apply_game_plan(
         app,
@@ -934,6 +956,7 @@ fn apply_game_plan(
         // 锁只覆盖估计更新, 不跨后续发布与错误判断。
         if let Ok(mut inner) = app.downloads.inner.lock() {
             let next = next_throughput(
+                settings.active_game,
                 inner.throughput.as_ref(),
                 &game_config.app_id,
                 &report.timings,
@@ -957,7 +980,7 @@ fn apply_game_plan(
     if let Some(error) = report.ledger_error {
         return Err(format!("写入游戏资源记录失败: {error}"));
     }
-    if !preload && game_exe_for(root).is_none() {
+    if !preload && game_exe_for(settings.active_game.profile(), root).is_none() {
         return Err("资源下载已结束，但未找到游戏可执行文件".into());
     }
     if preload {
@@ -1056,10 +1079,13 @@ fn prepare_task(
         } else {
             disk::available_bytes(&install_root).ok()
         };
-        let installed = install_root
-            .join(crate::current_launcher_dir(&settings))
-            .join("UserData/Patcher/PatcherSDK/ResList.xml")
-            .is_file();
+        let launcher_root = install_root.join(crate::current_launcher_dir(&settings));
+        let installed = settings
+            .active_game
+            .profile()
+            .layout()
+            .map(|layout| layout.patcher_sdk_path(&launcher_root).join("ResList.xml"))
+            .is_some_and(|path| path.is_file());
         let install_root = install_root.display().to_string();
         let full = full
             || (inner.status.full
@@ -1218,6 +1244,7 @@ mod throughput_tests {
         let current = ("1289".to_string(), custom_throughput(1_000.0));
         // 2 秒下载 40 MB, 速率远高于旧估计, 应明显上调。
         let (app_id, throughput) = next_throughput(
+            GameId::Nte,
             Some(&current),
             "1289",
             &download_sample(40_000_000, 2_000_000_000),
@@ -1235,10 +1262,11 @@ mod throughput_tests {
     fn next_throughput_resets_for_different_app_id() {
         let current = ("1289".to_string(), custom_throughput(100_000_000.0));
         let sample = download_sample(40_000_000, 2_000_000_000);
-        let (app_id, throughput) = next_throughput(Some(&current), "3000001", &sample).unwrap();
+        let (app_id, throughput) =
+            next_throughput(GameId::Nte, Some(&current), "3000001", &sample).unwrap();
         assert_eq!(app_id, "3000001");
         // 切换游戏后从国际服默认值重新累积, 不沿用旧游戏的估计。
-        let mut expected = Throughput::for_app_id("3000001");
+        let mut expected = Throughput::for_app_id(GameId::Nte, "3000001");
         expected.observe(&sample);
         assert_eq!(throughput, expected);
     }
@@ -1247,11 +1275,16 @@ mod throughput_tests {
     fn next_throughput_keeps_estimate_without_samples() {
         let current = ("1289".to_string(), custom_throughput(1_000.0));
         assert_eq!(
-            next_throughput(Some(&current), "1289", &StageTimings::default()),
+            next_throughput(
+                GameId::Nte,
+                Some(&current),
+                "1289",
+                &StageTimings::default()
+            ),
             Some(current.clone())
         );
         assert_eq!(
-            next_throughput(None, "1289", &StageTimings::default()),
+            next_throughput(GameId::Nte, None, "1289", &StageTimings::default()),
             None
         );
     }
@@ -1259,14 +1292,17 @@ mod throughput_tests {
     #[test]
     fn current_throughput_uses_matching_estimate_or_default() {
         let current = ("3000001".to_string(), custom_throughput(1_000.0));
-        assert_eq!(current_throughput(Some(&current), "3000001"), current.1);
         assert_eq!(
-            current_throughput(Some(&current), "1289"),
-            Throughput::for_app_id("1289")
+            current_throughput(GameId::Nte, Some(&current), "3000001"),
+            current.1
         );
         assert_eq!(
-            current_throughput(None, "1289"),
-            Throughput::for_app_id("1289")
+            current_throughput(GameId::Nte, Some(&current), "1289"),
+            Throughput::for_app_id(GameId::Nte, "1289")
+        );
+        assert_eq!(
+            current_throughput(GameId::Nte, None, "1289"),
+            Throughput::for_app_id(GameId::Nte, "1289")
         );
     }
 

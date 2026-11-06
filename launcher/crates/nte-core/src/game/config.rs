@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::game_profile::GameId;
+use crate::game_profile::{GameId, GameLayout};
 use crate::{Error, Result};
 
 #[derive(Debug, Clone)]
@@ -27,6 +27,7 @@ pub struct GameUpdateConfig {
     pub max_threads: usize,
     /// 自定义预下载缓存根目录; 为空时使用 patcher_dir/preload.
     pub preload_root: Option<PathBuf>,
+    pub layout: &'static GameLayout,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,8 +62,15 @@ struct RawCheckRule {
 }
 
 impl GameUpdateConfig {
-    pub fn load(launcher_root: &Path, game_id: i64) -> Result<Self> {
-        let config_dir = find_config_dir(launcher_root, game_id)?;
+    pub fn load(game: GameId, launcher_root: &Path, game_id: i64) -> Result<Self> {
+        let profile = game.profile();
+        let Some(layout) = profile.layout() else {
+            return Err(Error::Unsupported(format!(
+                "内置的《{}》配置缺少安装布局",
+                profile.name
+            )));
+        };
+        let config_dir = find_config_dir(layout, launcher_root, game_id)?;
         let patcher_json =
             fs::read_to_string(config_dir.join("PatcherConfig.json")).map_err(Error::Io)?;
         let pc: PatcherConfigJson = serde_json::from_str(&patcher_json)
@@ -83,7 +91,7 @@ impl GameUpdateConfig {
         let region = app_id
             .parse()
             .ok()
-            .and_then(|app_id| GameId::Nte.profile().region_for_app_id(app_id));
+            .and_then(|app_id| profile.region_for_app_id(app_id));
         let mut cdns: Vec<String> = pc
             .game_res_url
             .into_iter()
@@ -133,10 +141,7 @@ impl GameUpdateConfig {
             .parent()
             .ok_or_else(|| Error::Parse("launcher root has no parent install dir".into()))?
             .to_path_buf();
-        let patcher_dir = launcher_root
-            .join("UserData")
-            .join("Patcher")
-            .join("PatcherSDK");
+        let patcher_dir = layout.patcher_sdk_path(launcher_root);
 
         Ok(Self {
             launcher_root: launcher_root.to_path_buf(),
@@ -151,11 +156,12 @@ impl GameUpdateConfig {
             check_dirs: path_json.check_dir_list,
             max_threads: 5,
             preload_root: None,
+            layout,
         })
     }
 
     pub fn game_dir(&self) -> PathBuf {
-        self.install_root.join("Client").join("WindowsNoEditor")
+        self.layout.content_path(&self.install_root)
     }
 
     pub fn local_version(&self) -> Option<String> {
@@ -178,12 +184,9 @@ impl GameUpdateConfig {
     }
 }
 
-fn find_config_dir(launcher_root: &Path, game_id: i64) -> Result<PathBuf> {
+fn find_config_dir(layout: &GameLayout, launcher_root: &Path, game_id: i64) -> Result<PathBuf> {
     if game_id > 0 {
-        let p = launcher_root
-            .join("ResFilesM")
-            .join(game_id.to_string())
-            .join("PatcherConfig");
+        let p = layout.patcher_config_path(launcher_root, game_id);
         if p.join("PatcherConfig.json").is_file() {
             return Ok(p);
         }
@@ -191,15 +194,17 @@ fn find_config_dir(launcher_root: &Path, game_id: i64) -> Result<PathBuf> {
             "no PatcherConfig.json for GameID={game_id}"
         )));
     }
-    let root = launcher_root.join("ResFilesM");
+    let root = layout.res_path(launcher_root);
     let entries = fs::read_dir(&root).map_err(Error::Io)?;
     let mut candidates = entries
         .flatten()
-        .map(|entry| entry.path().join("PatcherConfig"))
+        .map(|entry| entry.path().join(layout.patcher_config_dir))
         .filter(|path| path.join("PatcherConfig.json").is_file());
     let first = candidates.next().ok_or_else(|| {
         Error::Parse(format!(
-            "no ResFilesM/*/PatcherConfig/PatcherConfig.json under {}",
+            "no {}/<GameID>/{}/PatcherConfig.json under {}",
+            layout.res_dir,
+            layout.patcher_config_dir,
             launcher_root.display()
         ))
     })?;
@@ -265,7 +270,7 @@ mod tests {
         );
 
         let root = launcher_root(&dir);
-        let cfg = GameUpdateConfig::load(&root, 1289).expect("load config");
+        let cfg = GameUpdateConfig::load(GameId::Nte, &root, 1289).expect("load config");
         assert_eq!(cfg.config_dir, dir.join(PATCHER_DIR));
         assert_eq!(cfg.install_root, dir.join("install"));
         assert_eq!(
@@ -299,7 +304,8 @@ mod tests {
             format!("{PATCHER_DIR}/PatcherConfig.json"),
             r#"{"gameUpdateAssetUrl":["https://assets.test/res"],"branchName":"publish_ob","appId":"1289"}"#,
         );
-        let cfg = GameUpdateConfig::load(&launcher_root(&dir), 0).expect("load config");
+        let cfg =
+            GameUpdateConfig::load(GameId::Nte, &launcher_root(&dir), 0).expect("load config");
         assert_eq!(cfg.cdns, vec!["https://assets.test/res"]);
         // 没有 PatcherPath.json 时 check_dir_list 为空
         assert!(cfg.check_dirs.is_empty());
@@ -314,7 +320,8 @@ mod tests {
             format!("{PATCHER_DIR}/PatcherConfig.json"),
             r#"{"branchName":"publish_ob","appId":"1289"}"#,
         );
-        let cfg = GameUpdateConfig::load(&launcher_root(&dir), 0).expect("load config");
+        let cfg =
+            GameUpdateConfig::load(GameId::Nte, &launcher_root(&dir), 0).expect("load config");
         assert_eq!(
             cfg.cdns,
             GameId::Nte
@@ -331,7 +338,7 @@ mod tests {
         let path = "install/NTEGlobal/ResFilesM/3000001/PatcherConfig/PatcherConfig.json";
         dir.write(path, r#"{"branchName":"PC_140","appId":"3000001"}"#);
         let root = dir.join("install/NTEGlobal");
-        let cfg = GameUpdateConfig::load(&root, 3000001).unwrap();
+        let cfg = GameUpdateConfig::load(GameId::Nte, &root, 3000001).unwrap();
         assert_eq!(
             cfg.cdns,
             GameId::Nte
@@ -344,7 +351,7 @@ mod tests {
         assert_eq!(cfg.branch, "PC_140");
         dir.write(path, r#"{"branchName":"PC_140","appId":"1289"}"#);
         assert!(matches!(
-            GameUpdateConfig::load(&root, 3000001),
+            GameUpdateConfig::load(GameId::Nte, &root, 3000001),
             Err(Error::Integrity(_))
         ));
     }
@@ -354,29 +361,29 @@ mod tests {
         let dir = TempDir::new("gamecfg-bad");
         let root = launcher_root(&dir);
 
-        let error = GameUpdateConfig::load(&root, 0).expect_err("no ResFilesM");
+        let error = GameUpdateConfig::load(GameId::Nte, &root, 0).expect_err("no ResFilesM");
         assert!(matches!(error, Error::Io(_)), "{error:?}");
 
         std::fs::create_dir_all(root.join("ResFilesM")).expect("create ResFilesM");
-        let error = GameUpdateConfig::load(&root, 0).expect_err("no config dir");
+        let error = GameUpdateConfig::load(GameId::Nte, &root, 0).expect_err("no config dir");
         assert!(error.to_string().contains("no ResFilesM"), "{error}");
 
         dir.write(format!("{PATCHER_DIR}/PatcherConfig.json"), "{ not json");
-        let error = GameUpdateConfig::load(&root, 1289).expect_err("bad json");
+        let error = GameUpdateConfig::load(GameId::Nte, &root, 1289).expect_err("bad json");
         assert!(error.to_string().contains("PatcherConfig.json"), "{error}");
 
         dir.write(
             format!("{PATCHER_DIR}/PatcherConfig.json"),
             r#"{"branchName":"","appId":"1289"}"#,
         );
-        let error = GameUpdateConfig::load(&root, 1289).expect_err("no branch");
+        let error = GameUpdateConfig::load(GameId::Nte, &root, 1289).expect_err("no branch");
         assert!(error.to_string().contains("no branchName"), "{error}");
 
         dir.write(
             format!("{PATCHER_DIR}/PatcherConfig.json"),
             r#"{"branchName":"publish_ob"}"#,
         );
-        let error = GameUpdateConfig::load(&root, 1289).expect_err("no app id");
+        let error = GameUpdateConfig::load(GameId::Nte, &root, 1289).expect_err("no app id");
         assert!(error.to_string().contains("no appId"), "{error}");
 
         dir.write(
@@ -384,7 +391,7 @@ mod tests {
             r#"{"branchName":"publish_ob","appId":"1289"}"#,
         );
         dir.write(format!("{PATCHER_DIR}/PatcherCheckConfig.json"), "[{}]");
-        let error = GameUpdateConfig::load(&root, 1289).expect_err("bad rules");
+        let error = GameUpdateConfig::load(GameId::Nte, &root, 1289).expect_err("bad rules");
         assert!(
             error.to_string().contains("PatcherCheckConfig.json"),
             "{error}"
@@ -399,8 +406,9 @@ mod tests {
             "install/NTELauncher/ResFilesM/4321/PatcherConfig/PatcherConfig.json",
             r#"{"branchName":"custom","updateBranchName":"custom_update","appId":"4321","gameResUrl":["https://custom.test"]}"#,
         );
-        assert!(GameUpdateConfig::load(&launcher_root(&dir), 1289).is_err());
-        let cfg = GameUpdateConfig::load(&launcher_root(&dir), 0).expect("load config");
+        assert!(GameUpdateConfig::load(GameId::Nte, &launcher_root(&dir), 1289).is_err());
+        let cfg =
+            GameUpdateConfig::load(GameId::Nte, &launcher_root(&dir), 0).expect("load config");
         assert_eq!(cfg.app_id, "4321");
         assert!(cfg.config_dir.ends_with("ResFilesM/4321/PatcherConfig"));
     }
@@ -413,7 +421,19 @@ mod tests {
             r#"{"branchName":"publish_ob","appId":"1289"}"#,
         );
         dir.write(format!("{PATCHER_DIR}/PatcherPath.json"), "not json");
-        let cfg = GameUpdateConfig::load(&launcher_root(&dir), 1289).expect("load config");
+        let cfg =
+            GameUpdateConfig::load(GameId::Nte, &launcher_root(&dir), 1289).expect("load config");
         assert!(cfg.check_dirs.is_empty());
+    }
+
+    #[test]
+    fn game_without_a_layout_cannot_load_update_config() {
+        let dir = TempDir::new("gamecfg-hsr");
+        dir.write(
+            format!("{PATCHER_DIR}/PatcherConfig.json"),
+            r#"{"branchName":"publish_ob","appId":"1289"}"#,
+        );
+        let error = GameUpdateConfig::load(GameId::Hsr, &launcher_root(&dir), 1289).unwrap_err();
+        assert!(matches!(error, Error::Unsupported(_)), "{error:?}");
     }
 }

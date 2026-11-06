@@ -1,5 +1,6 @@
 use super::*;
 use crate::*;
+use nte_core::game_profile::GameId;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
@@ -395,7 +396,8 @@ fn launch_reports_unwritable_runtime_config_before_starting_the_game() {
     std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755))
         .expect("restore server cache permissions");
 
-    check_game_write_access(&bin.join("HTGame.exe")).expect("writable runtime config");
+    check_game_write_access(GameId::Nte.profile(), &bin.join("HTGame.exe"))
+        .expect("writable runtime config");
 }
 
 #[test]

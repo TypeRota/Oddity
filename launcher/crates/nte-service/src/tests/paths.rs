@@ -1,5 +1,6 @@
 use super::*;
 use crate::*;
+use nte_core::game_profile::GameId;
 
 #[test]
 fn expands_home_paths_only() {
@@ -218,16 +219,19 @@ fn locates_the_game_executable_and_the_sdk() {
     dir.write("install/NTELauncher/WPGameClientSDK_64.dll", b"MZ");
     let launcher = dir.join("install/NTELauncher");
     assert_eq!(
-        game_exe_for(&launcher),
+        game_exe_for(GameId::Nte.profile(), &launcher),
         Some(dir.join("install/Client/WindowsNoEditor/HT/Binaries/Win64/HTGame.exe"))
     );
     assert_eq!(
-        find_sdk(&launcher),
+        find_sdk(GameId::Nte.profile(), &launcher),
         Some(launcher.join("WPGameClientSDK_64.dll"))
     );
     // 没有父目录时无法推断安装位置
-    assert_eq!(game_exe_for(Path::new("/")), None);
-    assert_eq!(find_sdk(&dir.join("empty")), None);
+    assert_eq!(game_exe_for(GameId::Nte.profile(), Path::new("/")), None);
+    assert_eq!(find_sdk(GameId::Nte.profile(), &dir.join("empty")), None);
+    // 占位游戏没有安装布局和启动配方, 不猜测路径.
+    assert_eq!(game_exe_for(GameId::Hsr.profile(), &launcher), None);
+    assert_eq!(find_sdk(GameId::Hsr.profile(), &launcher), None);
 }
 
 #[test]

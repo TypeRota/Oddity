@@ -30,41 +30,44 @@ impl LauncherPlan {
     }
 }
 
-fn mirror_url(url: &str, distribution: Distribution) -> String {
-    match distribution {
-        Distribution::Cn => url.replace("yhcdn1.wmupd.com", "yhcdn2.wmupd.com"),
-        Distribution::Global => url.replace("ntecdn1.perfectworld.com", "ntecdn2.perfectworld.com"),
-    }
+fn mirror_url(url: &str, region: &RegionProfile) -> String {
+    url.replace(region.cdn_hosts[0], region.cdn_hosts[1])
 }
 
-fn region(distribution: Distribution) -> Result<&'static RegionProfile> {
-    GameId::Nte.profile().region(distribution).ok_or_else(|| {
-        Error::Unsupported(format!("内置的《异环》配置缺少{}", distribution.label()))
+fn region(game: GameId, distribution: Distribution) -> Result<&'static RegionProfile> {
+    game.profile().region(distribution).ok_or_else(|| {
+        Error::Unsupported(format!(
+            "内置的《{}》配置缺少{}",
+            game.profile().name,
+            distribution.label()
+        ))
     })
 }
 
 pub fn plan_launcher(
+    game: GameId,
     distribution: Distribution,
     install_root: &Path,
     full: bool,
 ) -> Result<LauncherPlan> {
-    plan_launcher_cancellable(distribution, install_root, full, &|| false)
+    plan_launcher_cancellable(game, distribution, install_root, full, &|| false)
 }
 
 pub fn plan_launcher_cancellable(
+    game: GameId,
     distribution: Distribution,
     install_root: &Path,
     full: bool,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<LauncherPlan> {
-    let urls = launcher_version_urls(distribution)?;
+    let urls = launcher_version_urls(game, distribution)?;
     let urls: Vec<&str> = urls.iter().map(String::as_str).collect();
-    plan_launcher_with_urls_cancellable(distribution, install_root, full, &urls, cancelled)
+    plan_launcher_with_urls_cancellable(game, distribution, install_root, full, &urls, cancelled)
 }
 
 /// 开发或联调时可用 ODDITY_LAUNCHER_VERSION_URL 指向本地虚拟 CDN.
 /// 发布构建忽略这个变量, 始终使用官方地址.
-fn launcher_version_urls(distribution: Distribution) -> Result<Vec<String>> {
+fn launcher_version_urls(game: GameId, distribution: Distribution) -> Result<Vec<String>> {
     #[cfg(debug_assertions)]
     if let Ok(value) = std::env::var("ODDITY_LAUNCHER_VERSION_URL") {
         let value = value.trim();
@@ -72,7 +75,7 @@ fn launcher_version_urls(distribution: Distribution) -> Result<Vec<String>> {
             return Ok(vec![value.to_string()]);
         }
     }
-    Ok(region(distribution)?
+    Ok(region(game, distribution)?
         .version_urls
         .iter()
         .map(|url| (*url).to_string())
@@ -86,10 +89,18 @@ fn plan_launcher_with_urls(
     full: bool,
     urls: &[&str],
 ) -> Result<LauncherPlan> {
-    plan_launcher_with_urls_cancellable(distribution, install_root, full, urls, &|| false)
+    plan_launcher_with_urls_cancellable(
+        GameId::Nte,
+        distribution,
+        install_root,
+        full,
+        urls,
+        &|| false,
+    )
 }
 
 fn plan_launcher_with_urls_cancellable(
+    game: GameId,
     distribution: Distribution,
     install_root: &Path,
     full: bool,
@@ -104,7 +115,7 @@ fn plan_launcher_with_urls_cancellable(
         Distribution::Global => Distribution::Cn,
     };
     if install_root
-        .join(region(other)?.launcher_dir)
+        .join(region(game, other)?.launcher_dir)
         .join("Config/Config.ini")
         .is_file()
     {
@@ -113,9 +124,9 @@ fn plan_launcher_with_urls_cancellable(
             install_root.display()
         )));
     }
-    let root = install_root.join(region(distribution)?.launcher_dir);
-    if let Ok(config) = LauncherConfig::load(&root) {
-        let expected = region(distribution)?.app_id;
+    let root = install_root.join(region(game, distribution)?.launcher_dir);
+    if let Ok(config) = LauncherConfig::load(game, &root) {
+        let expected = region(game, distribution)?.app_id;
         if config.game_id != 0 && config.game_id != expected {
             return Err(Error::Integrity(format!(
                 "安装目录中的游戏地区与当前选择不一致: {}",
@@ -135,7 +146,7 @@ fn plan_launcher_with_urls_cancellable(
                     last_error = Some(Error::Parse(format!("Version.ini 缺少 FileListURL: {url}")));
                     continue;
                 };
-                let backup_url = mirror_url(&manifest_url, distribution);
+                let backup_url = mirror_url(&manifest_url, region(game, distribution)?);
                 let manifest =
                     Manifest::from_url(&manifest_url).or_else(|_| Manifest::from_url(&backup_url));
                 match manifest {
@@ -215,7 +226,7 @@ mod tests {
             let plan = plan_launcher_with_urls(distribution, dir.path(), false, &[&url]).unwrap();
             assert_eq!(
                 plan.root,
-                dir.join(region(distribution).unwrap().launcher_dir)
+                dir.join(region(GameId::Nte, distribution).unwrap().launcher_dir)
             );
             assert_eq!(plan.file_count(), 1);
             assert_eq!(plan.download_bytes, 100);
@@ -225,7 +236,7 @@ mod tests {
             dir.write(
                 format!(
                     "{}/Config/Config.ini",
-                    region(distribution).unwrap().launcher_dir
+                    region(GameId::Nte, distribution).unwrap().launcher_dir
                 ),
                 b"evil",
             );
@@ -252,7 +263,10 @@ mod tests {
         ] {
             let dir = TempDir::new("install-region");
             dir.write(
-                format!("{}/Config/Config.ini", region(other).unwrap().launcher_dir),
+                format!(
+                    "{}/Config/Config.ini",
+                    region(GameId::Nte, other).unwrap().launcher_dir
+                ),
                 b"",
             );
             assert!(
@@ -261,11 +275,12 @@ mod tests {
                     .to_string()
                     .contains("另一地区")
             );
-            std::fs::remove_dir_all(dir.join(region(other).unwrap().launcher_dir)).unwrap();
+            std::fs::remove_dir_all(dir.join(region(GameId::Nte, other).unwrap().launcher_dir))
+                .unwrap();
             dir.write(
                 format!(
                     "{}/Config/Config.ini",
-                    region(distribution).unwrap().launcher_dir
+                    region(GameId::Nte, distribution).unwrap().launcher_dir
                 ),
                 format!("[General]\nGameID={game_id}\n"),
             );
@@ -316,23 +331,37 @@ mod tests {
             "http://127.0.0.1:9/Version.ini",
         );
         assert_eq!(
-            launcher_version_urls(Distribution::Cn).unwrap(),
+            launcher_version_urls(GameId::Nte, Distribution::Cn).unwrap(),
             vec!["http://127.0.0.1:9/Version.ini".to_string()]
         );
         env.set("ODDITY_LAUNCHER_VERSION_URL", "  ");
-        assert!(!launcher_version_urls(Distribution::Cn).unwrap().is_empty());
+        assert!(!launcher_version_urls(GameId::Nte, Distribution::Cn)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn games_without_regions_cannot_plan_a_launcher_install() {
+        let dir = TempDir::new("install-hsr");
+        let error =
+            plan_launcher_cancellable(GameId::Hsr, Distribution::Cn, dir.path(), false, &|| false)
+                .unwrap_err();
+        assert!(matches!(error, Error::Unsupported(_)), "{error:?}");
     }
 
     #[test]
     fn mirrors_use_the_selected_region() {
         assert_eq!(
-            mirror_url("https://yhcdn1.wmupd.com/file", Distribution::Cn),
+            mirror_url(
+                "https://yhcdn1.wmupd.com/file",
+                region(GameId::Nte, Distribution::Cn).unwrap()
+            ),
             "https://yhcdn2.wmupd.com/file"
         );
         assert_eq!(
             mirror_url(
                 "https://ntecdn1.perfectworld.com/file",
-                Distribution::Global
+                region(GameId::Nte, Distribution::Global).unwrap()
             ),
             "https://ntecdn2.perfectworld.com/file"
         );

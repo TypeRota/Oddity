@@ -1,5 +1,6 @@
 use super::*;
 use crate::*;
+use nte_core::game_profile::GameId;
 
 /// 一个最小可用的安装目录树：<root>/install/NTELauncher/...
 struct Install {
@@ -292,7 +293,13 @@ fn bootstrap_does_not_fall_back_from_a_configured_empty_root() {
 
 fn check_install(install: &Install, full: bool) -> Result<CheckResult, String> {
     let install_root = install.launcher.parent().expect("install root");
-    check_impl(&install.launcher, install_root, Distribution::Cn, full)
+    check_impl(
+        GameId::Nte,
+        &install.launcher,
+        install_root,
+        Distribution::Cn,
+        full,
+    )
 }
 
 fn all_files(entries: &[(&str, u64, &str)]) -> String {

@@ -506,7 +506,7 @@ pub fn plan(
             .ok_or_else(|| "目标目录不是有效的游戏安装".to_string())?
             .to_path_buf();
         ensure_writable(&install)?;
-        if !crate::game_exe_for(&launcher).is_some_and(|path| path.is_file()) {
+        if !crate::game_exe_for(profile, &launcher).is_some_and(|path| path.is_file()) {
             return Err("目标目录缺少游戏可执行文件".into());
         }
         let environments = collect_environments(&settings, &source)?;
@@ -526,7 +526,8 @@ pub fn plan(
         });
     }
 
-    if !crate::game_exe_for(&source.join(launcher_dir)).is_some_and(|path| path.is_file()) {
+    if !crate::game_exe_for(profile, &source.join(launcher_dir)).is_some_and(|path| path.is_file())
+    {
         return Err("当前安装缺少游戏可执行文件".into());
     }
     ensure_target_free(&target)?;
@@ -998,8 +999,14 @@ fn rebind(
         .profile()
         .region(distribution)
         .ok_or_else(|| "当前游戏尚不支持该地区".to_string())?;
-    migration::rewrite_official(target, region.launcher_dir, source, target)
-        .map_err(|error| format!("更新官方配置失败: {error}"))?;
+    migration::rewrite_official(
+        target,
+        region.launcher_dir,
+        settings.active_game.profile(),
+        source,
+        target,
+    )
+    .map_err(|error| format!("更新官方配置失败: {error}"))?;
     Ok(())
 }
 
@@ -1168,7 +1175,7 @@ pub fn cleanup(app: ServiceHandle) -> Result<MigrationStatus, String> {
     let profile = journal.next_settings.active_game.profile();
     let launcher = crate::normalize_launcher_root_for(target, profile, journal.distribution)
         .ok_or_else(|| "目标安装不可用, 已保留旧目录".to_string())?;
-    if !crate::game_exe_for(&launcher).is_some_and(|path| path.is_file()) {
+    if !crate::game_exe_for(profile, &launcher).is_some_and(|path| path.is_file()) {
         return Err("目标安装缺少游戏可执行文件, 已保留旧目录".into());
     }
     if let Ok(mut game) = app.state.game.lock() {

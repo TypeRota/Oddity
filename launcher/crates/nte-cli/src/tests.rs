@@ -53,6 +53,11 @@ fn launcher_config(root: &Path, version_url: &str) -> LauncherConfig {
         branch: "publish_ob".to_string(),
         patcher_ignored_sections: Vec::new(),
         mutex_name: "nte-mutex".to_string(),
+        game: nte_core::game_profile::GameId::Nte,
+        layout: nte_core::game_profile::GameId::Nte
+            .profile()
+            .layout()
+            .unwrap(),
     }
 }
 

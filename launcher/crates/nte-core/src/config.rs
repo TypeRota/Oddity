@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::distribution::Distribution;
-use crate::game_profile::GameId;
+use crate::game_profile::{GameId, GameLayout};
 use crate::{Error, Result};
 
 /// Minimal INI reader tolerant of UTF-8 BOM, CRLF, comments and duplicate keys.
@@ -70,13 +70,15 @@ pub struct LauncherConfig {
     pub branch: String,
     pub patcher_ignored_sections: Vec<String>,
     pub mutex_name: String,
+    pub game: GameId,
+    pub layout: &'static GameLayout,
 }
 
 impl LauncherConfig {
-    pub fn load(root: &Path) -> Result<Self> {
+    pub fn load(game: GameId, root: &Path) -> Result<Self> {
         let ini = Ini::load(&root.join("Config").join("Config.ini"))?;
         let game_id = ini.get_int("General", "GameID").unwrap_or(0);
-        let profile = GameId::Nte.profile();
+        let profile = game.profile();
         let global = profile.region(Distribution::Global);
         let distribution = profile
             .region_for_app_id(game_id)
@@ -96,6 +98,12 @@ impl LauncherConfig {
                 "内置的《{}》配置缺少{}",
                 profile.name,
                 distribution.label()
+            )));
+        };
+        let Some(layout) = profile.layout else {
+            return Err(Error::Unsupported(format!(
+                "内置的《{}》配置缺少安装布局",
+                profile.name
             )));
         };
         let version = ini.section("VERSION").cloned().unwrap_or_default();
@@ -155,6 +163,8 @@ impl LauncherConfig {
                 .filter(|s| !s.is_empty())
                 .collect(),
             mutex_name: version.get("MutexName").cloned().unwrap_or_default(),
+            game,
+            layout,
         })
     }
 
@@ -166,7 +176,15 @@ impl LauncherConfig {
         self.root.join("UserData").join("Config").join("Config.ini")
     }
     pub fn game_dir(&self) -> PathBuf {
-        self.root.join("..").join("Client").join("WindowsNoEditor")
+        let install_root = self.install_root();
+        self.layout.content_path(&install_root)
+    }
+    /// 启动器根目录的父目录即安装根目录.
+    pub fn install_root(&self) -> PathBuf {
+        self.root
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.root.clone())
     }
 }
 
@@ -223,7 +241,7 @@ MutexName=nte-mutex
 PATCHER_IGNORED_SECTION= A , ,B 
 "#,
         );
-        let cfg = LauncherConfig::load(dir.path()).expect("load config");
+        let cfg = LauncherConfig::load(GameId::Nte, dir.path()).expect("load config");
         assert_eq!(cfg.launcher, "MyLauncher.exe");
         assert_eq!(cfg.patcher, "MyPatcher.exe");
         assert_eq!(cfg.client, "MyGame.exe");
@@ -247,7 +265,7 @@ PATCHER_IGNORED_SECTION= A , ,B
         );
         assert_eq!(
             cfg.game_dir(),
-            dir.path().join("..").join("Client").join("WindowsNoEditor")
+            dir.path().parent().unwrap().join("Client/WindowsNoEditor")
         );
     }
 
@@ -255,7 +273,7 @@ PATCHER_IGNORED_SECTION= A , ,B
     fn launcher_config_falls_back_to_defaults() {
         let dir = TempDir::new("cfg-default");
         dir.write("Config/Config.ini", "[General]\nGameID=not-a-number\n");
-        let cfg = LauncherConfig::load(dir.path()).expect("load config");
+        let cfg = LauncherConfig::load(GameId::Nte, dir.path()).expect("load config");
         assert_eq!(cfg.launcher, "NTELauncher.exe");
         assert_eq!(cfg.patcher, "NTEUpdate.exe");
         assert_eq!(cfg.client, "NTEGame.exe");
@@ -278,7 +296,7 @@ PATCHER_IGNORED_SECTION= A , ,B
     fn global_defaults_and_update_config_remain_in_the_global_distribution() {
         let dir = TempDir::new("cfg-global");
         dir.write("NTEGlobal/Config/Config.ini", "[General]\nGameID=3000001\n[UPDATE_CONFIG]\nBackupVersionURL=https://backup.test/global.ini\nBranch=global_branch\n");
-        let cfg = LauncherConfig::load(&dir.join("NTEGlobal")).unwrap();
+        let cfg = LauncherConfig::load(GameId::Nte, &dir.join("NTEGlobal")).unwrap();
         assert_eq!(cfg.launcher, "NTEGlobalLauncher.exe");
         assert_eq!(cfg.patcher, "NTEGlobalUpdate.exe");
         assert_eq!(cfg.client, "NTEGlobalGame.exe");
@@ -290,7 +308,7 @@ PATCHER_IGNORED_SECTION= A , ,B
         assert_eq!(cfg.backup_version_url, "https://backup.test/global.ini");
         assert_eq!(cfg.branch, "global_branch");
         dir.write("NTEGlobal/Config/Config.ini", "[General]\n");
-        let cfg = LauncherConfig::load(&dir.join("NTEGlobal")).unwrap();
+        let cfg = LauncherConfig::load(GameId::Nte, &dir.join("NTEGlobal")).unwrap();
         assert_eq!(cfg.game_id, global.app_id);
         assert_eq!(cfg.branch, "publish_PC");
         assert_eq!(cfg.backup_version_url, global.version_urls[1]);
@@ -299,6 +317,14 @@ PATCHER_IGNORED_SECTION= A , ,B
     #[test]
     fn launcher_config_requires_config_ini() {
         let dir = TempDir::new("cfg-missing");
-        assert!(LauncherConfig::load(dir.path()).is_err());
+        assert!(LauncherConfig::load(GameId::Nte, dir.path()).is_err());
+    }
+
+    #[test]
+    fn unsupported_game_has_no_launcher_config() {
+        let dir = TempDir::new("cfg-hsr");
+        dir.write("Config/Config.ini", "[General]\n");
+        let error = LauncherConfig::load(GameId::Hsr, dir.path()).unwrap_err();
+        assert!(matches!(error, Error::Unsupported(_)), "{error:?}");
     }
 }

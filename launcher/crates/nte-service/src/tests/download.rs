@@ -3,6 +3,7 @@ use crate::service::ServiceHandle;
 use crate::tests::{HttpServer, TempDir};
 use crate::GameTracker;
 use nte_core::distribution::Distribution;
+use nte_core::game_profile::GameId;
 use nte_core::manifest::ManifestFile;
 use nte_core::update::{md5_bytes, md5_file};
 use std::io::{Cursor, Write};
@@ -165,7 +166,7 @@ fn preload_marker_errors_are_returned_before_publishing_completion() {
     for download in [false, true] {
         let fixture = Fixture::new(Distribution::Cn, true);
         let root = fixture.dir.join("NTELauncher");
-        let mut config = game::GameUpdateConfig::load(&root, 1289).unwrap();
+        let mut config = game::GameUpdateConfig::load(GameId::Nte, &root, 1289).unwrap();
         config.branch = "future".into();
         let content = b"future bytes";
         let hash = md5_bytes(content);
@@ -878,7 +879,8 @@ fn resource_catalog_saves_selection_and_records_optional_tags() {
     assert_eq!(fixture.status().phase, "ready");
     assert_eq!(fixture.dir.read(path), bytes);
 
-    let config = game::GameUpdateConfig::load(&fixture.dir.join("NTELauncher"), 1289).unwrap();
+    let config =
+        game::GameUpdateConfig::load(GameId::Nte, &fixture.dir.join("NTELauncher"), 1289).unwrap();
     let ledger = game::check::load_local_ledger(&config).unwrap().unwrap();
     let record = ledger
         .base_versions

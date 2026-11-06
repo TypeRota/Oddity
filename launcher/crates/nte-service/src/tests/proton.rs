@@ -1,5 +1,6 @@
 use super::*;
 use crate::*;
+use nte_core::game_profile::GameId;
 
 #[test]
 fn proton_install_needs_manifest_and_accepts_dir_or_exe() {
@@ -31,11 +32,11 @@ fn ensure_sdk_link_creates_and_refreshes_the_link() {
     let install = dir.join("install");
     std::fs::create_dir_all(&install).expect("create install dir");
 
-    let error = ensure_sdk_link(&prefix, &install).expect_err("no drive_c");
+    let error = ensure_sdk_link(GameId::Nte.profile(), &prefix, &install).expect_err("no drive_c");
     assert!(error.contains("Wine prefix 尚未初始化"), "{error}");
 
     std::fs::create_dir_all(prefix.join("drive_c")).expect("create drive_c");
-    ensure_sdk_link(&prefix, &install).expect("create link");
+    ensure_sdk_link(GameId::Nte.profile(), &prefix, &install).expect("create link");
     let link = prefix.join("drive_c/Program Files (x86)/Neverness To Everness");
     assert!(std::fs::symlink_metadata(&link)
         .expect("link metadata")
@@ -44,7 +45,7 @@ fn ensure_sdk_link_creates_and_refreshes_the_link() {
     assert_eq!(std::fs::read_link(&link).expect("read link"), install);
 
     // 已经指向正确目标时保持原样
-    ensure_sdk_link(&prefix, &install).expect("keep link");
+    ensure_sdk_link(GameId::Nte.profile(), &prefix, &install).expect("keep link");
     assert_eq!(std::fs::read_link(&link).expect("read link"), install);
 
     // 指向别处时替换掉
@@ -52,13 +53,13 @@ fn ensure_sdk_link_creates_and_refreshes_the_link() {
     let other = dir.join("other");
     std::fs::create_dir_all(&other).expect("create other dir");
     std::os::unix::fs::symlink(&other, &link).expect("create stale link");
-    ensure_sdk_link(&prefix, &install).expect("refresh link");
+    ensure_sdk_link(GameId::Nte.profile(), &prefix, &install).expect("refresh link");
     assert_eq!(std::fs::read_link(&link).expect("read link"), install);
 
     // 真实目录不会被替换
     std::fs::remove_file(&link).expect("remove link");
     std::fs::create_dir_all(&link).expect("create real dir");
-    ensure_sdk_link(&prefix, &install).expect("keep real dir");
+    ensure_sdk_link(GameId::Nte.profile(), &prefix, &install).expect("keep real dir");
     assert!(!std::fs::symlink_metadata(&link)
         .expect("link metadata")
         .file_type()
