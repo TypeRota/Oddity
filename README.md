@@ -9,10 +9,10 @@
 
 *一切正常，就是异常*
 
-[![Release](https://img.shields.io/github/v/release/LaT-SKY/Oddity?label=release)](https://github.com/LaT-SKY/Oddity/releases)
-[![Platform](https://img.shields.io/badge/platform-Linux-informational)](https://github.com/LaT-SKY/Oddity)
+[![Release](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgit.miprota.cc%2Fapi%2Fv1%2Frepos%2FOddity%2FOddity%2Ftags&query=%24%5B0%5D.name&label=release&color=blue)](https://git.miprota.cc/Oddity/Oddity/releases)
+[![Platform](https://img.shields.io/badge/platform-Linux-informational)](https://git.miprota.cc/Oddity/Oddity)
 [![在线体验](https://img.shields.io/badge/demo-online-brightgreen)](https://lat-sky.github.io/Oddity/)
-[![License](https://img.shields.io/github/license/LaT-SKY/Oddity)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
 </div>
 
@@ -53,7 +53,7 @@ Oddity 通过 `umu-run` 和 Proton 管理游戏运行环境，并集成了资源
 
 ## _Installation_
 
-从 [Releases](https://github.com/LaT-SKY/Oddity/releases) 下载对应安装包：
+从 [Releases](https://git.miprota.cc/Oddity/Oddity/releases) 下载对应安装包：
 
 | _发行版_ | 软件包 |
 |:---|:---|
@@ -116,7 +116,7 @@ Oddity 针对官方启动器的部分行为进行了改进，重点在于下载�
 - [塔吉多指南](docs/taygedo.md) — 账号登录、自动签到与游戏数据查询。
 - [浏览器演示](docs/demo.md) — 在线体验界面与部署说明。
 
-遇到问题？请前往 [Issues](https://github.com/LaT-SKY/Oddity/issues) 反馈。
+遇到问题？请前往 [Issues](https://git.miprota.cc/Oddity/Oddity/issues) 反馈。
 
 ## _License_
 
