@@ -1,0 +1,45 @@
+name: Sign release checksums
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to sign (for example oddity-v0.1.2)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir out
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign checksums
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --output-signature out/SHA256SUMS.sig \
+            --output-certificate out/SHA256SUMS.pem \
+            out/SHA256SUMS
+
+      - name: Upload signature
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" out/SHA256SUMS.sig out/SHA256SUMS.pem \
+            --repo "$GITHUB_REPOSITORY" --clobber
