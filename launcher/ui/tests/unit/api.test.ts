@@ -736,3 +736,149 @@ it("模拟安装目录迁移命令", async () => {
   expect((await invoke("migration_status")).phase).toBe("idle");
   expect((await invoke("migration_abandon")).phase).toBe("idle");
 });
+
+it("桌面会话、下载和迁移订阅转发载荷, 处理提前注销与订阅失败", async () => {
+  native.enabled = true;
+  const api = await import("../../src/core/api");
+  for (const subscribe of [
+    api.listenPlaytimeStarted,
+    api.listenDownloadState,
+    api.listenMigrationState,
+  ]) {
+    const unlisten = vi.fn();
+    native.listen.mockResolvedValueOnce(unlisten);
+    const handler = vi.fn();
+    const dispose = subscribe(handler);
+    await Promise.resolve();
+    const [event, callback] = native.listen.mock.calls.at(-1)! as [
+      string,
+      (event: { payload: { marker: string } }) => void,
+    ];
+    callback({ payload: { marker: "current-session" } });
+    expect(handler).toHaveBeenCalledOnce();
+    if (event !== "playtime-started")
+      expect(handler).toHaveBeenCalledWith({ marker: "current-session" });
+    dispose();
+    expect(unlisten).toHaveBeenCalledOnce();
+    let complete!: (stop: () => void) => void;
+    native.listen.mockReturnValueOnce(
+      new Promise<() => void>((resolve) => {
+        complete = resolve;
+      }),
+    );
+    const early = subscribe(vi.fn());
+    early();
+    const lateStop = vi.fn();
+    complete(lateStop);
+    await Promise.resolve();
+    expect(lateStop).toHaveBeenCalledOnce();
+    native.listen.mockRejectedValueOnce(new Error("服务已关闭"));
+    const failed = subscribe(vi.fn());
+    await Promise.resolve();
+    await Promise.resolve();
+    failed();
+  }
+  native.enabled = false;
+  const calls = native.listen.mock.calls.length;
+  api.listenPlaytimeStarted(vi.fn())();
+  api.listenDownloadState(vi.fn())();
+  api.listenMigrationState(vi.fn())();
+  expect(native.listen).toHaveBeenCalledTimes(calls);
+});
+
+it("浏览器环境配置计划保留选择, 应用后创建并选中独立运行环境", async () => {
+  const { invoke } = await import("../../src/core/api");
+  await expect(invoke("runtime_setup_apply")).rejects.toThrow(
+    "请先查看安装计划",
+  );
+  const before = await invoke("runtime_setup_info");
+  expect(before.environment).toBeNull();
+  const plan = await invoke("runtime_setup_plan", {
+    allUsers: true,
+    proton: "/test/proton",
+    createEnvironment: true,
+  });
+  expect(plan).toMatchObject({
+    proton: "/test/proton",
+    installProton: false,
+    systemCommand: expect.arrayContaining(["umu-launcher"]),
+  });
+  const applying = invoke("runtime_setup_apply");
+  await vi.advanceTimersByTimeAsync(4200);
+  await applying;
+  expect(await invoke("runtime_setup_status")).toMatchObject({
+    busy: false,
+    done: true,
+    error: null,
+  });
+  const configured = await invoke("runtime_setup_environment");
+  const current = gameSettings(configured.settings);
+  expect(current.activeEnvironment).toBeTruthy();
+  expect(configured.settings.runtimeEnvironments).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: current.activeEnvironment,
+        proton: expect.objectContaining({ path: "/test/proton" }),
+      }),
+    ]),
+  );
+  expect(await invoke("runtime_setup_info")).toMatchObject({
+    proton: "/test/proton",
+    systemUmu: true,
+  });
+  const noInstall = await invoke("runtime_setup_plan", {
+    allUsers: true,
+    proton: "/test/proton",
+    createEnvironment: false,
+  });
+  expect(noInstall.systemCommand).toBeNull();
+  const localPlan = await invoke("runtime_setup_plan", {
+    allUsers: false,
+    proton: null,
+    createEnvironment: false,
+  });
+  expect(localPlan.installProton).toBe(true);
+  expect(localPlan.umu).toContain("oddity/runtime/umu");
+  await invoke("runtime_setup_dismiss");
+  expect((await invoke("runtime_setup_status")).busy).toBe(false);
+});
+
+it("浏览器能力信息明确不可用, 原生专用操作不会伪装成功", async () => {
+  const { invoke } = await import("../../src/core/api");
+  expect(await invoke("game_mode_tuning_info")).toEqual({
+    pinCores: null,
+    parkCores: null,
+    renice: null,
+    ioprio: null,
+  });
+  expect((await invoke("game_mode_gpu_info")).devices).toEqual([]);
+  expect(
+    (await invoke("game_mode_status")).capabilities.every(
+      (entry) => !entry.available && entry.state === "unavailable",
+    ),
+  ).toBe(true);
+  await expect(
+    invoke("game_mode_gpu_apply", {
+      config: (await invoke("game_mode_gpu_info")).config,
+    }),
+  ).rejects.toThrow("原生启动器");
+  await expect(
+    invoke("game_mode_tuning_apply", {
+      config: await invoke("game_mode_tuning_info"),
+    }),
+  ).rejects.toThrow("原生启动器");
+  await expect(invoke("browse_files", { path: null })).rejects.toThrow(
+    "桌面应用",
+  );
+  await expect(
+    invoke("gamepad_profile_load", { path: "/profile.json" }),
+  ).rejects.toThrow("桌面应用");
+  await expect(
+    invoke("game_send_code", { phone: "13800000000" }),
+  ).rejects.toThrow("桌面启动器");
+  expect(await invoke("game_accounts")).toEqual([]);
+  expect(
+    await invoke("game_account_remove", { accountId: "missing" }),
+  ).toBeNull();
+  expect(await invoke("take_launch_error")).toBeNull();
+});
