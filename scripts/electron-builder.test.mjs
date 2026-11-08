@@ -35,3 +35,23 @@ test("RPM 构建配置与发行版本转换保持一致", async () => {
     delete require.cache[require.resolve("./electron-builder.cjs")];
   }
 });
+
+test("生成的桌面入口登记全部动作, 使桌面菜单实际展示它们", async () => {
+  const previous = process.cwd();
+  process.chdir(uiRoot);
+  try {
+    const config = await require("./electron-builder.cjs")();
+    const registered =
+      config.linux.desktop.entry.Actions.split(";").filter(Boolean);
+    assert.deepEqual(
+      registered,
+      Object.keys(config.linux.desktop.desktopActions),
+    );
+    assert.equal(
+      config.linux.desktop.desktopActions.XWayland.Exec,
+      "oddity --xwayland",
+    );
+  } finally {
+    process.chdir(previous);
+  }
+});

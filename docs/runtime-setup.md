@@ -12,7 +12,7 @@
 
 ## Proton 与运行时
 
-自动配置使用固定的 `GE-Proton11-5-x86_64`, 官方下载包在解压前校验 SHA-256. Proton 安装到检测到的 Steam 根目录下的 `compatibilitytools.d/<版本>`. 检测常规 Steam 链接和 Flatpak Steam 目录; 未安装 Steam 时使用 `~/.local/share/Steam/compatibilitytools.d/`. 不需要安装 Steam 客户端.
+自动配置使用固定的 `GE-Proton11-12-x86_64`, 官方下载包在解压前校验 SHA-256. Proton 安装到检测到的 Steam 根目录下的 `compatibilitytools.d/<版本>`. 检测常规 Steam 链接和 Flatpak Steam 目录; 未安装 Steam 时使用 `~/.local/share/Steam/compatibilitytools.d/`. 不需要安装 Steam 客户端.
 
 已完成并通过摘要校验的下载可在重试时复用. 记录中的 Proton 路径失效时, 自动配置回到当前 Steam 目录下的默认下载目标. Proton 在同一文件系统的临时目录解压, 成功后才放入目标位置. 已有不完整的目标目录会报错, 不覆盖其中的文件. 手动配置直接选择包含 `proton` 和 `toolmanifest.vdf` 的本地目录.
 

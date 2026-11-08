@@ -2143,6 +2143,7 @@ fn launch_impl_inner(
             .env("PROTON_LOG", "0")
             .env("UMU_LOG", "error")
             .current_dir(&install_dir);
+        nte_core::launch::configure_network(&mut host);
         nte_core::launch::configure_display(
             &mut host,
             std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty()),
@@ -2175,6 +2176,7 @@ fn launch_impl_inner(
         .env("UMU_LOG", "info")
         .env("PROTON_LOG", "0")
         .env("PROTON_VERB", "run");
+    nte_core::launch::configure_network(&mut cmd);
     nte_core::launch::configure_display(
         &mut cmd,
         std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty()),

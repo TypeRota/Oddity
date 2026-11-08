@@ -21,4 +21,10 @@ function launchActions() {
   );
 }
 
-module.exports = { launchActions };
+const xwaylandAction = {
+  key: "XWayland",
+  name: "XWayland 模式",
+  exec: "oddity --xwayland",
+};
+
+module.exports = { launchActions, xwaylandAction };

@@ -153,6 +153,28 @@ fn env_value<'a>(dump: &'a str, key: &str) -> Option<&'a str> {
 }
 
 #[test]
+fn launch_keeps_launcher_proxy_settings_out_of_the_game() {
+    let mut fixture = LaunchFixture::new("launch-proxy");
+    let keys = [
+        "HTTP_PROXY",
+        "https_proxy",
+        "aLl_PrOxY",
+        "NO_PROXY",
+        "proxy",
+    ];
+    for key in keys {
+        fixture.env.set(key, "http://proxy.invalid:8080");
+    }
+    let invocation = launch_impl(&fixture.settings("official")).expect("launch");
+    let dump = fixture.dump();
+    for key in keys {
+        assert_eq!(env_value(&dump, key), None);
+        assert_eq!(std::env::var(key).unwrap(), "http://proxy.invalid:8080");
+    }
+    fixture.stop(invocation);
+}
+
+#[test]
 fn cancellation_token_stops_the_launch_before_spawning() {
     let fixture = LaunchFixture::new("launch-cancel");
     let error = expect_launch_error(launch_impl_with_cancel(

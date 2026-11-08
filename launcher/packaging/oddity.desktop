@@ -15,7 +15,7 @@ Keywords=game;launcher;NTE;异环;
 StartupNotify=true
 StartupWMClass=oddity
 X-KDE-StartupWMClass=oddity
-Actions=LaunchCn;LaunchGlobal;Recovery;
+Actions=LaunchCn;LaunchGlobal;XWayland;Recovery;
 
 [Desktop Action LaunchCn]
 Name=异环
@@ -27,6 +27,12 @@ Icon=oddity
 Name=NTE
 Name[zh_CN]=NTE
 Exec=oddity --launch --game nte --region global --launch-mode background
+Icon=oddity
+
+[Desktop Action XWayland]
+Name=XWayland 模式
+Name[zh_CN]=XWayland 模式
+Exec=oddity --xwayland
 Icon=oddity
 
 [Desktop Action Recovery]

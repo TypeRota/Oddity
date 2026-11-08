@@ -1,6 +1,6 @@
 const { resolve, dirname } = require("node:path");
 const version = require("./package.json").version;
-const { launchActions } = require("../packaging/games.cjs");
+const { launchActions, xwaylandAction } = require("../packaging/games.cjs");
 
 const extra = [
   `${resolve("../packaging/nte-cli")}=/usr/bin/nte-cli`,
@@ -56,6 +56,12 @@ module.exports = async () => {
           TryExec: "oddity",
           StartupWMClass: "oddity",
           Categories: "Game;Utility;",
+          Actions:
+            [
+              ...launchActions().map(({ key }) => key),
+              xwaylandAction.key,
+              "Recovery",
+            ].join(";") + ";",
         },
         desktopActions: {
           ...Object.fromEntries(
@@ -64,6 +70,10 @@ module.exports = async () => {
               { Name: name, Exec: exec },
             ]),
           ),
+          [xwaylandAction.key]: {
+            Name: xwaylandAction.name,
+            Exec: xwaylandAction.exec,
+          },
           Recovery: { Name: "应急恢复", Exec: "oddity --recovery" },
         },
       },

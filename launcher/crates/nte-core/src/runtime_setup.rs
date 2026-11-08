@@ -9,11 +9,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub const UMU_VERSION: &str = "1.4.4";
-pub const PROTON_VERSION: &str = "GE-Proton11-5-x86_64";
+pub const PROTON_VERSION: &str = "GE-Proton11-12-x86_64";
 const UMU_URL: &str = "https://github.com/Open-Wine-Components/umu-launcher/releases/download/1.4.4/umu-launcher-1.4.4-zipapp.tar";
 const UMU_HASH: &str = "eb590691841f7fad3fc3ad8fd5db4ccb87849fe7948e62b28ece7a4ee48cc851";
-const PROTON_URL: &str = "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton11-5/GE-Proton11-5-x86_64.tar.gz";
-const PROTON_HASH: &str = "de43c4b25f3c047db49b96c44d84759952c5a01332a68805a09e69f95dc38a75";
+const PROTON_URL: &str = "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton11-12/GE-Proton11-12-x86_64.tar.gz";
+const PROTON_HASH: &str = "0595159e417c3dbbfb7cc3ae0d3ed15a617cc607aa23ef756ea79029d7af5d70";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -360,7 +360,7 @@ pub fn install(data: &Path, plan: &Plan, mut progress: impl FnMut(Progress)) -> 
         ..Default::default()
     });
     if plan.install_proton {
-        let archive = data.join("runtime/downloads/GE-Proton11-5-x86_64.tar.gz");
+        let archive = data.join(format!("runtime/downloads/{PROTON_VERSION}.tar.gz"));
         download(PROTON_URL, PROTON_HASH, &archive, &mut |mut value| {
             value.component = Component::Proton;
             progress(value);

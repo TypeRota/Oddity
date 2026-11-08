@@ -21,6 +21,20 @@ pub fn configure_display(command: &mut Command, wayland_available: bool, gamesco
         .env("PROTON_USE_WAYLAND", enabled);
 }
 
+/// 游戏与官方 SDK 直连, 不继承启动器下载请求使用的代理.
+pub fn configure_network(command: &mut Command) {
+    let keys: Vec<_> = std::env::vars_os()
+        .map(|(key, _)| key)
+        .chain(command.get_envs().map(|(key, _)| key.to_os_string()))
+        .collect();
+    for key in keys {
+        let name = key.to_string_lossy().to_ascii_lowercase();
+        if name == "proxy" || name.ends_with("_proxy") {
+            command.env_remove(key);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProtonLaunch {
     pub runner: PathBuf,
@@ -52,6 +66,7 @@ impl ProtonLaunch {
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
+        configure_network(&mut cmd);
         cmd.arg(&self.exe).args(&self.args);
         cmd
     }
@@ -145,6 +160,44 @@ mod tests {
             .collect();
         assert!(envs.contains(&("WINEPREFIX".to_string(), Some("/prefix".to_string()))));
         assert!(envs.contains(&("PROTON_ENABLE_WAYLAND".to_string(), Some("1".to_string()))));
+    }
+
+    #[test]
+    fn game_network_removes_proxy_overrides_and_preserves_runtime_options() {
+        let mut command = Command::new("umu-run");
+        for key in [
+            "proxy",
+            "HTTP_PROXY",
+            "https_proxy",
+            "aLl_PrOxY",
+            "NO_PROXY",
+            "ftp_proxy",
+        ] {
+            command.env(key, "http://proxy.invalid:8080");
+        }
+        command
+            .env("PROTONPATH", "/proton")
+            .env("VKD3D_CONFIG", "test");
+        configure_network(&mut command);
+        let variables: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        for key in [
+            "proxy",
+            "HTTP_PROXY",
+            "https_proxy",
+            "aLl_PrOxY",
+            "NO_PROXY",
+            "ftp_proxy",
+        ] {
+            assert_eq!(variables.get(std::ffi::OsStr::new(key)), Some(&None));
+        }
+        assert_eq!(
+            variables[std::ffi::OsStr::new("PROTONPATH")],
+            Some(std::ffi::OsStr::new("/proton"))
+        );
+        assert_eq!(
+            variables[std::ffi::OsStr::new("VKD3D_CONFIG")],
+            Some(std::ffi::OsStr::new("test"))
+        );
     }
 
     #[test]

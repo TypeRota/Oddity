@@ -483,6 +483,13 @@ else {
   const ready = app.whenReady().then(start);
   app.on("second-instance", (_event, argv) => {
     const forwarded = argv.slice(app.isPackaged ? 1 : 2);
+    if (forwarded.includes("--xwayland") && process.env.WAYLAND_DISPLAY) {
+      dialog.showErrorBox(
+        "无法切换显示模式",
+        "请先从托盘完全退出 Oddity, 再选择 XWayland 模式.",
+      );
+      return;
+    }
     void ready
       .then(() =>
         isLaunchRequest(forwarded)

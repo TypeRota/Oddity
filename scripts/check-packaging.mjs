@@ -6,7 +6,10 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const { launchActions } = require("../launcher/packaging/games.cjs");
+const {
+  launchActions,
+  xwaylandAction,
+} = require("../launcher/packaging/games.cjs");
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const failures = [];
@@ -78,7 +81,7 @@ const desktopSections = parseDesktopSections(read(desktopPath));
 const desktopActions = (desktop.get("Actions") ?? "")
   .split(";")
   .filter(Boolean);
-for (const { key, name, exec } of launchActions()) {
+for (const { key, name, exec } of [...launchActions(), xwaylandAction]) {
   if (!desktopActions.includes(key))
     fail(`${desktopPath}: Actions 中缺少 ${key}`);
   const values = desktopSections.get(`Desktop Action ${key}`);
@@ -93,6 +96,7 @@ for (const { key, name, exec } of launchActions()) {
 }
 const knownDesktopActions = new Set([
   ...launchActions().map((action) => action.key),
+  xwaylandAction.key,
   "Recovery",
 ]);
 for (const action of desktopActions) {
@@ -142,7 +146,7 @@ if (config.asar !== true) fail("发行版必须包含打包资源");
 for (const target of ["deb", "rpm", "AppImage"])
   if (!config.linux.target.includes(target)) fail(`缺少发行格式 ${target}`);
 const configuredActions = config.linux.desktop?.desktopActions ?? {};
-for (const { key, name, exec } of launchActions()) {
+for (const { key, name, exec } of [...launchActions(), xwaylandAction]) {
   const action = configuredActions[key];
   if (!action) {
     fail(`electron-builder 缺少桌面动作 ${key}`);

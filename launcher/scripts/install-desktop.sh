@@ -37,6 +37,7 @@ tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 sed -e "s|^Exec=oddity$|Exec=$bin|" \
   -e "s|^Exec=oddity --recovery$|Exec=$bin --recovery|" \
+  -e "s|^Exec=oddity --xwayland$|Exec=$bin --xwayland|" \
   -e "s|^Exec=oddity --launch |Exec=$bin --launch |" \
   -e "s|^TryExec=oddity$|TryExec=$bin|" \
   "$root/packaging/oddity.desktop" >"$tmp"
