@@ -1,0 +1,184 @@
+name: 发布源码
+
+on:
+  push:
+    tags:
+      - "oddity-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要发布的 tag（例如 oddity-v0.2.0-alpha.1）
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: 创建 Gitea Release
+    runs-on: self-hosted
+    timeout-minutes: 15
+    steps:
+      - name: 检出代码
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p checkout
+          cd checkout
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          git fetch --no-tags origin '+refs/tags/*:refs/tags/*'
+          git checkout -q --detach "${INPUT_TAG:-$GITHUB_REF_NAME}"
+          git log --oneline -1
+      - name: 校验标签与版本
+        id: release
+        env:
+          TAG: ${{ github.ref_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [ -d checkout ] && cd checkout
+
+          tag="${INPUT_TAG:-${GITHUB_REF_NAME:-}}"
+          if [ -z "$tag" ]; then
+            echo "缺少发布 tag" >&2
+            exit 1
+          fi
+          version="${tag#oddity-v}"
+          git fetch --quiet origin '+refs/heads/*:refs/remotes/origin/*'
+          node scripts/check-release-version.mjs "$version" "$tag"
+          if [ "$(git cat-file -t "refs/tags/$tag" 2>/dev/null || true)" != "tag" ]; then
+            echo "发布 tag 必须是 annotated tag" >&2
+            exit 1
+          fi
+
+          core="${version%%+*}"
+          if [ "$core" != "${core#*-}" ]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+
+          commit="$(git rev-parse --verify "${tag}^{commit}")"
+          main_commit="$(git rev-parse --verify origin/main)"
+          on_main=false
+          if git merge-base --is-ancestor "$commit" "$main_commit"; then
+            on_main=true
+          fi
+
+          if [ "$prerelease" = "true" ]; then
+            if [ "$on_main" != "true" ]; then
+              echo "预发布版本必须从 main 发布" >&2
+              exit 1
+            fi
+          elif [ "$on_main" != "true" ]; then
+            minor="$(printf '%s' "$version" | cut -d. -f1,2)"
+            branch="release/$minor"
+            if ! git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then
+              echo "维护分支 $branch 不存在" >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$commit" "refs/remotes/origin/$branch"; then
+              echo "tag $tag 不在 $branch 上" >&2
+              exit 1
+            fi
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "发布校验通过: $tag ($version, prerelease=$prerelease)"
+      - name: 创建或更新源码 Release
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+          COMMIT: ${{ steps.release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          [ -d checkout ] && cd checkout
+          test -n "${INPUT_TAG:-$TAG}" || { echo "缺少发布 tag" >&2; exit 1; }
+          tag="${INPUT_TAG:-$TAG}"
+          previous="$(git describe --tags --abbrev=0 "${tag}^" 2>/dev/null || true)"
+          export PREVIOUS_TAG="$previous"
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          tag = os.environ.get("INPUT_TAG") or os.environ["TAG"]
+          version = os.environ["VERSION"]
+          prerelease = os.environ["PRERELEASE"] == "true"
+          repo = os.environ["GITHUB_REPOSITORY"]
+          base = os.environ["GITHUB_SERVER_URL"].rstrip("/") + "/api/v1"
+          token = os.environ["TOKEN"]
+          if not token:
+              raise SystemExit("缺少 GITHUB_TOKEN，无法创建 Release")
+
+          previous = os.environ.get("PREVIOUS_TAG", "")
+          body = (
+              f"这是 Oddity {version} 的源码发布。"
+              "安装包和签名在 [GitHub Releases]"
+              f"(https://github.com/TypeRota/Oddity/releases/tag/v{version}) 提供；"
+              "Gitea 这里只保留源代码。\n"
+          )
+          if previous:
+              body += (
+                  "\n**完整变更**："
+                  f"https://git.miprota.cc/Oddity/Oddity/compare/{previous}...{tag}\n"
+              )
+
+          payload = {
+              "tag_name": tag,
+              "name": f"Oddity {version}",
+              "body": body,
+              "draft": False,
+              "prerelease": prerelease,
+          }
+
+          def request(method, path, data=None):
+              request = urllib.request.Request(
+                  base + path,
+                  data=None if data is None else json.dumps(data).encode(),
+                  method=method,
+                  headers={
+                      "Authorization": "token " + token,
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return json.loads(response.read() or b"{}")
+              except urllib.error.HTTPError as error:
+                  detail = error.read()[:300].decode(errors="replace")
+                  if error.code == 404:
+                      return None
+                  raise SystemExit(f"{method} {path} -> {error.code} {detail}") from error
+
+          encoded = urllib.parse.quote(tag, safe="")
+          existing = request("GET", f"/repos/{repo}/releases/tags/{encoded}")
+          if existing:
+              release = request("PATCH", f"/repos/{repo}/releases/{existing['id']}", payload)
+              print(f"已更新 Release: {release['html_url']}")
+          else:
+              release = request("POST", f"/repos/{repo}/releases", payload)
+              print(f"已创建 Release: {release['html_url']}")
+          PY
+      - name: 记录摘要
+        run: |
+          set -euo pipefail
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            echo "tag: ${INPUT_TAG:-$GITHUB_REF_NAME}" >> "$GITHUB_STEP_SUMMARY"
+            echo "version: ${{ steps.release.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "prerelease: ${{ steps.release.outputs.prerelease }}" >> "$GITHUB_STEP_SUMMARY"
+          fi
