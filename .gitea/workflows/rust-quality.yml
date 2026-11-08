@@ -1,0 +1,74 @@
+name: Rust 质量检查
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+concurrency:
+  group: rust-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-quality:
+    name: Rust 质量检查
+    runs-on: heavy
+    timeout-minutes: 45
+    steps:
+      - name: 检出代码
+        run: |
+          mkdir -p checkout
+          cd checkout
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git fetch --no-tags origin "$GITHUB_REF" || git fetch --no-tags origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          git log --oneline -1
+      - name: 安装 Linux 依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential pkg-config cmake libudev-dev libasound2-dev libpulse-dev \
+            libssl-dev libgtk-3-dev librsvg2-dev patchelf file desktop-file-utils \
+            dpkg-dev rpm libarchive-tools zstd xvfb dbus-x11
+      - name: 准备 Rust 工具链
+        run: |
+          sudo chown -R "$(id -un):" /opt/rust
+          rustup update stable
+          rustup default stable
+          rustup component add rustfmt clippy llvm-tools-preview
+          rustc -V
+          cargo -V
+      - name: 安装并构建前端
+        run: |
+          export PATH=/data/workspace/node24/bin:$PATH
+          cd checkout/launcher/ui
+          pnpm install --frozen-lockfile
+          pnpm run build
+      - name: 检查格式与 Clippy
+        run: |
+          cd checkout/launcher
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: 运行测试并构建
+        run: |
+          cd checkout/launcher
+          cargo test --workspace --locked
+          cargo build --workspace --locked
+      - name: 检查覆盖率
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cd checkout/launcher
+          rustup component add llvm-tools-preview
+          if ! command -v cargo-llvm-cov >/dev/null; then cargo install cargo-llvm-cov --locked; fi
+          cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+          cargo llvm-cov report --summary-only | tee coverage-summary.txt
+          cd ..
+          node scripts/check-rust-coverage.mjs
+      - name: 依赖检查策略
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cd checkout/launcher
+          if ! command -v cargo-deny >/dev/null; then cargo install cargo-deny --locked; fi
+          cargo deny check

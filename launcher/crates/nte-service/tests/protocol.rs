@@ -19,7 +19,9 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
     let systemctl = directory.join("commands/systemctl");
     std::fs::write(&systemctl, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_oddity-backend"))
+    let backend =
+        std::env::var("CARGO_BIN_EXE_oddity-backend").expect("CARGO_BIN_EXE_oddity-backend");
+    let mut child = Command::new(&backend)
         .arg("--ipc")
         .env("HOME", &directory)
         .env("XDG_CONFIG_HOME", directory.join("config"))
