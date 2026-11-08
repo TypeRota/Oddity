@@ -308,14 +308,18 @@ const showProgress = computed(
     !awaitingInstall.value &&
     statusVisible.value &&
     state.download !== null &&
-    phase.value !== "checking" &&
+    (phase.value !== "checking" ||
+      (state.download.stage === "check" && state.download.totalFiles > 0)) &&
     (active.value ||
       state.download.pendingFiles > 0 ||
       phase.value === "preloaded"),
 );
 // 检查完成但尚未开始时只展示体积摘要，不显示 0% 进度条。
 const transferActive = computed(
-  () => downloading.value || phase.value === "cancelled",
+  () =>
+    downloading.value ||
+    phase.value === "checking" ||
+    phase.value === "cancelled",
 );
 const budgetVisible = computed(
   () =>
@@ -446,7 +450,11 @@ const isActive = computed(() => state.page === "update");
               <progress
                 :value="downloadView.progress"
                 max="100"
-                :aria-label="'资源下载进度 ' + downloadView.progress + '%'"
+                :aria-label="
+                  (phase === 'checking' ? '资源检查进度 ' : '资源下载进度 ') +
+                  downloadView.progress +
+                  '%'
+                "
               />
               <div class="download-meter__track" aria-hidden="true">
                 <motion.div
@@ -456,7 +464,7 @@ const isActive = computed(() => state.page === "update");
               </div>
             </div>
             <div v-if="transferActive" class="download-progress__meta">
-              <span v-if="state.download.verify"
+              <span v-if="state.download.verify || phase === 'checking'"
                 >已校验 {{ state.download.completedFiles }} /
                 {{ state.download.totalFiles }} 个文件</span
               >

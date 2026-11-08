@@ -1,7 +1,7 @@
 use crate::service::ServiceHandle;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -399,6 +399,9 @@ fn cap_download_throughput(mut throughput: Throughput, limit_bytes_per_second: u
     throughput
 }
 
+/// 检查期间进度事件的最小间隔; 清单条目多时避免频繁刷新界面.
+const CHECK_PROGRESS_INTERVAL: Duration = Duration::from_millis(120);
+
 fn check_game(
     app: &ServiceHandle,
     settings: &Settings,
@@ -429,18 +432,80 @@ fn check_game(
         throughput,
         settings.current().updates.limit_bytes_per_second,
     );
-    let plan = game::check::check_cancellable_with_estimates(
+    // 回调可能远密于界面刷新间隔, 交给单独的发布线程保留最新值;
+    // 开始哈希大文件时即使落在节流窗口内, 也会在间隔结束后补发.
+    let (progress_tx, progress_rx) = mpsc::channel();
+    let publisher = {
+        let app = app.clone();
+        std::thread::Builder::new()
+            .name("oddity-check-progress".into())
+            .spawn(move || publish_check_progress(&app, &progress_rx))
+            .map_err(|error| format!("启动检查进度线程失败: {error}"))?
+    };
+    let mut on_progress = move |progress: game::check::CheckProgress| {
+        let _ = progress_tx.send(progress);
+    };
+    let result = game::check::check_cancellable_observed(
         &game_config,
         CheckOptions {
             full,
             optional: OptionalSelection::Configured,
         },
         Some(&throughput),
+        &mut on_progress,
         &|| cancel.load(Ordering::Relaxed),
-    )
-    .map_err(|error| format!("检查游戏资源失败: {error}"))?;
+    );
+    // 先结束检查再等发布线程收尾, 保证进度先于计划状态落库.
+    drop(on_progress);
+    let _ = publisher.join();
+    let plan = result.map_err(|error| format!("检查游戏资源失败: {error}"))?;
     publish_game_plan(app, settings, root, &plan);
     Ok(plan)
+}
+
+/// 按固定间隔发布检查进度, 但始终补发最新值.
+///
+/// 只在回调里丢弃节流窗口内的事件会让界面停留在上一个文件, 而开始
+/// 哈希大文件后可能很久没有新回调; 这里保留最新值, 在间隔结束后补发.
+fn publish_check_progress(app: &ServiceHandle, rx: &mpsc::Receiver<game::check::CheckProgress>) {
+    let Ok(first) = rx.recv() else {
+        return;
+    };
+    publish_check_progress_state(app, &first);
+    let mut last = Instant::now();
+    let mut pending: Option<game::check::CheckProgress> = None;
+    loop {
+        let wait = CHECK_PROGRESS_INTERVAL.saturating_sub(last.elapsed());
+        match rx.recv_timeout(wait) {
+            Ok(progress) => pending = Some(progress),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Some(progress) = pending.take() {
+                    publish_check_progress_state(app, &progress);
+                    last = Instant::now();
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        if last.elapsed() >= CHECK_PROGRESS_INTERVAL {
+            if let Some(progress) = pending.take() {
+                publish_check_progress_state(app, &progress);
+                last = Instant::now();
+            }
+        }
+    }
+    if let Some(progress) = pending {
+        publish_check_progress_state(app, &progress);
+    }
+}
+
+fn publish_check_progress_state(app: &ServiceHandle, progress: &game::check::CheckProgress) {
+    publish(app, |status| {
+        status.total_files = progress.total;
+        status.completed_files = progress.checked;
+        status.current_file = progress.current.clone();
+        status.current_file_bytes = 0;
+        status.stage = "check".into();
+    });
 }
 
 fn publish_game_plan(
@@ -475,7 +540,14 @@ fn publish_game_plan(
         status.unverified_files = plan.unverified.len();
         status.pending_files = plan.items.len();
         status.total_bytes = total_bytes;
-        status.total_files = plan.items.len();
+        // 检查进度已经给出完成状态, 阶段切换前不要改写计数, 避免进度回跳.
+        if status.stage != "check" {
+            status.total_files = plan.items.len();
+            status.completed_files = 0;
+            status.current_file.clear();
+            status.current_file_bytes = 0;
+            status.stage.clear();
+        }
         status.patch_files = patch_files;
         status.patch_bytes = patch_bytes;
         status.full_files = plan.items.len().saturating_sub(patch_files);

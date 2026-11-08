@@ -1752,6 +1752,47 @@ describe("更新检查", () => {
     expect(c.downloadView.value.progress).toBe(100);
   });
 
+  it("检查期间按清单条目展示进度和当前文件", async () => {
+    const c = await boot();
+    backend.downloadHandler({
+      ...backend.downloadStatus,
+      mode: "check",
+      phase: "checking",
+      stage: "check",
+      completedFiles: 0,
+      totalFiles: 0,
+    });
+    await nextTick();
+    expect(wrapper!.findAll("#page-update progress")).toHaveLength(0);
+    backend.downloadHandler({
+      ...backend.downloadStatus,
+      mode: "check",
+      phase: "checking",
+      stage: "check",
+      completedFiles: 42,
+      totalFiles: 100,
+      currentFile: "Client/Content/Paks/pakchunk0.pak",
+    });
+    await nextTick();
+    expect(c.downloadView.value.progress).toBe(42);
+    expect(c.downloadView.value.stageText).toBe("检查");
+    expect(document.body.textContent).toContain("已校验 42 / 100 个文件");
+    expect(document.body.textContent).toContain(
+      "正在检查: Client/Content/Paks/pakchunk0.pak",
+    );
+    // 计划状态已落库但阶段尚未切换时, 不应把检查进度重置成 0%.
+    backend.downloadHandler({
+      ...backend.downloadStatus,
+      mode: "check",
+      phase: "checking",
+      stage: "",
+      completedFiles: 0,
+      totalFiles: 5,
+    });
+    await nextTick();
+    expect(wrapper!.findAll("#page-update progress")).toHaveLength(0);
+  });
+
   it("暂停后仍按已下载体积显示进度", async () => {
     const c = await boot();
     backend.downloadHandler({

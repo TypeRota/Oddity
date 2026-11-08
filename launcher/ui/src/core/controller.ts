@@ -683,6 +683,7 @@ export const diskBudget = computed(() => {
 });
 
 const DOWNLOAD_STAGE_LABELS: Record<string, string> = {
+  check: "检查",
   download: "下载",
   patch: "应用补丁",
   verify: "校验文件",
@@ -731,6 +732,7 @@ export const downloadView = computed(() => {
   };
   const phase = status?.phase || "idle";
   const verify = Boolean(status?.mode === "preload" && status.verify);
+  const checking = phase === "checking";
   const totalBytes = status?.totalBytes || 0;
   const downloadedBytes = status?.downloadedBytes || 0;
   const fileProgress = status?.totalFiles
@@ -755,7 +757,7 @@ export const downloadView = computed(() => {
     title: titles[phase],
     progress: ["ready", "preloaded"].includes(phase)
       ? 100
-      : Math.min(99, verify ? fileProgress : byteProgress),
+      : Math.min(99, verify || checking ? fileProgress : byteProgress),
     downloadedText: verify
       ? `${status?.completedFiles ?? 0} / ${status?.totalFiles ?? 0} 个文件`
       : totalBytes > 0 && downloadedBytes <= totalBytes

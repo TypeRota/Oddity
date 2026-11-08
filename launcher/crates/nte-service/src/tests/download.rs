@@ -531,6 +531,73 @@ fn unknown_large_files_require_verification_and_apply_repairs_them() {
 }
 
 #[test]
+fn check_publishes_file_progress_with_current_file() {
+    let fixture = Fixture::new(Distribution::Cn, true);
+    let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let observed = seen.clone();
+    fixture.app.subscribe("game-download-state", move |event| {
+        observed
+            .lock()
+            .unwrap()
+            .push(serde_json::from_value(event.clone()).unwrap());
+    });
+    fixture.run("check", false, false).unwrap();
+
+    let events = seen.lock().unwrap();
+    let checking: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|event| event["phase"] == "checking" && event["totalFiles"] == 2)
+        .collect();
+    let first = checking.first().expect("check progress");
+    assert_eq!(first["completedFiles"], 0);
+    assert_eq!(first["currentFile"], EXE);
+    let last = checking.last().unwrap();
+    assert_eq!(last["completedFiles"], 2);
+    assert_eq!(last["currentFile"], "");
+    assert_eq!(fixture.status().phase, "needs-verify");
+}
+
+#[test]
+fn check_progress_publishes_the_latest_file_after_throttling() {
+    let fixture = Fixture::new(Distribution::Cn, true);
+    let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let observed = seen.clone();
+    fixture.app.subscribe("game-download-state", move |event| {
+        observed
+            .lock()
+            .unwrap()
+            .push(serde_json::from_value(event.clone()).unwrap());
+    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    let app = fixture.app.clone();
+    let publisher = std::thread::spawn(move || publish_check_progress(&app, &rx));
+    tx.send(game::check::CheckProgress {
+        checked: 0,
+        total: 2,
+        current: "a.bin".into(),
+    })
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(10));
+    tx.send(game::check::CheckProgress {
+        checked: 1,
+        total: 2,
+        current: "b.pak".into(),
+    })
+    .unwrap();
+    drop(tx);
+    publisher.join().unwrap();
+
+    let events = seen.lock().unwrap();
+    let checking: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|event| event["stage"] == "check")
+        .collect();
+    assert_eq!(checking.len(), 2, "{events:?}");
+    assert_eq!(checking[0]["currentFile"], "a.bin");
+    assert_eq!(checking[1]["currentFile"], "b.pak");
+}
+
+#[test]
 fn verified_existing_files_are_recorded_by_apply_without_redownloading() {
     let fixture = Fixture::new(Distribution::Cn, true);
     fixture.run("apply", false, false).unwrap();
