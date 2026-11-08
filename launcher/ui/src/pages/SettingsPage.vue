@@ -39,6 +39,7 @@ import SettingRow from "../components/settings/SettingRow.vue";
 import LogExport from "../components/LogExport.vue";
 import EnvironmentSnapshots from "../components/EnvironmentSnapshots.vue";
 import InstallMigration from "../components/InstallMigration.vue";
+import AudioSettings from "../components/AudioSettings.vue";
 import GamepadSettings from "../components/GamepadSettings.vue";
 import BaseDisclosure from "../components/BaseDisclosure.vue";
 import type { IntegrityState, MeteredPolicy } from "../types/launcher";
@@ -521,8 +522,16 @@ const integritySummary = computed(() => {
               }"
               :transition="surface"
             >
+              <AudioSettings
+                v-if="visited.has(category.id) && category.id === 'audio'"
+                :active="
+                  navigation.category === 'audio' && state.page === 'settings'
+                "
+              />
               <GamepadSettings
-                v-if="visited.has(category.id) && category.id === 'gamepad'"
+                v-else-if="
+                  visited.has(category.id) && category.id === 'gamepad'
+                "
               />
               <template
                 v-else-if="

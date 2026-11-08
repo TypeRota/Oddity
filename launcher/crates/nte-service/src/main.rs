@@ -35,6 +35,7 @@ mod attendance_commands;
 mod protocol;
 mod service;
 use service::ServiceHandle;
+mod audio_commands;
 mod cli;
 mod direct_session;
 mod download_commands;
@@ -503,16 +504,17 @@ fn watch_game_exit(
                     .background
                     .as_ref()
                     .is_some_and(|background| background.game_alive().unwrap_or(true));
+            let mut audio_pids: Vec<_> = watch.known.keys().copied().collect();
+            if let Some(background) = &session.background {
+                if let Ok(pids) = background.game_pids() {
+                    audio_pids.extend(pids);
+                }
+            }
+            app.audio.processes(audio_pids.clone());
             if let Some(mode) = &session.game_mode {
                 if let Ok(mut mode) = mode.lock() {
                     if mode.needs_game_processes() {
-                        let mut pids: Vec<_> = watch.known.keys().copied().collect();
-                        if let Some(background) = &session.background {
-                            if let Ok(background_pids) = background.game_pids() {
-                                pids.extend(background_pids);
-                            }
-                        }
-                        mode.update_game_processes(&pids);
+                        mode.update_game_processes(&audio_pids);
                     }
                 }
             }
@@ -584,6 +586,7 @@ fn watch_game_exit(
                 if let Some(id) = session.snapshot.as_deref() {
                     snapshots.finish(id, None);
                 }
+                app.audio.processes(Vec::new());
                 finish_game_early(&app, &session);
                 return;
             }
@@ -614,6 +617,7 @@ fn finalize_game_session(
         return;
     }
     session.monitor_done.store(true, Ordering::Release);
+    app.audio.processes(Vec::new());
     if let Some(direct) = &session.direct {
         direct.close();
     }
@@ -1541,6 +1545,9 @@ fn save_settings(app: &service::Service, settings: Settings) -> Result<Bootstrap
     next.snapshot_success_minutes =
         nte_core::snapshots::normalize_success_minutes(next.snapshot_success_minutes);
     next.gamepad.validate()?;
+    for game in next.games.values() {
+        game.audio.validate()?;
+    }
     next.current()
         .game_mode
         .gamescope
@@ -1574,6 +1581,7 @@ fn save_settings(app: &service::Service, settings: Settings) -> Result<Bootstrap
         return Err("游戏资源任务正在进行, 暂时无法修改游戏地区或安装目录".into());
     }
     persist_settings(&next)?;
+    app.audio.preferences(next.current().audio.clone());
     *current = next.clone();
     drop(game);
     drop(current);
@@ -2168,6 +2176,7 @@ fn launch_impl_inner(
         cmd.arg(&exe);
     }
     cmd.args(&args);
+    nte_core::audio::configure(&mut cmd)?;
     cmd.env("WINEPREFIX", &prefix)
         .env("PROTONPATH", &proton.root)
         .env("GAMEID", "0")

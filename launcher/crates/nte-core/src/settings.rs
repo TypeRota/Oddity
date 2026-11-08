@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GameSettings {
+    pub audio: crate::audio::Options,
     pub distribution: Distribution,
     pub install_root: Option<String>,
     pub global_install_root: Option<String>,
@@ -29,6 +30,7 @@ pub struct GameSettings {
 impl Default for GameSettings {
     fn default() -> Self {
         Self {
+            audio: crate::audio::Options::default(),
             distribution: Distribution::Cn,
             install_root: None,
             global_install_root: None,
@@ -146,6 +148,9 @@ impl Settings {
         let mut settings: Settings = serde_json::from_value(value.clone())
             .map_err(|error| Error::Parse(format!("设置字段无效: {error}")))?;
         settings.normalize();
+        for game in settings.games.values() {
+            game.audio.validate().map_err(Error::Parse)?;
+        }
         if migrated {
             // 备份或写入失败时继续使用内存中的迁移结果, 原文件留待下次启动重试.
             if let Err(error) = persist_migration(path, &original, &value) {
@@ -523,5 +528,32 @@ mod tests {
         let settings = Settings::load(&dir.join("settings.json")).unwrap();
         assert_eq!(settings.active_game, GameId::Nte);
         assert_eq!(settings.current().launch_mode, "background");
+    }
+}
+
+#[cfg(test)]
+mod audio_tests {
+    #[test]
+    fn audio_preferences_persist_and_old_settings_use_defaults() {
+        use super::*;
+        let mut settings = Settings::default();
+        settings.current_mut().audio = crate::audio::Options {
+            device: Some("headphones".into()),
+            volume: 130,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        assert_eq!(
+            Settings::load(&path).unwrap().current().audio,
+            settings.current().audio
+        );
+        fs::write(&path, r#"{"games":{"nte":{}}}"#).unwrap();
+        assert_eq!(
+            Settings::load(&path).unwrap().current().audio,
+            crate::audio::Options::default()
+        );
+        fs::write(&path, r#"{"games":{"nte":{"audio":{"volume":151}}}}"#).unwrap();
+        assert!(Settings::load(&path).is_err());
     }
 }

@@ -184,6 +184,7 @@ const mock: Bootstrap = {
     activeGame: "nte",
     games: {
       nte: {
+        audio: { device: null, volume: 100 },
         distribution: "cn",
         installRoot: null,
         globalInstallRoot: null,
@@ -1527,6 +1528,13 @@ async function previewInvoke(
       };
     case "game_mode_gpu_apply":
       throw new Error("请在原生启动器中应用 GPU 配置");
+    case "audio_status":
+      return {
+        devices: [{ index: 1, name: "demo-output", label: "系统输出设备" }],
+        defaultDevice: "demo-output",
+        streams: [],
+        error: null,
+      };
     case "game_mode_status":
       return {
         capabilities: (

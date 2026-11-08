@@ -2,6 +2,7 @@ import { reactive } from "vue";
 
 export const settingsCategories = [
   { id: "appearance", label: "外观与交互", icon: "i-monitor" },
+  { id: "audio", label: "音频", icon: "i-speaker-high" },
   { id: "gamepad", label: "手柄", icon: "i-game-controller" },
   { id: "game", label: "游戏与启动", icon: "i-game-controller" },
   { id: "runtime", label: "运行环境", icon: "i-hard-drives" },
@@ -15,6 +16,20 @@ export const settingsNavigation = reactive<{
 }>({ category: "appearance", query: "" });
 
 export const settingsEntries = [
+  {
+    id: "audio-output",
+    category: "audio",
+    label: "游戏输出设备",
+    description: "为游戏选择音频输出设备.",
+    keywords: "声音 音频 耳机 音箱 扬声器 默认 设备",
+  },
+  {
+    id: "audio-volume",
+    category: "audio",
+    label: "游戏音量",
+    description: "调整游戏音量, 支持静音与音量增强.",
+    keywords: "声音 音频 增益 减益 放大 静音 音量",
+  },
   {
     id: "gamepad",
     category: "gamepad",

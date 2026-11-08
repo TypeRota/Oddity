@@ -56,6 +56,7 @@ fn requires_current_game(command: &str) -> bool {
             | "game_mode_gpu_apply"
             | "game_mode_tuning_info"
             | "game_mode_tuning_apply"
+            | "audio_status"
             | "game_mode_status"
             | "game_resource_catalog"
             | "game_preload_delete"
@@ -711,6 +712,9 @@ pub async fn dispatch(
                 .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,
         )
         .map_err(|e| json!(e.to_string())),
+        "audio_status" => {
+            serde_json::to_value(app.audio.status()).map_err(|e| json!(e.to_string()))
+        }
         "game_mode_status" => serde_json::to_value(
             crate::game_mode_status(&app.state)
                 .await

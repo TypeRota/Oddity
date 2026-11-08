@@ -5,6 +5,7 @@
 //! exposes only the public launcher and resource-update behavior.
 
 pub mod attendance;
+pub mod audio;
 pub mod background;
 pub mod bulletin;
 pub mod config;

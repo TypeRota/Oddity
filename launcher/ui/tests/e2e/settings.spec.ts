@@ -5,7 +5,7 @@ test("分类显示相关设置, 保存现有数据且切换时保留滚动位置
   await page.setViewportSize({ width: 1180, height: 480 });
   await page.goto("/#settings");
   const nav = page.getByRole("navigation", { name: "设置分类" });
-  await expect(nav.getByRole("button")).toHaveCount(6);
+  await expect(nav.getByRole("button")).toHaveCount(7);
   await expect(
     nav.getByRole("button", { name: "手柄", exact: true }),
   ).toBeVisible();

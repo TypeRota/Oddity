@@ -2,6 +2,7 @@ import type { GameId, GameSettings, Settings } from "../types/launcher";
 import { defaultGamescope } from "./gameMode";
 
 const DEFAULT_GAME_SETTINGS: GameSettings = {
+  audio: { device: null, volume: 100 },
   distribution: "cn",
   installRoot: null,
   globalInstallRoot: null,

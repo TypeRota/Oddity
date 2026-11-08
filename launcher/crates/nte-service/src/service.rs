@@ -13,6 +13,7 @@ type Listener = (String, Box<dyn Fn(Value) + Send + 'static>);
 
 pub struct Service {
     pub state: AppState,
+    pub audio: crate::audio_commands::Audio,
     pub downloads: crate::download_commands::DownloadManager,
     pub integrity: crate::integrity_commands::IntegrityMonitor,
     pub playtime: crate::playtime_commands::Playtime,
@@ -38,7 +39,10 @@ impl Service {
         input: mpsc::SyncSender<InputTask>,
         data: &std::path::Path,
     ) -> Self {
+        let audio = crate::audio_commands::Audio::default();
+        audio.preferences(settings.current().audio.clone());
         Self {
+            audio,
             state: AppState {
                 settings: Mutex::new(settings),
                 game: Mutex::new(GameTracker::default()),

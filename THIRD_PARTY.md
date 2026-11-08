@@ -18,6 +18,10 @@ Rust 依赖见 [Cargo.lock](launcher/Cargo.lock), 许可证检查配置见 [deny
 
 游戏差分补丁使用 [hdiffpatch-rs](https://github.com/TwintailTeam/hdiffpatch-rs), 许可证为 MIT.
 
+音频设备与游戏播放流控制使用 [libpulse-binding](https://github.com/jnqnfe/pulse-binding-rust), 许可证为 MIT / Apache-2.0; 通过系统 libpulse 连接 PulseAudio 或 pipewire-pulse. 设备和播放流分别管理的设计参考 [pulsemixer](https://github.com/GeorgeFilipkin/pulsemixer) (MIT), 未复制其代码.
+
+音频启动环境中的 `target.object` 属性用于让 Easy Effects 保留游戏的独立路由, 依据其 [播放流目标识别逻辑](https://github.com/wwmm/easyeffects/blob/master/src/pw_node_manager.cpp); 未复制其代码.
+
 ## 颜色计算
 
 | 用途           | 来源                                                                                                             | 许可证        |

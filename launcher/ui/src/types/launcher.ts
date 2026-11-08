@@ -135,7 +135,24 @@ export interface UpdateSettings {
   window: UpdateWindow | null;
 }
 export type GameId = "nte" | "hsr";
+export interface AudioOptions {
+  device: string | null;
+  volume: number;
+}
+export interface AudioStatus {
+  devices: { index: number; name: string; label: string }[];
+  defaultDevice: string | null;
+  streams: {
+    index: number;
+    pid: number | null;
+    device: number;
+    volume: number;
+    muted: boolean;
+  }[];
+  error: string | null;
+}
 export interface GameSettings {
+  audio: AudioOptions;
   distribution: "cn" | "global";
   installRoot: string | null;
   globalInstallRoot: string | null;
@@ -543,6 +560,7 @@ export interface Commands {
   take_launch_error: string | null;
   playtime_history: PlaytimeHistory;
   playtime_export_poster: string;
+  audio_status: AudioStatus;
   game_mode_status: GameModeStatus;
   game_mode_gpu_info: GpuInfo;
   game_mode_tuning_info: GameModeTuning;
@@ -569,6 +587,7 @@ export interface Commands {
   win_hide: null;
 }
 export interface CommandArgs {
+  audio_status: Record<string, never>;
   runtime_setup_info: undefined;
   runtime_setup_plan: {
     allUsers: boolean;

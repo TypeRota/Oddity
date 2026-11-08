@@ -58,6 +58,7 @@ export const commands = {
   take_launch_error: true,
   playtime_history: true,
   playtime_export_poster: true,
+  audio_status: true,
   game_mode_status: true,
   game_mode_gpu_info: true,
   game_mode_tuning_info: true,

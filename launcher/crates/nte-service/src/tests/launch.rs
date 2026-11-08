@@ -25,6 +25,9 @@ fn gamescope_preserves_the_umu_handoff_and_environment() {
     let invocation = launch_impl(&settings).unwrap();
     let dump = fixture.dump();
     assert!(dump.contains("NTEGame.exe") && dump.contains("WINEPREFIX="));
+    assert!(env_value(&dump, "PULSE_PROP")
+        .unwrap()
+        .contains("oddity-managed-game"));
     assert_eq!(env_value(&dump, "PROTON_ENABLE_WAYLAND"), Some("0"));
     assert_eq!(env_value(&dump, "PROTON_USE_WAYLAND"), Some("0"));
     let options = std::fs::read_to_string(options_log).unwrap();

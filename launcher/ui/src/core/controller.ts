@@ -446,6 +446,7 @@ async function announcePlaytimeExit(fallback: string) {
 }
 
 export const form = reactive({
+  audio: { device: null as string | null, volume: 100 },
   gamepad: defaultGamepadOptions(),
   installRoot: "",
   globalInstallRoot: "",
@@ -1490,6 +1491,7 @@ export function applyBootstrap(
   );
 
   Object.assign(form.gamepad, settings.gamepad);
+  Object.assign(form.audio, saved.audio ?? { device: null, volume: 100 });
   form.updates.autoDownload = saved.updates?.autoDownload ?? false;
   form.updates.metered = saved.updates?.metered ?? "ask";
   form.updates.limitBytesPerSecond = saved.updates?.limitBytesPerSecond ?? 0;
@@ -2423,6 +2425,7 @@ function currentSettings(): Settings {
     ...(state.bootstrap?.settings.games ?? {}),
   };
   const game: GameSettings = {
+    audio: { ...form.audio },
     installRoot: persisted
       ? savedGame.installRoot
       : form.installRoot.trim() || null,
