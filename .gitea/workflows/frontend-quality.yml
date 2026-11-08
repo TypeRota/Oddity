@@ -1,0 +1,57 @@
+name: 前端质量检查
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+concurrency:
+  group: frontend-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend-quality:
+    name: 前端质量检查
+    runs-on: heavy
+    timeout-minutes: 20
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - name: 检出代码
+        run: |
+          rm -rf checkout
+          mkdir -p checkout
+          cd checkout
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --depth 1 origin "$GITHUB_REF" || git fetch --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          git log --oneline -1
+      - name: 安装依赖
+        run: |
+          # 项目 engines 要求 Node >= 24.19, runner 自带 Node 24 装在 /data/workspace/node24.
+          export PATH=/data/workspace/node24/bin:$PATH
+          node -v
+          pnpm -v
+          cd checkout/launcher/ui
+          pnpm install --frozen-lockfile
+      - name: 格式检查
+        run: |
+          export PATH=/data/workspace/node24/bin:$PATH
+          cd checkout/launcher/ui
+          pnpm run format:check
+      - name: 样式检查
+        run: |
+          export PATH=/data/workspace/node24/bin:$PATH
+          cd checkout/launcher/ui
+          pnpm run lint:css
+      - name: 构建
+        run: |
+          export PATH=/data/workspace/node24/bin:$PATH
+          cd checkout/launcher/ui
+          pnpm run build
+      - name: 覆盖率
+        run: |
+          export PATH=/data/workspace/node24/bin:$PATH
+          cd checkout/launcher/ui
+          pnpm run test:coverage
