@@ -12,7 +12,7 @@ Oddity 负责资源检查, 下载和启动; 游戏本身仍由 Proton 运行. �
 | 游戏环境 | `umu-launcher`, Proton, 在设置中创建的运行环境 |
 | 存储 | 可写的游戏安装目录, 首次安装需要完整游戏资源 |
 
-> 安装包会声明 GTK 3, NSS 等必需依赖. `umu-launcher` 在 `.deb` 和 `.rpm` 中为推荐依赖, 在 Arch 包中为可选依赖, 需要确认已经安装.
+> 安装包声明 GTK 3, NSS, Python 和提供 `pkexec` 的软件包为必需依赖. 启动环境向导页面自动准备 umu 和 Proton; AppImage 会提示缺少的宿主依赖.
 
 > 视频解码使用随应用提供的 Chromium/FFmpeg. 安装包包含运行时, 无需另行安装 Electron.
 
@@ -118,7 +118,11 @@ CPU 与优先级通过独立“应用配置”按钮授权写入 `/etc/gamemode.
 
 ## 准备游戏环境
 
-Oddity 通过 `umu-run` 调用 Proton. 开始前需要安装 `umu-run` 和 Proton, 再在设置中创建运行环境.
+打开 Oddity 时, 缺少启动环境会自动进入配置页面并开始准备. 默认仅为当前用户安装 umu; 勾选 **为全部用户安装 umu** 时, 页面列出系统安装操作, 经 `pkexec` 授权后执行. Proton 安装到当前用户的 Steam `compatibilitytools.d` 目录.
+
+也可选择本地 Proton, 或通过 **设置 → 运行环境 → 打开向导** 重新进入引导. 组件配置完成后, 已安装游戏会自动创建环境; 稍后安装的游戏在启动时自动创建环境. 详情见[启动环境向导](runtime-setup.md).
+
+以下为手动安装方式.
 
 ### umu-launcher
 
@@ -131,7 +135,7 @@ Oddity 通过 `umu-run` 调用 Proton. 开始前需要安装 `umu-run` 和 Proto
 Arch 的 `umu-launcher` 位于 [multilib 仓库](https://archlinux.org/packages/multilib/x86_64/umu-launcher/), 需要先确认该仓库已启用:
 
 ```bash
-sudo pacman -S --needed multilib/umu-launcher
+pkexec pacman -S --needed multilib/umu-launcher
 ```
 
 若提示找不到仓库或目标, 请检查 `/etc/pacman.conf` 的 `[multilib]` 配置并更新软件包数据库, 仓库启用方法见 [ArchWiki](https://wiki.archlinux.org/title/Official_repositories#multilib).
@@ -200,7 +204,7 @@ Proton 运行环境保存 Windows 环境和登录状态. 在 **设置 → 运行
 
 **新安装**
 
-先选择一个空目录, 再打开 **更新** 安装资源.
+先选择一个空目录, 再打开 **更新** 安装资源. 已自动配置启动组件时, 安装完成后启动游戏会自动创建运行环境.
 
 国服和国际服的安装目录互相独立, 切换地区不会移动或覆盖另一区服的文件.
 

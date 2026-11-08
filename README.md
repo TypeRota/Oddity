@@ -68,8 +68,8 @@ NixOS 和 Gentoo 请参阅 [Nix 指南](docs/nix.md) 与 [Gentoo 指南](docs/ge
 
 ## _Getting Started_
 
-1. 安装 `umu-launcher` 和 Proton，参见[环境准备](docs/install.md#准备游戏环境)。
-2. 在 **设置** 中选择区服、游戏目录，并创建 Proton 运行环境。
+1. 按首次启动引导自动配置运行环境, 参见[启动环境向导](docs/runtime-setup.md).
+2. 选择区服和游戏目录. 自动配置完成后, 游戏运行环境会自动创建.
 3. 前往 **更新** 检查资源，完成后即可从 **启动** 页面进入游戏。
 
 首次安装需要下载游戏资源，请预留足够空间。

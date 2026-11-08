@@ -36,6 +36,7 @@ fn requires_current_game(command: &str) -> bool {
             | "game_status"
             | "take_launch_error"
             | "close_game"
+            | "runtime_setup_environment"
             | "environment_create"
             | "environment_action"
             | "migration_plan"
@@ -312,6 +313,52 @@ pub async fn dispatch(
         }
         "game_download_cancel" => serde_json::to_value(
             crate::download_commands::game_download_cancel(&app.downloads),
+        )
+        .map_err(|e| json!(e.to_string())),
+        "runtime_setup_info" => {
+            serde_json::to_value(crate::runtime_setup_commands::info(&app).map_err(|e| json!(e))?)
+                .map_err(|e| json!(e.to_string()))
+        }
+        "runtime_setup_status" => {
+            serde_json::to_value(crate::runtime_setup_commands::status(&app).map_err(|e| json!(e))?)
+                .map_err(|e| json!(e.to_string()))
+        }
+        "runtime_setup_dismiss" => {
+            crate::runtime_setup_commands::dismiss().map_err(|e| json!(e))?;
+            Ok(Value::Null)
+        }
+        "runtime_setup_plan" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                all_users: bool,
+                proton: Option<String>,
+                create_environment: bool,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            crate::service::spawn_blocking(move || {
+                crate::runtime_setup_commands::plan(
+                    &app,
+                    args.all_users,
+                    args.proton,
+                    args.create_environment,
+                )
+            })
+            .await
+            .map_err(|e| json!(e.to_string()))?
+            .map_err(|e| json!(e))
+            .and_then(|p| serde_json::to_value(p).map_err(|e| json!(e.to_string())))
+        }
+        "runtime_setup_apply" => {
+            crate::runtime_setup_commands::apply(app)
+                .await
+                .map_err(|e| json!(e))?;
+            Ok(Value::Null)
+        }
+        "runtime_setup_environment" => serde_json::to_value(
+            crate::runtime_setup_commands::ensure_environment(app)
+                .await
+                .map_err(|e| json!(e))?,
         )
         .map_err(|e| json!(e.to_string())),
         "environment_create" => {

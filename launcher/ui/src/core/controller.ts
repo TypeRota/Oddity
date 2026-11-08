@@ -61,6 +61,7 @@ const downloadStarting = ref<"check" | "apply" | "launcher" | "preload" | null>(
   null,
 );
 export const runtimeEnvironmentBusy = ref(false);
+export const runtimeSetupAutomatic = ref(false);
 export const runtimeEnvironmentError = ref("");
 export const migration = reactive({
   plan: null as MigrationPlan | null,
@@ -1406,7 +1407,7 @@ export function closeDemoNotice() {
   } catch {}
 }
 
-function applyBootstrap(
+export function applyBootstrap(
   data: Bootstrap,
   announceError = true,
   syncForm = true,
@@ -2204,17 +2205,26 @@ async function launchGame() {
       return;
     }
   }
-  if (!state.bootstrap?.prefixExists) {
-    openSettings("runtime");
-    notify("请先在设置中创建并选择 Proton 运行环境.", "error", 6500, {
-      key: "runtime-required",
-      primary: {
-        label: "打开设置",
-        icon: "i-gear-six",
-        run: () => openSettings("runtime"),
-      },
+  if (!state.bootstrap?.umuAvailable || !state.bootstrap?.prefixExists) {
+    runtimeEnvironmentBusy.value = true;
+    const notice = notify("正在准备游戏运行环境.", "info", 0, {
+      key: "runtime-preparing",
     });
-    return;
+    const prepared = await invoke("runtime_setup_environment")
+      .then((data) => {
+        applyBootstrap(data, false);
+        return data.umuAvailable && data.prefixExists;
+      })
+      .catch((error: unknown) => {
+        notify(String(error), "error", 6500);
+        return false;
+      });
+    runtimeEnvironmentBusy.value = false;
+    dismissNotification(notice);
+    if (!prepared) {
+      showPage("runtime-setup");
+      return;
+    }
   }
   if (!isDesktop()) notify("浏览器预览：模拟启动流程。", "ok", 2600);
   setLaunchState("launching");
@@ -2805,6 +2815,7 @@ function hashPage() {
   const value = window.location.hash.replace(/^#/, "");
   return [
     "home",
+    "runtime-setup",
     "update",
     "game-mode",
     "bulletin",
@@ -2844,6 +2855,7 @@ export function showPage(name: string | undefined, syncHash = true) {
     !name ||
     ![
       "home",
+      "runtime-setup",
       "update",
       "game-mode",
       "bulletin",
@@ -3005,6 +3017,7 @@ async function watchWindowShape() {
 }
 
 export async function init() {
+  runtimeSetupAutomatic.value = false;
   const epoch = ++generation;
   checkRefreshPending = false;
   // 子组件先挂载时发起的读取属于上一代, 在此重新加载当前状态。
@@ -3057,7 +3070,13 @@ export async function init() {
   try {
     const data = await invoke("bootstrap");
     if (epoch !== generation) return;
-    applyBootstrap(data);
+    const setup = await invoke("runtime_setup_info");
+    if (epoch !== generation) return;
+    applyBootstrap(data, !setup.needsSetup && state.page !== "runtime-setup");
+    if (setup.needsSetup) {
+      runtimeSetupAutomatic.value = true;
+      showPage("runtime-setup");
+    }
   } catch (error) {
     if (epoch !== generation) return;
     ui.setupNeeded = true;

@@ -493,6 +493,12 @@ export interface SnapshotComparison {
 }
 
 export interface Commands {
+  runtime_setup_info: RuntimeSetupInfo;
+  runtime_setup_plan: RuntimeSetupPlan;
+  runtime_setup_apply: null;
+  runtime_setup_status: RuntimeSetupStatus;
+  runtime_setup_dismiss: null;
+  runtime_setup_environment: Bootstrap;
   browse_files: FileListing;
   gamepad_poll: GamepadSnapshot;
   gamepad_release_idle: null;
@@ -563,6 +569,16 @@ export interface Commands {
   win_hide: null;
 }
 export interface CommandArgs {
+  runtime_setup_info: undefined;
+  runtime_setup_plan: {
+    allUsers: boolean;
+    proton: string | null;
+    createEnvironment: boolean;
+  };
+  runtime_setup_apply: undefined;
+  runtime_setup_status: undefined;
+  runtime_setup_dismiss: undefined;
+  runtime_setup_environment: undefined;
   browse_files: { path: string | null };
   gamepad_poll: undefined;
   gamepad_release_idle: undefined;
@@ -669,4 +685,34 @@ declare global {
   interface Window {
     __NTE_PREVIEW__?: PreviewPaths;
   }
+}
+
+export interface RuntimeSetupInfo {
+  environment: RuntimeEnvironment | null;
+  needsSetup: boolean;
+  umu: string | null;
+  proton: string | null;
+  protonDirectory: string;
+  systemUmu: boolean;
+}
+export interface RuntimeSetupPlan {
+  umu: string;
+  proton: string;
+  installUmu: boolean;
+  installProton: boolean;
+  systemCommand: string[] | null;
+  umuVersion: string;
+  log: string;
+}
+export interface RuntimeSetupStatus {
+  busy: boolean;
+  progress: {
+    component: "umu" | "proton" | "runtime";
+    phase: string;
+    detail: string;
+    downloaded: number;
+    total: number;
+  };
+  error: string | null;
+  done: boolean;
 }

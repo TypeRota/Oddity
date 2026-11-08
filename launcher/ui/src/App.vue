@@ -33,6 +33,7 @@ import UpdatePage from "./pages/UpdatePage.vue";
 import BulletinPage from "./pages/BulletinPage.vue";
 import GameModePage from "./pages/GameModePage.vue";
 import PlaytimePage from "./pages/PlaytimePage.vue";
+import RuntimeSetupPage from "./pages/RuntimeSetupPage.vue";
 import SettingsPage from "./pages/SettingsPage.vue";
 import IconSprite from "./components/icons/IconSprite.vue";
 import { gamepad, startGamepad } from "./core/gamepad";
@@ -151,6 +152,7 @@ onBeforeUnmount(() => {
           <BulletinPage />
           <PlaytimePage />
           <SettingsPage />
+          <RuntimeSetupPage />
         </main>
       </div>
       <NotificationCenter />

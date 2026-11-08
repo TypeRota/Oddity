@@ -3,6 +3,7 @@ import { motion, useAnimate } from "motion-v";
 import { computed, nextTick, reactive, ref, watch } from "vue";
 import {
   state,
+  showPage,
   ui,
   form,
   applyTheme,
@@ -915,9 +916,18 @@ const integritySummary = computed(() => {
                 v-else-if="
                   visited.has(category.id) && category.id === 'runtime'
                 "
+                class="runtime-settings"
                 data-setting="runtime"
                 tabindex="-1"
               >
+                <SettingGroup title="启动环境向导">
+                  <BaseButton
+                    icon="i-terminal-window"
+                    :disabled="runtimePathsLocked"
+                    @click="showPage('runtime-setup')"
+                    >打开向导</BaseButton
+                  >
+                </SettingGroup>
                 <RuntimeEnvironments />
               </div>
               <template

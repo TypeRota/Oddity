@@ -158,7 +158,7 @@ function checkDeb(path, version, releaseManifest) {
     ".deb 的 Version 不正确",
   );
   const depends = output("dpkg-deb", ["-f", path, "Depends"]);
-  for (const name of ["libsecret-1-0", "xdg-utils"]) {
+  for (const name of ["libsecret-1-0", "xdg-utils", "pkexec", "python3"]) {
     check(depends.includes(name), `.deb 缺少依赖 ${name}`);
   }
   const contents = output("dpkg-deb", ["-c", path]);
@@ -221,7 +221,7 @@ function checkRpm(path, version, releaseManifest) {
     ".rpm 的 VERSION/RELEASE/ARCH 不正确",
   );
   const requires = output("rpm", ["-qpR", path]);
-  for (const name of ["libsecret-1.so.0()(64bit)", "xdg-utils"]) {
+  for (const name of ["libsecret-1.so.0()(64bit)", "xdg-utils", "polkit", "python3"]) {
     check(requires.includes(name), `.rpm 缺少依赖 ${name}`);
   }
   const files = output("rpm", ["-qpl", path]);
@@ -290,7 +290,7 @@ function checkArch(path, version, releaseManifest) {
     .split("\n")
     .filter((line) => line.startsWith("depend = "))
     .join("\n");
-  for (const name of ["nss", "gtk3", "libsecret", "xdg-utils"]) {
+  for (const name of ["nss", "gtk3", "libsecret", "xdg-utils", "polkit", "python"]) {
     check(depends.includes(name), `.pkg.tar.zst 缺少依赖 ${name}`);
   }
   const desktop = output("bsdtar", [

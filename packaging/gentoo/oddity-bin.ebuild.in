@@ -19,6 +19,8 @@ RESTRICT="strip"
 QA_PREBUILT="*"
 
 RDEPEND="
+	sys-auth/polkit
+	>=dev-lang/python-3.10
 	app-accessibility/at-spi2-core
 	app-crypt/libsecret
 	dev-libs/glib:2

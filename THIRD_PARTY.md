@@ -55,3 +55,17 @@ Rust 依赖见 [Cargo.lock](launcher/Cargo.lock), 许可证检查配置见 [deny
 ## Electron 运行时
 
 图形界面使用 Electron 44 (MIT), 其中的 Chromium、Node.js 与 FFmpeg 使用各自许可. 发行目录保留 Electron 的 `LICENSE` 与完整 `LICENSES.chromium.html`; Oddity 的 GPL-3.0-or-later 许可证位于 `LICENSE.oddity`.
+
+## 启动环境准备
+
+| 组件 | 用途 | 许可证 |
+| --- | --- | --- |
+| [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher) | 下载官方 zipapp 或通过系统软件包安装, 调用它准备 Steam Linux Runtime 和 prefix | [GPL-3.0](https://github.com/Open-Wine-Components/umu-launcher/blob/main/LICENSE) |
+| [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom) | 下载并安装官方兼容工具分发包 | [上游各组件许可证](https://github.com/GloriousEggroll/proton-ge-custom#license) |
+| [Heroic Games Launcher](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher) | 参考兼容层下载管理与 umu 集成的职责划分, 未复制代码 | [GPL-3.0](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/blob/main/LICENSE) |
+
+下载的 umu、Proton 和 Steam Linux Runtime 保留各自分发包中的许可证. Rust tar 解包依赖使用 MIT/Apache-2.0, 版本见 Cargo.lock.
+
+## 完成礼花
+
+启动环境向导使用 [canvas-confetti](https://github.com/catdad/canvas-confetti) 的粒子物理与 Canvas 渲染, 许可证为 [ISC](https://github.com/catdad/canvas-confetti/blob/master/LICENSE). 发射时序由 Anime.js 编排, 尊重减少动态效果设置, 离开向导时清理粒子.

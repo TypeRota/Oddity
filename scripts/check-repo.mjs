@@ -34,7 +34,8 @@ function checkVersionConsistency() {
   const version = cargo[1];
   const versions = {
     "launcher/Cargo.toml": version,
-    "launcher/ui/package.json": JSON.parse(read("launcher/ui/package.json")).version,
+    "launcher/ui/package.json": JSON.parse(read("launcher/ui/package.json"))
+      .version,
   };
 
   for (const [file, value] of Object.entries(versions)) {
@@ -75,7 +76,9 @@ function checkMarkdownLinks() {
     const text = readFileSync(file, "utf8");
     const targets = [];
 
-    for (const match of text.matchAll(/!?\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
+    for (const match of text.matchAll(
+      /!?\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
+    )) {
       targets.push(match[1]);
     }
     for (const match of text.matchAll(/<img\b[^>]*\bsrc="([^"]+)"/gi)) {
@@ -118,8 +121,7 @@ function checkTrackedPaths() {
 
   const privatePrefixes = ["internal/", "research/", "docs/evidence/"];
   for (const path of tracked) {
-    const controllerTest = /^internal\/gamepad\/(?:acceptance\/[^/]+\.test\.ts|tests\/[^/]+\.(?:rs|json)|rust\/src\/lib\.rs)$/.test(path);
-    if (!controllerTest && privatePrefixes.some((prefix) => path.startsWith(prefix))) {
+    if (privatePrefixes.some((prefix) => path.startsWith(prefix))) {
       fail(`私有路径被纳入了版本管理: ${path}`);
     }
   }
@@ -180,4 +182,6 @@ console.log("仓库检查通过");
 console.log(`  MD 文件: ${links.files}`);
 console.log(`  有效的本地链接: ${links.checked}`);
 console.log(`  纳入版本管理的文件: ${tracked}`);
-console.log(`  版本号: ${read("launcher/Cargo.toml").match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? "unknown"}`);
+console.log(
+  `  版本号: ${read("launcher/Cargo.toml").match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? "unknown"}`,
+);

@@ -49,6 +49,7 @@ mod log_commands;
 mod migration_commands;
 mod native_session;
 mod playtime_commands;
+mod runtime_setup_commands;
 mod snapshot_commands;
 mod update_scheduler;
 
@@ -935,18 +936,8 @@ fn persist_settings(settings: &Settings) -> Result<(), String> {
     Ok(())
 }
 
-fn which(cmd: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(cmd);
-        if let Ok(meta) = fs::metadata(&candidate) {
-            if meta.is_file() && (meta.permissions().mode() & 0o111) != 0 {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
+#[cfg(test)]
+use nte_core::runtime_setup::executable as which;
 
 fn game_profile(settings: &Settings) -> &'static GameProfile {
     settings.active_game.profile()
@@ -1289,7 +1280,7 @@ fn bootstrap_impl(settings: &Settings) -> Bootstrap {
         error.get_or_insert(message);
     }
     let proton = detect_proton(settings);
-    let umu = which("umu-run");
+    let umu = nte_core::runtime_setup::umu(&data_dir());
     let official_exe = launcher_root
         .as_ref()
         .and_then(|root| current_region(settings).map(|region| root.join(region.client_exe)));
@@ -1929,7 +1920,8 @@ fn launch_impl_inner(
     let direct_exe = game_exe_for(profile, &launcher_root);
     let prefix = environment_commands::prefix(settings)?;
     environment_commands::verify_proton(settings)?;
-    let umu = which("umu-run").ok_or_else(|| "PATH 中未找到 umu-run".to_string())?;
+    let umu = nte_core::runtime_setup::umu(&data_dir())
+        .ok_or_else(|| "PATH 中未找到 umu-run".to_string())?;
     let proton = detect_proton(settings)
         .ok_or_else(|| "未找到可用的 Proton（需要 proton 与 toolmanifest.vdf）".to_string())?;
     if !prefix.join("drive_c").is_dir() {

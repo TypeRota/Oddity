@@ -85,10 +85,10 @@ pub fn log_dir(settings: &Settings) -> Result<PathBuf, String> {
     Ok(data_dir().join("logs/environments").join(&environment.id))
 }
 
-struct Task<'a>(&'a AppState);
+pub(crate) struct Task<'a>(&'a AppState);
 
 impl<'a> Task<'a> {
-    fn begin(
+    pub(crate) fn begin(
         state: &'a AppState,
         downloads: &crate::download_commands::DownloadManager,
     ) -> Result<Self, String> {
@@ -168,6 +168,7 @@ pub async fn environment_create(
             &name,
             &proton_path,
             distribution,
+            true,
         )
     })
     .await
@@ -176,13 +177,14 @@ pub async fn environment_create(
     Ok(bootstrap)
 }
 
-fn create_impl(
+pub(crate) fn create_impl(
     state: &AppState,
     downloads: &crate::download_commands::DownloadManager,
     source_id: Option<&str>,
     name: &str,
     proton_path: &str,
     distribution: Distribution,
+    require_installed: bool,
 ) -> Result<Bootstrap, String> {
     let _task = Task::begin(state, downloads)?;
     let snapshot = state
@@ -198,7 +200,7 @@ fn create_impl(
         return Err("运行环境名称已存在".into());
     }
     let target = installation(&snapshot, distribution);
-    if !target.installed {
+    if require_installed && !target.installed {
         return Err(format!(
             "尚未安装{}, 请先安装游戏",
             if distribution == Distribution::Cn {
@@ -288,7 +290,7 @@ pub fn proton_path(settings: &Settings) -> Option<&Path> {
         .map(|entry| entry.proton.path.as_path())
 }
 
-fn action_impl(
+pub(crate) fn action_impl(
     state: &AppState,
     downloads: &crate::download_commands::DownloadManager,
     action: &str,
@@ -593,6 +595,7 @@ mod tests {
                 name,
                 &self.directory.join(proton).display().to_string(),
                 Distribution::Cn,
+                true,
             )
         }
 
@@ -617,6 +620,7 @@ mod tests {
                 name,
                 &self.directory.join("Proton-B").display().to_string(),
                 Distribution::Global,
+                true,
             )
         }
 

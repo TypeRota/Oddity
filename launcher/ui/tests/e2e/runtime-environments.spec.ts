@@ -6,6 +6,8 @@ test("先创建环境再启动, A/B 副本、稳定标记及删除弹窗", async
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
   await page.locator("#launch-btn").click();
+  await expect(page.locator("#page-runtime-setup")).toBeVisible();
+  await page.locator('[data-page="settings"]').click();
   await expect(page.locator("#page-settings")).toBeVisible();
   await expect(page.locator("#set-proton")).toHaveCount(0);
   await expect(page.locator("#set-prefix")).toHaveCount(0);

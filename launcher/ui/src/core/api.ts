@@ -31,6 +31,8 @@ import type {
   SnapshotSummary,
   IntegrityStatus,
   GameSettings,
+  RuntimeSetupPlan,
+  RuntimeSetupStatus,
 } from "../types/launcher";
 import { activeGame, gameSettings } from "./game";
 export { isDesktop };
@@ -102,6 +104,8 @@ function previewPaths() {
     overrides.installRoot || joinPath(home, "Games/Neverness To Everness");
   const protonName = overrides.protonName || "GE-Proton11-5-x86_64";
   return {
+    dataHome,
+    steamRoot,
     installRoot,
     launcherRoot: joinPath(installRoot, distributions.cn.launcherDir),
     prefix: joinPath(dataHome, "oddity/prefix"),
@@ -850,11 +854,131 @@ const idleMigration: MigrationStatus = {
 };
 let previewMigration: MigrationStatus = clone(idleMigration);
 
+let previewSetupPlan: RuntimeSetupPlan | null = null;
+let previewSetupStatus: RuntimeSetupStatus = {
+  busy: false,
+  progress: {
+    component: "umu",
+    phase: "",
+    detail: "",
+    downloaded: 0,
+    total: 0,
+  },
+  error: null,
+  done: false,
+};
+let previewSetupProton: string | null = null;
+let previewSetupCreate = false;
+let previewSystemUmu = false;
+
 async function previewInvoke(
   command: keyof Commands,
   args?: CommandArgs[keyof CommandArgs],
 ): Promise<Commands[keyof Commands]> {
   switch (command) {
+    case "runtime_setup_info":
+      return {
+        needsSetup: false,
+        environment:
+          mock.settings.runtimeEnvironments.find(
+            (entry) =>
+              entry.id === gameSettings(mock.settings).activeEnvironment,
+          ) ?? null,
+        umu: mock.umuAvailable ? "/usr/bin/umu-run" : null,
+        proton: previewSetupProton,
+        protonDirectory: joinPath(preview.steamRoot, "compatibilitytools.d"),
+        systemUmu: previewSystemUmu,
+      };
+    case "runtime_setup_plan": {
+      const { allUsers, proton, createEnvironment } =
+        args as CommandArgs["runtime_setup_plan"];
+      previewSetupCreate = createEnvironment;
+      previewSetupPlan = {
+        umu: allUsers
+          ? "/usr/bin/umu-run"
+          : joinPath(preview.dataHome, "oddity/runtime/umu/umu-run"),
+        proton: proton || preview.protonPath.replace(/\/proton$/, ""),
+        installUmu: allUsers ? !previewSystemUmu : !mock.umuAvailable,
+        installProton: !proton,
+        systemCommand:
+          allUsers && !previewSystemUmu
+            ? [
+                "/usr/bin/pacman",
+                "-S",
+                "--needed",
+                "--noconfirm",
+                "umu-launcher",
+              ]
+            : null,
+        umuVersion: "1.4.4",
+        log: joinPath(preview.dataHome, "oddity/logs/runtime-setup.log"),
+      };
+      return clone(previewSetupPlan);
+    }
+    case "runtime_setup_apply":
+      if (!previewSetupPlan) throw new Error("请先查看安装计划");
+      previewSetupProton = previewSetupPlan.proton;
+      if (previewSetupPlan.systemCommand) previewSystemUmu = true;
+      for (const component of ["umu", "proton", "runtime"] as const) {
+        previewSetupStatus = {
+          busy: true,
+          done: false,
+          error: null,
+          progress: {
+            component,
+            phase: "prepare",
+            detail: `正在准备 ${component}`,
+            downloaded: 0,
+            total: 0,
+          },
+        };
+        await new Promise((resolve) => window.setTimeout(resolve, 1400));
+      }
+      mock.umuAvailable = true;
+      previewSetupStatus = {
+        busy: false,
+        progress: {
+          component: "runtime",
+          phase: "runtime",
+          detail: "运行时准备完成",
+          downloaded: 0,
+          total: 0,
+        },
+        error: null,
+        done: true,
+      };
+      if (
+        previewSetupCreate ||
+        !mock.settings.runtimeEnvironments.some(
+          (entry) =>
+            entry.game === activeGame(mock.settings) &&
+            entry.distribution === gameSettings(mock.settings).distribution,
+        )
+      ) {
+        await previewInvoke("environment_create", {
+          name: mock.settings.runtimeEnvironments.length
+            ? `运行环境 ${mock.settings.runtimeEnvironments.length + 1}`
+            : "默认运行环境",
+          protonPath: previewSetupProton,
+          sourceId: null,
+          distribution: gameSettings(mock.settings).distribution,
+        });
+      }
+      const created = mock.settings.runtimeEnvironments.at(-1);
+      if (previewSetupCreate && created)
+        await previewInvoke("environment_action", {
+          action: "switch",
+          id: created.id,
+        });
+      previewSetupPlan = null;
+      return null;
+    case "runtime_setup_status":
+      return clone(previewSetupStatus);
+    case "runtime_setup_dismiss":
+      return null;
+    case "runtime_setup_environment":
+      if (!mock.prefixExists) throw new Error("请先配置启动环境");
+      return clone(mock);
     case "game_accounts":
       return [];
     case "game_send_code":

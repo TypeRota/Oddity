@@ -847,8 +847,4 @@ mod tests {
             .iter()
             .all(|status| status.state == Effect::Unavailable));
     }
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../internal/gamepad/tests/idle.rs"
-    ));
 }

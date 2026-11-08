@@ -1,5 +1,11 @@
 import type { Commands } from "../src/types/launcher";
 export const commands = {
+  runtime_setup_info: true,
+  runtime_setup_plan: true,
+  runtime_setup_apply: true,
+  runtime_setup_status: true,
+  runtime_setup_dismiss: true,
+  runtime_setup_environment: true,
   game_accounts: true,
   game_send_code: true,
   game_login: true,

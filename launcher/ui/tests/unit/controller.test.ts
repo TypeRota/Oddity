@@ -127,6 +127,7 @@ vi.mock("../../src/composables/useNotificationArrival", async () => {
   };
 });
 vi.mock("../../src/core/desktop", () => ({
+  listen: async () => () => {},
   desktopWindow: {
     getState: async () => {
       const focused = backend.focused;
@@ -262,6 +263,10 @@ beforeEach(() => {
           };
         case "launcher_background":
           return structuredClone(backend.background);
+        case "runtime_setup_info":
+          return { needsSetup: false };
+        case "runtime_setup_environment":
+          throw new Error("请先配置启动环境");
         case "bootstrap":
           return structuredClone(backend.data);
         case "check_update":
@@ -535,7 +540,23 @@ describe("启动与设置", () => {
     expect(c.form.theme).toBe("light");
   });
 
-  it("未创建运行环境时, 启动操作转到设置并提示创建", async () => {
+  it("首次使用进入启动环境配置, 不提示手动创建环境", async () => {
+    const original = backend.invoke.getMockImplementation()!;
+    backend.invoke.mockImplementation(async (command, args) => {
+      if (command === "runtime_setup_info") return { needsSetup: true };
+      return original(command, args);
+    });
+    backend.data = bootstrap({
+      ok: false,
+      error: "请先在设置中创建并选择 Proton 运行环境",
+      prefixExists: false,
+    });
+    const c = await boot();
+    expect(c.state.page).toBe("runtime-setup");
+    expect(noticeMessage()).toBeUndefined();
+  });
+
+  it("未创建运行环境时, 准备失败后进入启动环境配置", async () => {
     backend.data = bootstrap({
       prefix: "",
       prefixExists: false,
@@ -545,8 +566,8 @@ describe("启动与设置", () => {
     backend.invoke.mockClear();
     c.handleLaunchAction();
     await flushPromises();
-    expect(c.state.page).toBe("settings");
-    expect(noticeMessage()).toContain("请先在设置中创建");
+    expect(c.state.page).toBe("runtime-setup");
+    expect(noticeMessage()).toContain("请先配置启动环境");
     expect(backend.invoke).not.toHaveBeenCalledWith("launch_official");
   });
 

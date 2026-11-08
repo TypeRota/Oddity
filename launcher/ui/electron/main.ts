@@ -350,6 +350,7 @@ async function start() {
     if (
       command === "bootstrap" ||
       command === "save_settings" ||
+      command === "runtime_setup_environment" ||
       command === "environment_create" ||
       command === "environment_action"
     )

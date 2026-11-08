@@ -17,6 +17,8 @@
   libsecret,
   xdg-utils,
   umu-launcher,
+  polkit,
+  python3,
   openssl,
   dbus,
   xz,
@@ -52,7 +54,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     src = ./../launcher/ui;
     inherit pnpm;
     fetcherVersion = 5;
-    hash = "sha256-INFSHvBueZapTtg6Uo4lVjVSQUoYeoI5INvJl9ioSro=";
+    hash = "sha256-+uKrON1D9GLf3ws+hNgJ3A/E2T7YkYVlQJrlZeZp8Wo=";
   };
   nativeBuildInputs = [
     pnpmConfigHook
@@ -96,8 +98,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
         lib.makeBinPath [
           xdg-utils
           umu-launcher
+          python3
         ]
       } \
+      --suffix PATH : ${lib.makeBinPath [ polkit ]} \
       --prefix LD_LIBRARY_PATH : ${
         lib.makeLibraryPath [
           udev

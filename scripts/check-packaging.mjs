@@ -154,8 +154,8 @@ for (const { key, name, exec } of launchActions()) {
 if (configuredActions.Recovery?.Exec !== "oddity --recovery")
   fail("electron-builder 缺少应急恢复动作");
 for (const [target, dependencies] of Object.entries({
-  deb: ["libnss3", "libsecret-1-0", "xdg-utils"],
-  rpm: ["nss", "libsecret-1.so.0()(64bit)", "xdg-utils"],
+  deb: ["libnss3", "libsecret-1-0", "xdg-utils", "pkexec", "python3"],
+  rpm: ["nss", "libsecret-1.so.0()(64bit)", "xdg-utils", "polkit", "python3"],
 })) {
   for (const dependency of dependencies)
     if (!config[target].depends.includes(dependency))
