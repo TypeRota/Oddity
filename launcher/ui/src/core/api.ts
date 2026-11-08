@@ -773,7 +773,7 @@ const mockDownload: DownloadStatus = {
 const previewOptionalResources: OptionalResource[] = [
   {
     tag: "pakchunk101",
-    name: "pakchunk101",
+    name: "中文语音",
     version: "0.101.18",
     size: 1_793_007_011,
     state: "installed",
@@ -781,7 +781,7 @@ const previewOptionalResources: OptionalResource[] = [
   },
   {
     tag: "pakchunk102",
-    name: "pakchunk102",
+    name: "日语语音",
     version: "0.102.18",
     size: 1_752_625_939,
     state: "installed",
@@ -789,7 +789,7 @@ const previewOptionalResources: OptionalResource[] = [
   },
   {
     tag: "pakchunk103",
-    name: "pakchunk103",
+    name: "英语语音",
     version: "0.103.18",
     size: 1_836_921_904,
     state: "absent",
@@ -797,7 +797,7 @@ const previewOptionalResources: OptionalResource[] = [
   },
   {
     tag: "pakchunk104",
-    name: "pakchunk104",
+    name: "韩语语音",
     version: "0.104.18",
     size: 2_008_643_453,
     state: "absent",

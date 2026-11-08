@@ -163,7 +163,7 @@ function catalogFixture(): ResourceCatalog {
     resources: [
       {
         tag: "pakchunk101",
-        name: "pakchunk101",
+        name: "中文语音",
         version: "0.101.18",
         size: 1_000_000,
         state: "installed",
@@ -171,7 +171,7 @@ function catalogFixture(): ResourceCatalog {
       },
       {
         tag: "pakchunk102",
-        name: "pakchunk102",
+        name: "日语语音",
         version: "0.102.18",
         size: 2_000_000,
         state: "absent",
@@ -179,7 +179,7 @@ function catalogFixture(): ResourceCatalog {
       },
       {
         tag: "pakchunk103",
-        name: "pakchunk103",
+        name: "英语语音",
         version: "0.103.18",
         size: 3_000_000,
         state: "partial",
@@ -1353,6 +1353,7 @@ describe("更新检查", () => {
     expect(c.state.resourceCatalog?.preloadVersion).toBe("1.5.0");
     expect(wrapper!.get("#game-preload").text()).toBe("资源预下载 1.5.0");
     await wrapper!.get(".resource-options__toggle").trigger("click");
+    expect(wrapper!.get(".resource-row__tag").text()).toBe("中文语音");
 
     const installed = wrapper!.get("#optional-resource-pakchunk101")
       .element as HTMLInputElement;

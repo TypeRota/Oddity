@@ -257,7 +257,7 @@ onBeforeUnmount(() => timeline?.cancel());
                 "
               >
                 <span class="resource-row__copy">
-                  <span class="resource-row__tag">{{ resource.tag }}</span>
+                  <span class="resource-row__tag">{{ resource.name }}</span>
                   <span class="resource-row__meta"
                     >{{ resource.version }} ·
                     {{ formatSize(resource.size) }}</span
@@ -279,7 +279,7 @@ onBeforeUnmount(() => timeline?.cancel());
                 >
                   <BaseSwitch
                     :id="'optional-resource-' + resource.tag"
-                    :label="'选择 ' + resource.tag"
+                    :label="'选择 ' + resource.name + ' ' + resource.version"
                     :model-value="resource.selected"
                     :disabled="
                       interactionDisabled ||

@@ -26,6 +26,13 @@ test("可选资源切换即时生效并同步预下载版本", async ({ page }) 
   await expect(update.locator("#game-preload")).toHaveText("资源预下载 1.5.0");
   await expect(update.locator(".resource-row")).toHaveCount(0);
   await update.locator(".resource-options__toggle").click();
+  await expect(update.locator(".resource-row__tag")).toHaveText([
+    "中文语音",
+    "日语语音",
+    "英语语音",
+    "韩语语音",
+  ]);
+  await expect(update).not.toContainText("pakchunk101");
   await expect(update.locator("#optional-resource-pakchunk101")).toBeDisabled();
   await update.locator("#optional-resource-pakchunk103").check();
   await expect(summary).toHaveText("3/4 项 · 5.0 GiB");

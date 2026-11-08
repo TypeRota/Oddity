@@ -46,6 +46,18 @@ struct Selection {
     tags: Vec<String>,
 }
 
+/// 已确认语义的 tag 使用面向玩家的名称, 其余保留官方标识.
+fn display_name(tag: &str) -> String {
+    match tag {
+        "pakchunk101" => "中文语音",
+        "pakchunk102" => "日语语音",
+        "pakchunk103" => "英语语音",
+        "pakchunk104" => "韩语语音",
+        _ => tag,
+    }
+    .into()
+}
+
 pub(crate) fn entries(base: &BaseVersion) -> impl Iterator<Item = UpdateKind> + '_ {
     base.res
         .iter()
@@ -101,8 +113,7 @@ pub fn catalog(config: &GameUpdateConfig, bundle: &RemoteBundle) -> Result<Vec<O
         };
         resources.push(OptionalResource {
             tag: base.tag.clone(),
-            // 未取得可靠名称映射的 tag 保留官方标识.
-            name: base.tag.clone(),
+            name: display_name(&base.tag),
             version: base.version.clone(),
             size,
             state,
@@ -186,4 +197,18 @@ pub(crate) fn selected_tags(
         })
         .map(|resource| resource.tag)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_name;
+
+    #[test]
+    fn names_voice_pak_chunks_and_keeps_other_tags() {
+        assert_eq!(display_name("pakchunk101"), "中文语音");
+        assert_eq!(display_name("pakchunk102"), "日语语音");
+        assert_eq!(display_name("pakchunk103"), "英语语音");
+        assert_eq!(display_name("pakchunk104"), "韩语语音");
+        assert_eq!(display_name("pakchunk0"), "pakchunk0");
+    }
 }
