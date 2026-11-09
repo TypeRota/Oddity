@@ -9,6 +9,9 @@ const { invoke, notify } = vi.hoisted(() => ({
   invoke: vi.fn(),
   notify: vi.fn(),
 }));
+vi.mock("../../src/components/PerformanceComparison.vue", () => ({
+  default: { template: '<div data-game-setting="comparison" />' },
+}));
 vi.mock("../../src/core/notifications", () => ({ notify }));
 vi.mock("../../src/core/api", () => ({ invoke, isDesktop: () => true }));
 vi.mock("../../src/core/controller", async () => {

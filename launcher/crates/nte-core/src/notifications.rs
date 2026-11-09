@@ -155,6 +155,7 @@ mod tests {
 
     #[test]
     fn sends_the_expected_notification_fields() {
+        let _env = crate::testing::EnvGuard::new();
         let bus = Bus::new();
         send_on(&bus.client, "异环启动失败", "尚未创建运行环境").unwrap();
         let calls = bus.calls.lock().unwrap();

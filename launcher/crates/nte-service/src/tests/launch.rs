@@ -663,6 +663,7 @@ fn launch_records_an_environment_snapshot() {
     let invocation = launch_impl_with_snapshots(
         &fixture.settings("official"),
         &snapshots,
+        &crate::performance_commands::Performance::load(fixture.dir.path()),
         &AtomicBool::new(false),
     )
     .unwrap();
@@ -717,6 +718,7 @@ fn immediate_exit_marks_the_snapshot_failed() {
     let error = expect_launch_error(launch_impl_with_snapshots(
         &fixture.settings("official"),
         &snapshots,
+        &crate::performance_commands::Performance::load(fixture.dir.path()),
         &AtomicBool::new(false),
     ));
     assert!(error.contains("退出码 3"), "{error}");
@@ -729,4 +731,36 @@ fn immediate_exit_marks_the_snapshot_failed() {
         nte_core::snapshots::FailureReason::EarlyExit
     );
     assert_eq!(failure.exit_code, Some(3));
+}
+
+#[test]
+fn performance_sampling_is_attached_only_to_the_selected_comparison_launch() {
+    let mut fixture = LaunchFixture::new("performance-launch");
+    fixture.env.set("MANGOHUD_CONFIG", "read_cfg,fps_limit=75");
+    let mut store = nte_core::performance::Store::load(data_dir().join("performance")).unwrap();
+    let a = fixture.profile.clone();
+    let mut b = a.clone();
+    b.id = "b".repeat(32);
+    store.create("自动比较".into(), a, b).unwrap();
+    let performance = performance_commands::Performance::load(&data_dir());
+    let snapshots = snapshot_commands::Snapshots::load(&data_dir());
+    let invocation = launch_impl_with_snapshots(
+        &fixture.settings("official"),
+        &snapshots,
+        &performance,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(invocation.performance.is_some());
+    let dump = fixture.dump();
+    let config = env_value(&dump, "MANGOHUD_CONFIG").unwrap();
+    assert!(config.contains("fps_limit=75"));
+    assert!(config.contains("log_interval=0"));
+    assert!(config.contains("upload_logs=0"));
+    assert_eq!(env_value(&dump, "MANGOHUD"), Some("1"));
+    assert_eq!(
+        std::env::var("MANGOHUD_CONFIG").unwrap(),
+        "read_cfg,fps_limit=75"
+    );
+    fixture.stop(invocation);
 }

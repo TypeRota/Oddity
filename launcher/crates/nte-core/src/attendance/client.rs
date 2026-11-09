@@ -155,8 +155,11 @@ impl Client {
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .max_redirects(0)
-            .http_status_as_error(false)
-            .build();
+            .http_status_as_error(false);
+        // 单元测试只连接回环服务, 不继承宿主代理.
+        #[cfg(test)]
+        let config = config.proxy(None);
+        let config = config.build();
         Self {
             agent: config.into(),
             base: base.into(),

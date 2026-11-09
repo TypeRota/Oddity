@@ -1631,6 +1631,13 @@ async function previewInvoke(
       return previewGameStatus();
     case "take_launch_error":
       return null;
+    case "performance_overview":
+      return { active: null, recording: null, comparisons: [] };
+    case "performance_create":
+    case "performance_activate":
+    case "performance_report":
+    case "performance_export":
+      throw new Error("性能采样需要在桌面应用中使用");
     case "playtime_history":
       return previewHistory();
     case "playtime_export_poster": {

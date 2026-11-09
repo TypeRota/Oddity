@@ -353,6 +353,7 @@ mod tests {
 
     #[test]
     fn captures_command_output_and_timeouts() {
+        let _env = crate::testing::EnvGuard::new();
         let output = probe_output("sh", &["-c", "printf 'hello'"], Duration::from_secs(5));
         assert_eq!(output.as_deref(), Some("hello"));
         assert!(probe_output("true", &[], Duration::from_secs(1)).is_none());

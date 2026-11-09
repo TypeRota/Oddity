@@ -19,6 +19,7 @@ fn managed_state(settings: Settings, game: GameTracker) -> AppState {
 
 fn session(closing: bool, alive: bool) -> GameSession {
     GameSession {
+        performance: std::sync::Arc::new(std::sync::Mutex::new(None)),
         id: 1,
         pid: 0,
         pgid: 0,

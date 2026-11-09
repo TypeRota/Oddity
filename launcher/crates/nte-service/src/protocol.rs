@@ -37,6 +37,11 @@ fn requires_current_game(command: &str) -> bool {
             | "take_launch_error"
             | "close_game"
             | "runtime_setup_environment"
+            | "performance_overview"
+            | "performance_create"
+            | "performance_activate"
+            | "performance_report"
+            | "performance_export"
             | "environment_create"
             | "environment_action"
             | "migration_plan"
@@ -757,6 +762,33 @@ pub async fn dispatch(
                 .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,
         )
         .map_err(|e| json!(e.to_string())),
+        "performance_overview"
+        | "performance_create"
+        | "performance_activate"
+        | "performance_report"
+        | "performance_export" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                name: Option<String>,
+                a: Option<String>,
+                b: Option<String>,
+                id: Option<String>,
+                destination: Option<String>,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            crate::performance_commands::command(
+                app.clone(),
+                command.trim_start_matches("performance_").to_string(),
+                args.name,
+                args.a,
+                args.b,
+                args.id,
+                args.destination,
+            )
+            .await
+            .map_err(|e| json!(e))
+        }
         "playtime_history" => serde_json::to_value(
             crate::playtime_commands::playtime_history(&app.playtime)
                 .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,

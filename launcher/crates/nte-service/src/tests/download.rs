@@ -675,6 +675,7 @@ fn commands_reject_overlapping_tasks_and_running_games() {
     )
     .unwrap();
     fixture.app.state.game.lock().unwrap().session = Some(crate::GameSession {
+        performance: std::sync::Arc::new(std::sync::Mutex::new(None)),
         id: 1,
         pid: 0,
         pgid: 0,
@@ -1295,7 +1296,9 @@ fn wait_resource_tasks(fixture: &Fixture) -> DownloadStatus {
 
 #[test]
 fn voice_downloads_run_concurrently_without_updating_base_and_keep_both_ledger_tags() {
+    let mut env = crate::tests::EnvGuard::new();
     let fixture = Fixture::new(Distribution::Cn, true);
+    env.set("XDG_DATA_HOME", fixture.dir.join("xdg-data"));
     fixture.ledger();
     let voices = configure_voice_downloads(&fixture);
     fixture
@@ -1369,7 +1372,9 @@ fn voice_downloads_run_concurrently_without_updating_base_and_keep_both_ledger_t
 
 #[test]
 fn voice_downloads_cancel_together_and_failed_tags_can_be_retried() {
+    let mut env = crate::tests::EnvGuard::new();
     let fixture = Fixture::new(Distribution::Cn, true);
+    env.set("XDG_DATA_HOME", fixture.dir.join("xdg-data"));
     let voices = configure_voice_downloads(&fixture);
     fixture
         .app

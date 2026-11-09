@@ -277,6 +277,8 @@ beforeEach(() => {
           return structuredClone(backend.result);
         case "game_status":
           return structuredClone(backend.status);
+        case "performance_overview":
+          return { active: null, recording: null, comparisons: [] };
         case "playtime_history":
           return structuredClone(backend.playtimeHistory);
         case "game_download_status":

@@ -14,7 +14,7 @@ ureq.workspace = true
 zip.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-quick-xml.workspace = true
+quick-xml = { workspace = true, features = ["serialize"] }
 aes.workspace = true
 cbc.workspace = true
 cipher.workspace = true
@@ -29,3 +29,5 @@ encoding_rs_io = "0.1"
 zbus = { version = "5.19", features = ["blocking-api"] }
 hdiffpatch-rs = { git = "https://github.com/TwintailTeam/hdiffpatch-rs", rev = "d58f4553b7d45acccd0b8e3b57badc26b9b04b6e" }
 libpulse-binding = "2.30"
+resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+csv = "1"

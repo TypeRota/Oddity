@@ -73,3 +73,13 @@ Rust 依赖见 [Cargo.lock](launcher/Cargo.lock), 许可证检查配置见 [deny
 ## 完成礼花
 
 启动环境向导使用 [canvas-confetti](https://github.com/catdad/canvas-confetti) 的粒子物理与 Canvas 渲染, 许可证为 [ISC](https://github.com/catdad/canvas-confetti/blob/master/LICENSE). 发射时序由 Anime.js 编排, 尊重减少动态效果设置, 离开向导时清理粒子.
+
+## 性能采样与图表
+
+性能比较调用系统 [MangoHud](https://github.com/flightlessmango/MangoHud) (MIT), 按其官方 `logging.cpp` 定义读取逐帧 CSV, 参考随附 mangoplot 的本地日志出图方式; 未复制代码, 不上传采样数据. 硬件补充指标来自 `/proc` 和系统 `nvidia-smi`, 无需安装 Python 分析环境.
+
+SVG 转 PNG 使用 [resvg](https://github.com/linebender/resvg) (MIT / Apache-2.0), CSV 解析使用 [rust-csv](https://github.com/BurntSushi/rust-csv) (MIT / Unlicense). 报告图表与统计逻辑为项目实现.
+
+resvg 的 tiny-skia 依赖 [arrayref](https://github.com/droundy/arrayref) 0.3.9 (BSD-2-Clause), 许可证文本随该 crate 发布; `deny.toml` 为此版本设置限定许可.
+
+GPU 进程分类参考 [gpustat](https://github.com/wookayin/gpustat) (MIT) 区分图形与计算上下文的方式; 使用系统 `nvidia-smi` XML, 未复制代码或引入 NVML 绑定.

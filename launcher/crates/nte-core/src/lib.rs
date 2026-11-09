@@ -27,6 +27,7 @@ pub mod manifest;
 pub mod migration;
 pub mod notifications;
 mod paths;
+pub mod performance;
 pub mod playtime;
 pub mod recovery;
 pub mod runtime_setup;

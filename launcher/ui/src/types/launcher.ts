@@ -5,6 +5,53 @@ import type {
   Profile,
   Feedback,
 } from "./gamepad";
+export interface PerformanceMetrics {
+  fps: number;
+  low1: number;
+  p95: number;
+  p99: number;
+  stallPercent: number;
+  vramMeanMib: number | null;
+  rssMeanMib: number | null;
+  gpuLoadMean: number | null;
+  powerMeanW: number | null;
+}
+export interface PerformanceFacts {
+  gameExecutable: string;
+  gameVersion: string | null;
+  launchMode: string;
+  displayBackend: string;
+  gameMode: GameModeOptions;
+  vkd3dConfig: string | null;
+  protonIdentity: string;
+  kernel: string | null;
+  cpu: string | null;
+  gpu: { uuid: string; name: string; driver: string } | null;
+}
+export interface PerformanceSession {
+  id: string;
+  side: string;
+  startedAt: number;
+  durationSeconds: number;
+  frames: number;
+  metrics: PerformanceMetrics;
+  facts: PerformanceFacts;
+  warnings: string[];
+}
+export interface PerformanceComparison {
+  id: string;
+  name: string;
+  createdAt: number;
+  a: RuntimeEnvironment;
+  b: RuntimeEnvironment;
+  sessions: PerformanceSession[];
+  error: string | null;
+}
+export interface PerformanceOverview {
+  recording: string | null;
+  active: string | null;
+  comparisons: PerformanceComparison[];
+}
 export type AttendanceTrigger = "off" | "launch" | "boot" | "daily" | "manual";
 export interface AttendanceTasks {
   communitySign: boolean;
@@ -567,6 +614,11 @@ export interface Commands {
   cancel_launch: GameStatus;
   game_status: GameStatus;
   take_launch_error: string | null;
+  performance_overview: PerformanceOverview;
+  performance_create: null;
+  performance_activate: null;
+  performance_report: string;
+  performance_export: string;
   playtime_history: PlaytimeHistory;
   playtime_export_poster: string;
   audio_status: AudioStatus;
@@ -670,6 +722,11 @@ export interface CommandArgs {
   cancel_launch: undefined;
   game_status: undefined;
   take_launch_error: undefined;
+  performance_overview: undefined;
+  performance_create: { name: string; a: string; b: string };
+  performance_activate: { id: string | null };
+  performance_report: { id: string };
+  performance_export: { id: string; destination: string };
   playtime_history: undefined;
   playtime_export_poster: { destination: string; data: string };
   game_mode_status: undefined;

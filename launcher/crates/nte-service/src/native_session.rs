@@ -683,6 +683,7 @@ def record(text):
         let child = Command::new("/bin/true").spawn().unwrap();
         let pid = child.id() as i32;
         let game = crate::GameSession {
+            performance: std::sync::Arc::new(std::sync::Mutex::new(None)),
             id: 77,
             pid: pid as u32,
             pgid: pid,
