@@ -27,6 +27,17 @@ pub struct CheckOptions {
     pub optional: OptionalSelection,
 }
 
+/// 资源检查进度, 每检查一条清单记录上报一次.
+#[derive(Debug, Clone, Default)]
+pub struct CheckProgress {
+    /// 已检查完的清单条目数.
+    pub checked: usize,
+    /// 本轮需要检查的清单条目总数.
+    pub total: usize,
+    /// 正在检查的文件, 检查结束时为空.
+    pub current: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateReason {
     Missing,
@@ -318,7 +329,7 @@ pub fn check_cancellable(
     opts: CheckOptions,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<UpdatePlan> {
-    check_cancellable_with_estimates(config, opts, None, cancelled)
+    check_cancellable_observed(config, opts, None, &mut |_| {}, cancelled)
 }
 
 /// 与 check_cancellable 相同，但允许带上吞吐估计，
@@ -329,11 +340,29 @@ pub fn check_cancellable_with_estimates(
     throughput: Option<&Throughput>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<UpdatePlan> {
+    check_cancellable_observed(config, opts, throughput, &mut |_| {}, cancelled)
+}
+
+/// 与 check_cancellable_with_estimates 相同, 但每检查一条清单记录上报进度.
+pub fn check_cancellable_observed(
+    config: &GameUpdateConfig,
+    opts: CheckOptions,
+    throughput: Option<&Throughput>,
+    on_progress: &mut dyn FnMut(CheckProgress),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<UpdatePlan> {
     if cancelled() {
         return Err(Error::Cancelled);
     }
     let bundle = load_remote(config)?;
-    check_bundle_with_estimates(config, &bundle, opts, throughput, cancelled)
+    check_bundle_cancellable_with_estimates(
+        config,
+        &bundle,
+        opts,
+        throughput,
+        on_progress,
+        cancelled,
+    )
 }
 
 pub fn check_bundle(
@@ -351,7 +380,14 @@ pub fn check_bundle_with_estimates(
     throughput: Option<&Throughput>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<UpdatePlan> {
-    check_bundle_cancellable_with_estimates(config, bundle, opts, throughput, cancelled)
+    check_bundle_cancellable_with_estimates(
+        config,
+        bundle,
+        opts,
+        throughput,
+        &mut |_| {},
+        cancelled,
+    )
 }
 
 pub fn check_bundle_cancellable(
@@ -360,7 +396,7 @@ pub fn check_bundle_cancellable(
     opts: CheckOptions,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<UpdatePlan> {
-    check_bundle_cancellable_with_estimates(config, bundle, opts, None, cancelled)
+    check_bundle_cancellable_with_estimates(config, bundle, opts, None, &mut |_| {}, cancelled)
 }
 
 pub fn check_bundle_cancellable_with_estimates(
@@ -368,6 +404,7 @@ pub fn check_bundle_cancellable_with_estimates(
     bundle: &RemoteBundle,
     opts: CheckOptions,
     throughput: Option<&Throughput>,
+    on_progress: &mut dyn FnMut(CheckProgress),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<UpdatePlan> {
     if cancelled() {
@@ -424,12 +461,18 @@ pub fn check_bundle_cancellable_with_estimates(
         }
     }
 
+    let total = entries.len();
     for (kind, _size) in entries {
         if cancelled() {
             return Err(Error::Cancelled);
         }
         plan.checked += 1;
         let path = kind.path().to_string();
+        on_progress(CheckProgress {
+            checked: plan.checked - 1,
+            total,
+            current: path.clone(),
+        });
         let size = kind.size();
         let md5 = kind.md5().to_ascii_lowercase();
         if path.is_empty() {
@@ -595,6 +638,11 @@ pub fn check_bundle_cancellable_with_estimates(
             download_size: size,
         });
     }
+    on_progress(CheckProgress {
+        checked: plan.checked,
+        total,
+        current: String::new(),
+    });
 
     attach_patches(&mut plan, config, bundle, &map, throughput);
     plan.items.sort_by(|a, b| a.path.cmp(&b.path));
@@ -1099,6 +1147,51 @@ mod tests {
         assert_eq!(plan.items[0].kind.size(), 7);
         assert_eq!(plan.items[0].kind.md5(), "bb");
         assert!(plan.items[0].patches.is_empty());
+    }
+
+    #[test]
+    fn reports_progress_for_every_manifest_entry() {
+        for full in [false, true] {
+            let dir = TempDir::new("check-progress");
+            let config = config_for(&dir);
+            dir.write("install/data/a.bin", b"hello");
+            dir.write("install/data/b.bin", b"world");
+            let bundle = bundle(
+                manifest_res(vec![
+                    res("data/a.bin", &crate::update::md5_bytes(b"hello"), 5),
+                    res("data/b.bin", "aa", 5),
+                ]),
+                None,
+            );
+            let mut events = Vec::new();
+            check_bundle_cancellable_with_estimates(
+                &config,
+                &bundle,
+                CheckOptions {
+                    full,
+                    optional: OptionalSelection::None,
+                },
+                None,
+                &mut |progress| events.push((progress.checked, progress.total, progress.current)),
+                &|| false,
+            )
+            .expect("check");
+
+            assert_eq!(
+                events.first(),
+                Some(&(0, 2, "data/a.bin".to_string())),
+                "full={full}"
+            );
+            assert_eq!(events.last(), Some(&(2, 2, String::new())), "full={full}");
+            assert_eq!(
+                events
+                    .iter()
+                    .map(|(checked, ..)| *checked)
+                    .collect::<Vec<_>>(),
+                vec![0, 1, 2],
+                "full={full}"
+            );
+        }
     }
 
     #[test]

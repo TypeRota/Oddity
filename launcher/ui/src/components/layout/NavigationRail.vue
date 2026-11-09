@@ -98,6 +98,7 @@ onBeforeUnmount(() => {
       }"
     >
       <motion.span
+        v-if="activeIndex >= 0"
         class="nav-focus"
         aria-hidden="true"
         :initial="false"

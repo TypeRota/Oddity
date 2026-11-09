@@ -489,6 +489,27 @@ pub fn apply_plan_observed_full(
     on_result: &mut dyn FnMut(&ApplyResult),
     cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> ApplyReport {
+    let limiter = RateLimiter::new(limit_bytes_per_second);
+    apply_plan_observed_shared(
+        config, plan, opts, &limiter, None, on_file, on_bytes, on_stage, on_result, cancelled,
+    )
+}
+
+/// 独立资源任务共享限速器, 并使用各自的暂存子目录.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_plan_observed_shared(
+    config: &GameUpdateConfig,
+    plan: &UpdatePlan,
+    opts: &ApplyOptions,
+    limiter: &RateLimiter,
+    staging_name: Option<&str>,
+    on_file: &mut dyn FnMut(&UpdateItem),
+    on_bytes: &mut dyn FnMut(&str, u64),
+    on_stage: &mut dyn FnMut(&str, ApplyStage),
+    on_result: &mut dyn FnMut(&ApplyResult),
+    cancelled: &(dyn Fn() -> bool + Send + Sync),
+) -> ApplyReport {
+    let limit_bytes_per_second = limiter.limit();
     let mut report = ApplyReport::default();
     // 并发下载的耗时按任务级活跃墙钟统计, 与默认估计的聚合吞吐口径一致.
     let download_clock = DownloadClock::new();
@@ -509,7 +530,18 @@ pub fn apply_plan_observed_full(
             .join(&config.branch)
             .join(&plan.remote_version)
             .join("nte-native"),
-        None => config.patcher_dir.join("tmp").join("nte-native"),
+        None => {
+            let mut base = config.patcher_dir.join("tmp");
+            if let Some(name) = staging_name {
+                if !crate::paths::valid_segment(name) {
+                    report.failed = 1;
+                    report.ledger_error = Some("独立资源暂存标识无效".into());
+                    return finish_timings(report, &download_clock);
+                }
+                base = base.join(name);
+            }
+            base.join("nte-native")
+        }
     };
     let staging_base = preload_base.as_deref().unwrap_or(&config.install_root);
     let selected: Vec<&UpdateItem> = plan
@@ -656,7 +688,6 @@ pub fn apply_plan_observed_full(
         0
     };
     let apply_gate = ApplyGate::new(default_processing_lanes(), workspace_budget);
-    let limiter = RateLimiter::new(limit_bytes_per_second);
     let (tx, rx) = mpsc::channel();
     let mut worker_txs: Vec<Sender<WorkerEvent>> = (0..workers).map(|_| tx.clone()).collect();
     drop(tx);
@@ -667,7 +698,6 @@ pub fn apply_plan_observed_full(
     let apply_gate = &apply_gate;
     let next = &next;
     let http = &http;
-    let limiter = &limiter;
     let download_clock = &download_clock;
     let mut completed: Vec<String> = Vec::new();
     let mut report = std::thread::scope(|scope| {
@@ -1699,6 +1729,10 @@ fn fetch_to_file(
     expected_size: u64,
     progress: &Progress<'_>,
 ) -> Result<u64> {
+    let _connection = progress
+        .limiter
+        .connection(progress.cancelled)
+        .ok_or(Error::Cancelled)?;
     let mut request = http.request(
         url,
         transfer_timeout(expected_size.saturating_sub(existing)),
@@ -1756,6 +1790,10 @@ fn fetch_range_to_file(
     range_size: u64,
     progress: &Progress<'_>,
 ) -> Result<u64> {
+    let _connection = progress
+        .limiter
+        .connection(progress.cancelled)
+        .ok_or(Error::Cancelled)?;
     let mut response = http
         .request(url, transfer_timeout(range_size))
         .header("Range", range)
@@ -2106,7 +2144,7 @@ fn selected_tag_indices(plan: &UpdatePlan, selected: &[&UpdateItem]) -> Vec<usiz
     indices
 }
 
-fn item_tag_for(path: &str, index: usize) -> String {
+pub(crate) fn item_tag_for(path: &str, index: usize) -> String {
     format!("{}-{index}", path_tag(path))
 }
 
@@ -3816,6 +3854,76 @@ mod tests {
             (mid_content.len() + new_content.len()) as u64
         );
         assert!(report.timings.download_bytes >= (mid_patch.len() + final_patch.len()) as u64);
+    }
+
+    #[test]
+    fn independent_downloads_share_connections_while_a_single_file_uses_all_slots() {
+        let dir = TempDir::new("dl-shared-connections");
+        let server = HttpServer::start();
+        let mut config = config_for(&dir);
+        config.max_threads = 5;
+        config.cdns = vec![server.url("/cdn")];
+        let content = "a".repeat(6 * RANGE_CHUNK as usize);
+        let hash = crate::update::md5_bytes(content.as_bytes());
+        let (started, release) =
+            server.route_blocked(&res_path(&hash, content.len() as u64), &content);
+        let other = "b".repeat(1024);
+        let other_hash = crate::update::md5_bytes(other.as_bytes());
+        let (other_started, other_release) =
+            server.route_blocked(&res_path(&other_hash, other.len() as u64), &other);
+        let mut plan = plan_of(vec![res_item("a.bin", &hash, content.len() as u64)]);
+        plan.max_threads = 5;
+        let mut other_plan = plan_of(vec![res_item("b.bin", &other_hash, other.len() as u64)]);
+        other_plan.max_threads = 1;
+        let limiter = RateLimiter::with_connections(0, 5);
+        let apply = |plan: &UpdatePlan, name: &str| {
+            apply_plan_observed_shared(
+                &config,
+                plan,
+                &ApplyOptions {
+                    update_ledger: false,
+                    probe_cdns: false,
+                    ..Default::default()
+                },
+                &limiter,
+                Some(name),
+                &mut |_| {},
+                &mut |_, _| {},
+                &mut |_, _| {},
+                &mut |_| {},
+                &|| false,
+            )
+        };
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| apply(&plan, "first"));
+            started.recv_timeout(Duration::from_secs(2)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while server.targets().len() < 5 {
+                assert!(Instant::now() < deadline, "单个大文件未使用全部连接");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(server
+                .ranges()
+                .iter()
+                .all(|range| range.starts_with("bytes=")));
+            let second = scope.spawn(|| apply(&other_plan, "second"));
+            assert!(
+                other_started
+                    .recv_timeout(Duration::from_millis(80))
+                    .is_err(),
+                "其他语种超出共享连接预算"
+            );
+            assert_eq!(server.targets().len(), 5);
+            for _ in 0..6 {
+                release.send(()).unwrap();
+            }
+            other_started.recv_timeout(Duration::from_secs(2)).unwrap();
+            other_release.send(()).unwrap();
+            assert_eq!(first.join().unwrap().failed, 0);
+            assert_eq!(second.join().unwrap().failed, 0);
+        });
+        assert_eq!(dir.read("install/a.bin"), content.as_bytes());
+        assert_eq!(dir.read("install/b.bin"), other.as_bytes());
     }
 
     #[test]

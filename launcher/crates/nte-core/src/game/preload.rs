@@ -235,6 +235,141 @@ pub fn delete(config: &GameUpdateConfig, branch: &str, version: &str) -> Result<
     Ok(bytes)
 }
 
+/// 按未来版本清单删除一个可选包的独占缓存, 不修改正式安装文件.
+/// config 与 bundle 必须来自同一次 load_preload_remote.
+fn optional_cache_files(
+    config: &GameUpdateConfig,
+    bundle: &super::check::RemoteBundle,
+    tag: &str,
+) -> Result<Vec<(PathBuf, u64)>> {
+    use std::collections::BTreeSet;
+
+    let selected = bundle
+        .manifest
+        .base_versions
+        .iter()
+        .find(|base| base.tag == tag)
+        .ok_or_else(|| Error::Parse(format!("未知的可选资源: {tag}")))?;
+    let shared_paths: BTreeSet<_> = bundle
+        .manifest
+        .res
+        .iter()
+        .map(|entry| super::check::ledger_key(&entry.filename))
+        .chain(bundle.manifest.packages.iter().flat_map(|package| {
+            package.paks.iter().flat_map(|pak| {
+                pak.entries
+                    .iter()
+                    .map(|entry| super::check::ledger_key(&entry.name))
+            })
+        }))
+        .chain(
+            bundle
+                .manifest
+                .base_versions
+                .iter()
+                .filter(|base| base.tag != tag)
+                .flat_map(super::optional::entries)
+                .map(|entry| super::check::ledger_key(entry.path())),
+        )
+        .collect();
+    let mut hashes = BTreeSet::new();
+    for entry in super::optional::entries(selected) {
+        crate::paths::relative_path(entry.path())?;
+        if !shared_paths.contains(&super::check::ledger_key(entry.path())) {
+            let key = super::download::item_tag_for(entry.path(), 0);
+            hashes.insert(key.trim_end_matches("-0").to_owned());
+        }
+    }
+    let dir = checked_dir(config, &config.branch, &bundle.config.res_version)?;
+    let cache_root = root(config);
+    let mut files = Vec::new();
+    for kind in ["Res", "Pak", "Patch"] {
+        let directory = dir.join("nte-native").join(kind);
+        let relative = directory
+            .strip_prefix(&cache_root)
+            .map_err(|_| Error::Integrity("预下载缓存超出缓存目录".into()))?;
+        crate::paths::ensure_no_symlink(&cache_root, relative)?;
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if ![".part", ".cb.idx", ".tmp"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+            {
+                continue;
+            }
+            // 全量, 差分及分块索引共用路径哈希; 同一路径的全部序号一起清理.
+            let belongs = name.split('.').enumerate().any(|(index, part)| {
+                (index == 0 || index == 2)
+                    && part.rsplit_once('-').is_some_and(|(hash, ordinal)| {
+                        hashes.contains(hash)
+                            && !ordinal.is_empty()
+                            && ordinal.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+            });
+            if !belongs {
+                continue;
+            }
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(&cache_root)
+                .map_err(|_| Error::Integrity("预下载缓存超出缓存目录".into()))?;
+            crate::paths::ensure_no_symlink(&cache_root, relative)?;
+            if entry.file_type()?.is_file() {
+                files.push((path, entry.metadata()?.len()));
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// 返回该语种实际存在且可独立删除的缓存大小.
+pub fn optional_cached_bytes(
+    config: &GameUpdateConfig,
+    bundle: &super::check::RemoteBundle,
+    tag: &str,
+) -> Result<u64> {
+    Ok(optional_cache_files(config, bundle, tag)?
+        .iter()
+        .map(|(_, bytes)| bytes)
+        .sum())
+}
+
+pub fn remove_optional(
+    config: &GameUpdateConfig,
+    bundle: &super::check::RemoteBundle,
+    tag: &str,
+) -> Result<u64> {
+    let files = optional_cache_files(config, bundle, tag)?;
+    let bytes = files.iter().map(|(_, bytes)| bytes).sum();
+    let dir = checked_dir(config, &config.branch, &bundle.config.res_version)?;
+    let cache_root = root(config);
+    if files.is_empty() {
+        return Ok(0);
+    }
+    let marker = dir.join(MARKER);
+    let relative = marker
+        .strip_prefix(&cache_root)
+        .map_err(|_| Error::Integrity("预下载缓存超出缓存目录".into()))?;
+    crate::paths::ensure_no_symlink(&cache_root, relative)?;
+    // 先使完成状态失效, 中途失败后仍会重新检查剩余缓存.
+    match fs::remove_file(marker) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    for (path, _) in files {
+        fs::remove_file(path)?;
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +391,169 @@ mod tests {
             preload_root: None,
             layout: crate::game_profile::GameId::Nte.profile().layout().unwrap(),
         }
+    }
+
+    #[test]
+    fn optional_cleanup_preserves_base_other_languages_and_shared_paths() {
+        use crate::game::{
+            check::RemoteBundle,
+            manifest::{BaseVersion, GameManifest, Package, Pak, PakEntry, ResEntry},
+        };
+        let dir = TempDir::new("preload-optional-cleanup");
+        let mut config = config_for(&dir);
+        config.branch = "future".into();
+        let voice = "Client/voice.pak";
+        let signature = "Client/voice.sig";
+        let shared = "Client/shared.pak";
+        let other = "Client/other.pak";
+        let bundle = RemoteBundle {
+            config: RemoteConfig {
+                res_version: "2.0".into(),
+                ..Default::default()
+            },
+            manifest: GameManifest {
+                res: vec![ResEntry {
+                    filename: shared.into(),
+                    ..Default::default()
+                }],
+                base_versions: vec![
+                    BaseVersion {
+                        tag: "pakchunk101".into(),
+                        res: vec![
+                            ResEntry {
+                                filename: voice.into(),
+                                ..Default::default()
+                            },
+                            ResEntry {
+                                filename: shared.into(),
+                                ..Default::default()
+                            },
+                        ],
+                        packages: vec![Package {
+                            paks: vec![Pak {
+                                entries: vec![PakEntry {
+                                    name: signature.into(),
+                                    ..Default::default()
+                                }],
+                                ..Default::default()
+                            }],
+                        }],
+                        ..Default::default()
+                    },
+                    BaseVersion {
+                        tag: "pakchunk102".into(),
+                        res: vec![ResEntry {
+                            filename: other.into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            diff: None,
+        };
+        let voice_tag = super::super::download::item_tag_for(voice, 0);
+        let signature_tag = super::super::download::item_tag_for(signature, 0);
+        let shared_tag = super::super::download::item_tag_for(shared, 0);
+        let other_tag = super::super::download::item_tag_for(other, 0);
+        let cache = root(&config).join("future/2.0/nte-native");
+        let removed = [
+            format!("Res/abcd.4.{voice_tag}.part"),
+            format!("Res/abcd.4.{voice_tag}.cb.idx"),
+            format!(
+                "Res/abcd.4.{}.part",
+                super::super::download::item_tag_for(voice, 1)
+            ),
+            format!("Pak/abcd.4.{signature_tag}.part"),
+            format!("Patch/abcd.4.{voice_tag}.part"),
+            format!("Patch/{voice_tag}.0.abcd.4.tmp"),
+        ];
+        let kept = [
+            format!("Res/abcd.4.{shared_tag}.part"),
+            format!("Res/abcd.4.{other_tag}.part"),
+        ];
+        for path in removed.iter().chain(&kept) {
+            let path = cache.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"test").unwrap();
+        }
+        fs::create_dir_all(config.install_root.join("Client")).unwrap();
+        fs::write(config.install_root.join(voice), b"installed").unwrap();
+        mark_complete(&config, "future", "2.0", 8, 32).unwrap();
+        assert_eq!(
+            optional_cached_bytes(&config, &bundle, "pakchunk101").unwrap(),
+            24
+        );
+        assert_eq!(
+            optional_cached_bytes(&config, &bundle, "pakchunk102").unwrap(),
+            4
+        );
+        assert!(completion(&config, "future", "2.0").is_some());
+        assert_eq!(
+            remove_optional(&config, &bundle, "pakchunk101").unwrap(),
+            24
+        );
+        assert!(removed.iter().all(|path| !cache.join(path).exists()));
+        assert!(kept.iter().all(|path| cache.join(path).is_file()));
+        assert!(completion(&config, "future", "2.0").is_none());
+        assert_eq!(
+            fs::read(config.install_root.join(voice)).unwrap(),
+            b"installed"
+        );
+        assert_eq!(
+            optional_cached_bytes(&config, &bundle, "pakchunk101").unwrap(),
+            0
+        );
+        assert_eq!(
+            optional_cached_bytes(&config, &bundle, "pakchunk102").unwrap(),
+            4
+        );
+        assert_eq!(remove_optional(&config, &bundle, "pakchunk101").unwrap(), 0);
+        assert!(remove_optional(&config, &bundle, "unknown").is_err());
+    }
+
+    #[test]
+    fn optional_cleanup_rejects_symlinked_cache_before_removing_files() {
+        use crate::game::{
+            check::RemoteBundle,
+            manifest::{BaseVersion, GameManifest, ResEntry},
+        };
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new("preload-optional-symlink");
+        let mut config = config_for(&dir);
+        config.branch = "future".into();
+        let path = "Client/voice.pak";
+        let bundle = RemoteBundle {
+            config: RemoteConfig {
+                res_version: "2.0".into(),
+                ..Default::default()
+            },
+            manifest: GameManifest {
+                base_versions: vec![BaseVersion {
+                    tag: "pakchunk101".into(),
+                    res: vec![ResEntry {
+                        filename: path.into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            diff: None,
+        };
+        let key = super::super::download::item_tag_for(path, 0);
+        let cache = root(&config).join("future/2.0/nte-native/Res");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join(format!("aaaa.4.{key}.part")), b"safe").unwrap();
+        let outside = dir.join("outside");
+        fs::write(&outside, b"outside").unwrap();
+        symlink(&outside, cache.join(format!("bbbb.7.{key}.part"))).unwrap();
+        mark_complete(&config, "future", "2.0", 2, 11).unwrap();
+        assert!(remove_optional(&config, &bundle, "pakchunk101").is_err());
+        assert!(cache.join(format!("aaaa.4.{key}.part")).is_file());
+        assert!(completion(&config, "future", "2.0").is_some());
+        assert_eq!(fs::read(outside).unwrap(), b"outside");
     }
 
     #[test]

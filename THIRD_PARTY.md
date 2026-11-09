@@ -18,6 +18,10 @@ Rust 依赖见 [Cargo.lock](launcher/Cargo.lock), 许可证检查配置见 [deny
 
 游戏差分补丁使用 [hdiffpatch-rs](https://github.com/TwintailTeam/hdiffpatch-rs), 许可证为 MIT.
 
+音频设备与游戏播放流控制使用 [libpulse-binding](https://github.com/jnqnfe/pulse-binding-rust), 许可证为 MIT / Apache-2.0; 通过系统 libpulse 连接 PulseAudio 或 pipewire-pulse. 设备和播放流分别管理的设计参考 [pulsemixer](https://github.com/GeorgeFilipkin/pulsemixer) (MIT), 未复制其代码.
+
+音频启动环境中的 `target.object` 属性用于让 Easy Effects 保留游戏的独立路由, 依据其 [播放流目标识别逻辑](https://github.com/wwmm/easyeffects/blob/master/src/pw_node_manager.cpp); 未复制其代码.
+
 ## 颜色计算
 
 | 用途           | 来源                                                                                                             | 许可证        |
@@ -55,3 +59,27 @@ Rust 依赖见 [Cargo.lock](launcher/Cargo.lock), 许可证检查配置见 [deny
 ## Electron 运行时
 
 图形界面使用 Electron 44 (MIT), 其中的 Chromium、Node.js 与 FFmpeg 使用各自许可. 发行目录保留 Electron 的 `LICENSE` 与完整 `LICENSES.chromium.html`; Oddity 的 GPL-3.0-or-later 许可证位于 `LICENSE.oddity`.
+
+## 启动环境准备
+
+| 组件 | 用途 | 许可证 |
+| --- | --- | --- |
+| [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher) | 下载官方 zipapp 或通过系统软件包安装, 调用它准备 Steam Linux Runtime 和 prefix | [GPL-3.0](https://github.com/Open-Wine-Components/umu-launcher/blob/main/LICENSE) |
+| [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom) | 下载并安装官方兼容工具分发包 | [上游各组件许可证](https://github.com/GloriousEggroll/proton-ge-custom#license) |
+| [Heroic Games Launcher](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher) | 参考兼容层下载管理与 umu 集成的职责划分, 未复制代码 | [GPL-3.0](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/blob/main/LICENSE) |
+
+下载的 umu、Proton 和 Steam Linux Runtime 保留各自分发包中的许可证. Rust tar 解包依赖使用 MIT/Apache-2.0, 版本见 Cargo.lock.
+
+## 完成礼花
+
+启动环境向导使用 [canvas-confetti](https://github.com/catdad/canvas-confetti) 的粒子物理与 Canvas 渲染, 许可证为 [ISC](https://github.com/catdad/canvas-confetti/blob/master/LICENSE). 发射时序由 Anime.js 编排, 尊重减少动态效果设置, 离开向导时清理粒子.
+
+## 性能采样与图表
+
+性能比较调用系统 [MangoHud](https://github.com/flightlessmango/MangoHud) (MIT), 按其官方 `logging.cpp` 定义读取逐帧 CSV, 参考随附 mangoplot 的本地日志出图方式; 未复制代码, 不上传采样数据. 硬件补充指标来自 `/proc` 和系统 `nvidia-smi`, 无需安装 Python 分析环境.
+
+SVG 转 PNG 使用 [resvg](https://github.com/linebender/resvg) (MIT / Apache-2.0), CSV 解析使用 [rust-csv](https://github.com/BurntSushi/rust-csv) (MIT / Unlicense). 报告图表与统计逻辑为项目实现.
+
+resvg 的 tiny-skia 依赖 [arrayref](https://github.com/droundy/arrayref) 0.3.9 (BSD-2-Clause), 许可证文本随该 crate 发布; `deny.toml` 为此版本设置限定许可.
+
+GPU 进程分类参考 [gpustat](https://github.com/wookayin/gpustat) (MIT) 区分图形与计算上下文的方式; 使用系统 `nvidia-smi` XML, 未复制代码或引入 NVML 绑定.

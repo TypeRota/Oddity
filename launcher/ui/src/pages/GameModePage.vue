@@ -8,6 +8,7 @@ import type { GameModeOptions, GameModeStatus } from "../types/launcher";
 import { useControlMotion } from "../composables/useControlMotion";
 import { useScrubNavigation } from "../composables/useScrubNavigation";
 import GamescopeSettings from "../components/GamescopeSettings.vue";
+import PerformanceComparison from "../components/PerformanceComparison.vue";
 import CpuSettings from "../components/CpuSettings.vue";
 import GpuSettings from "../components/GpuSettings.vue";
 import BaseInput from "../components/BaseInput.vue";
@@ -74,6 +75,7 @@ const categories = [
   { id: "general", label: "常规", icon: "i-game-controller" },
   { id: "cpu", label: "CPU 与优先级", icon: "i-cpu" },
   { id: "gpu", label: "GPU 超频", icon: "i-graphics-card" },
+  { id: "comparison", label: "性能比较", icon: "i-monitor" },
   { id: "gamescope", label: "Gamescope", icon: "i-monitor" },
 ] as const;
 type Category = (typeof categories)[number]["id"];
@@ -137,6 +139,13 @@ const entries: {
     keywords: "窗口 全屏 无边框 FSR NIS 整数缩放",
   },
 ];
+entries.push({
+  id: "comparison",
+  category: "comparison",
+  label: "性能比较",
+  description: "自动记录 Proton A/B 性能并生成图表.",
+  keywords: "FPS 帧时间 显存 内存 采样 报告 PNG 测试",
+});
 const results = computed(() => {
   const words = query.value.trim().toLocaleLowerCase().split(/\s+/);
   return entries.filter((entry) =>
@@ -526,6 +535,10 @@ const isActive = computed(() => state.page === "game-mode");
                 }
               "
               :available="available('performance')"
+            />
+            <PerformanceComparison
+              v-else-if="item.id === 'comparison'"
+              data-game-setting="comparison"
             />
             <GamescopeSettings v-else :available="available('gamescope')" />
           </motion.div>

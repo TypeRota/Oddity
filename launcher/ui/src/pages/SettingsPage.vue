@@ -3,6 +3,7 @@ import { motion, useAnimate } from "motion-v";
 import { computed, nextTick, reactive, ref, watch } from "vue";
 import {
   state,
+  showPage,
   ui,
   form,
   applyTheme,
@@ -38,6 +39,7 @@ import SettingRow from "../components/settings/SettingRow.vue";
 import LogExport from "../components/LogExport.vue";
 import EnvironmentSnapshots from "../components/EnvironmentSnapshots.vue";
 import InstallMigration from "../components/InstallMigration.vue";
+import AudioSettings from "../components/AudioSettings.vue";
 import GamepadSettings from "../components/GamepadSettings.vue";
 import BaseDisclosure from "../components/BaseDisclosure.vue";
 import type { IntegrityState, MeteredPolicy } from "../types/launcher";
@@ -520,8 +522,16 @@ const integritySummary = computed(() => {
               }"
               :transition="surface"
             >
+              <AudioSettings
+                v-if="visited.has(category.id) && category.id === 'audio'"
+                :active="
+                  navigation.category === 'audio' && state.page === 'settings'
+                "
+              />
               <GamepadSettings
-                v-if="visited.has(category.id) && category.id === 'gamepad'"
+                v-else-if="
+                  visited.has(category.id) && category.id === 'gamepad'
+                "
               />
               <template
                 v-else-if="
@@ -915,9 +925,18 @@ const integritySummary = computed(() => {
                 v-else-if="
                   visited.has(category.id) && category.id === 'runtime'
                 "
+                class="runtime-settings"
                 data-setting="runtime"
                 tabindex="-1"
               >
+                <SettingGroup title="启动环境向导">
+                  <BaseButton
+                    icon="i-terminal-window"
+                    :disabled="runtimePathsLocked"
+                    @click="showPage('runtime-setup')"
+                    >打开向导</BaseButton
+                  >
+                </SettingGroup>
                 <RuntimeEnvironments />
               </div>
               <template

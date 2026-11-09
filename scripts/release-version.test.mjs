@@ -95,7 +95,7 @@ test("非法版本直接报错", () => {
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function releaseVerificationScript() {
-  const workflow = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
+  const workflow = readFileSync(join(repoRoot, ".gitea/workflows/release.yml"), "utf8");
   const step = workflow.match(/      - name: 校验标签与版本\r?\n[\s\S]*?        run: \|\r?\n((?:(?: {10}.*)?\r?\n)+)/);
   assert.ok(step, "找不到发布 workflow 的 tag 校验步骤");
   return step[1].replace(/^ {10}/gm, "");

@@ -3,16 +3,17 @@ import { computed, onBeforeUnmount, ref, useId, watch } from "vue";
 import { AnimatePresence, motion } from "motion-v";
 import { createTimeline } from "animejs";
 import BaseButton from "./BaseButton.vue";
-import BaseSwitch from "./BaseSwitch.vue";
+import BaseModal from "./BaseModal.vue";
 import { useControlMotion } from "../composables/useControlMotion";
 import {
   state,
   formatSize,
   loadResourceCatalog,
-  selectOptionalResource,
-  toggleAllOptionalResources,
   resourceCatalogMatches,
   downloadBusy,
+  downloadOptionalResource,
+  resourceDownloadsStarting,
+  removeOptionalResource,
 } from "../core/controller";
 import type { OptionalResource } from "../types/launcher";
 import { gameSettings } from "../core/game";
@@ -26,25 +27,17 @@ let timeline: ReturnType<typeof createTimeline> | undefined;
 
 const active = computed(() => state.page === "update");
 const interactionDisabled = computed(
-  () => downloadBusy() || state.game !== "idle",
+  () => downloadBusy() || state.resourcesSaving || state.game !== "idle",
 );
 const catalog = computed(() =>
   resourceCatalogMatches.value ? state.resourceCatalog : null,
 );
 const resources = computed(() => catalog.value?.resources ?? []);
-const selectable = computed(() =>
-  resources.value.filter((resource) => resource.state === "absent"),
+const installed = computed(() =>
+  resources.value.filter((resource) => resource.state === "installed"),
 );
-const selected = computed(() =>
-  resources.value.filter((resource) => resource.selected),
-);
-const selectedBytes = computed(() =>
-  selected.value.reduce((total, resource) => total + resource.size, 0),
-);
-const allSelected = computed(
-  () =>
-    selectable.value.length > 0 &&
-    selectable.value.every((resource) => resource.selected),
+const installedBytes = computed(() =>
+  installed.value.reduce((total, resource) => total + resource.size, 0),
 );
 // 地区或目录改动后先保留占位, 等保存完成再读取新目录.
 const pendingReload = computed(
@@ -61,22 +54,63 @@ const visible = computed(
 );
 const summaryText = computed(() => {
   if (!catalog.value) return state.resourcesError ? "读取失败" : "读取中";
-  const count = `${selected.value.length}/${resources.value.length} 项`;
+  const count = `${installed.value.length}/${resources.value.length} 项`;
   const bytes = Math.round(displayedBytes.value);
   return bytes > 0 ? `${count} · ${formatSize(bytes)}` : count;
 });
 const stateLabel = (resource: OptionalResource) =>
   resource.state === "installed"
-    ? "已安装"
+    ? resource.needsUpdate
+      ? "待更新"
+      : "已安装"
     : resource.state === "partial"
       ? "部分安装"
       : "";
-const toggleAllLabel = computed(() =>
-  allSelected.value ? "取消全选" : "全选",
+const removal = ref<{ tag: string; name: string; preload: boolean } | null>(
+  null,
 );
+const resourceTasks = computed(() =>
+  state.download?.mode === "resources"
+    ? state.download.resourceTasks || {}
+    : {},
+);
+const downloadDisabled = computed(
+  () =>
+    state.resourcesSaving ||
+    state.resourcesLoading ||
+    state.game !== "idle" ||
+    (downloadBusy() && state.download?.mode !== "resources"),
+);
+const rowBusy = (tag: string) =>
+  resourceDownloadsStarting.has(tag) ||
+  ["checking", "downloading"].includes(resourceTasks.value[tag]?.phase || "");
+const downloadLabel = (resource: OptionalResource) => {
+  const task = resourceTasks.value[resource.tag];
+  if (resourceDownloadsStarting.has(resource.tag) || task?.phase === "checking")
+    return "检查中";
+  if (task?.phase === "downloading")
+    return task.totalBytes
+      ? `${Math.min(99, Math.floor((task.downloadedBytes / task.totalBytes) * 100))}%`
+      : "下载中";
+  if (task?.phase === "failed") return "重试";
+  return resource.state === "installed"
+    ? "更新"
+    : resource.state === "partial"
+      ? "继续下载"
+      : "下载";
+};
+function closeRemoval(open: boolean) {
+  if (!open && !state.resourcesSaving) removal.value = null;
+}
+async function confirmRemoval() {
+  const target = removal.value;
+  if (!target) return;
+  if (await removeOptionalResource(target.tag, target.preload))
+    removal.value = null;
+}
 
 watch(
-  selectedBytes,
+  installedBytes,
   (value, previous) => {
     if (reduced.value) {
       timeline?.cancel();
@@ -169,7 +203,7 @@ onBeforeUnmount(() => timeline?.cancel());
           :aria-controls="bodyId"
           @click="expanded = !expanded"
         >
-          <span id="resource-options-title">可选资源</span>
+          <span id="resource-options-title">语音资源管理</span>
           <span ref="summary" class="resource-options__summary">{{
             summaryText
           }}</span>
@@ -183,15 +217,6 @@ onBeforeUnmount(() => timeline?.cancel());
             ><use href="#i-caret-down"
           /></motion.svg>
         </button>
-        <BaseButton
-          v-if="selectable.length"
-          id="optional-resources-all"
-          size="sm"
-          variant="ghost"
-          :disabled="interactionDisabled || state.resourcesLoading"
-          @click="toggleAllOptionalResources"
-          >{{ toggleAllLabel }}</BaseButton
-        >
       </div>
       <AnimatePresence :initial="false">
         <motion.div
@@ -208,7 +233,7 @@ onBeforeUnmount(() => timeline?.cancel());
               v-if="state.resourcesError && !catalog"
               class="resource-options__hint"
             >
-              可选资源读取失败.
+              语音资源读取失败.
               <BaseButton
                 id="optional-resources-retry"
                 size="sm"
@@ -257,7 +282,7 @@ onBeforeUnmount(() => timeline?.cancel());
                 "
               >
                 <span class="resource-row__copy">
-                  <span class="resource-row__tag">{{ resource.tag }}</span>
+                  <span class="resource-row__tag">{{ resource.name }}</span>
                   <span class="resource-row__meta"
                     >{{ resource.version }} ·
                     {{ formatSize(resource.size) }}</span
@@ -269,28 +294,56 @@ onBeforeUnmount(() => timeline?.cancel());
                   :class="'is-' + resource.state"
                   >{{ stateLabel(resource) }}</span
                 >
-                <span
-                  class="resource-row__switch"
-                  :title="
-                    resource.state === 'absent'
-                      ? undefined
-                      : '已安装的资源随更新维护'
+                <BaseButton
+                  v-if="resource.state !== 'absent'"
+                  :id="'resource-remove-' + resource.tag"
+                  size="sm"
+                  variant="ghost"
+                  :disabled="interactionDisabled || state.resourcesLoading"
+                  @click="
+                    removal = {
+                      tag: resource.tag,
+                      name: resource.name,
+                      preload: false,
+                    }
                   "
+                  >卸载</BaseButton
                 >
-                  <BaseSwitch
-                    :id="'optional-resource-' + resource.tag"
-                    :label="'选择 ' + resource.tag"
-                    :model-value="resource.selected"
-                    :disabled="
-                      interactionDisabled ||
-                      state.resourcesLoading ||
-                      resource.state !== 'absent'
-                    "
-                    @update:model-value="
-                      selectOptionalResource(resource.tag, $event)
-                    "
-                  />
-                </span>
+                <BaseButton
+                  v-if="(catalog?.preloadResourceBytes[resource.tag] || 0) > 0"
+                  :id="'resource-preload-remove-' + resource.tag"
+                  size="sm"
+                  variant="ghost"
+                  :disabled="interactionDisabled || state.resourcesLoading"
+                  @click="
+                    removal = {
+                      tag: resource.tag,
+                      name: resource.name,
+                      preload: true,
+                    }
+                  "
+                  >删除预下载</BaseButton
+                >
+                <BaseButton
+                  :id="'resource-download-' + resource.tag"
+                  size="sm"
+                  variant="ghost"
+                  :busy="rowBusy(resource.tag)"
+                  :disabled="
+                    downloadDisabled ||
+                    (resource.state === 'installed' &&
+                      !resource.needsUpdate &&
+                      resourceTasks[resource.tag]?.phase !== 'failed')
+                  "
+                  :title="
+                    resourceTasks[resource.tag]?.error ||
+                    (resource.state === 'installed' && !resource.needsUpdate
+                      ? '已是最新'
+                      : undefined)
+                  "
+                  @click="downloadOptionalResource(resource.tag)"
+                  >{{ downloadLabel(resource) }}</BaseButton
+                >
               </motion.li>
             </ul>
           </div>
@@ -298,4 +351,32 @@ onBeforeUnmount(() => timeline?.cancel());
       </AnimatePresence>
     </motion.section>
   </AnimatePresence>
+  <BaseModal
+    :open="Boolean(removal)"
+    :title="removal?.preload ? '删除语音预下载' : '卸载语音资源'"
+    @update:open="closeRemoval"
+  >
+    <p v-if="removal?.preload">
+      删除 {{ removal.name }} 的预下载缓存? 已安装的语音仍会随版本更新预下载.
+    </p>
+    <p v-else>
+      卸载 {{ removal?.name }}? 如游戏正在使用该语种,
+      请在游戏内切换至其他已安装语种.
+    </p>
+    <div class="update-actions">
+      <BaseButton
+        id="voice-resource-remove-confirm"
+        variant="danger"
+        :busy="state.resourcesSaving"
+        @click="confirmRemoval"
+        >{{ removal?.preload ? "删除" : "卸载" }}</BaseButton
+      >
+      <BaseButton
+        variant="ghost"
+        :disabled="state.resourcesSaving"
+        @click="removal = null"
+        >取消</BaseButton
+      >
+    </div>
+  </BaseModal>
 </template>

@@ -16,6 +16,7 @@ import type {
   MigrationStatus,
   ResourceCatalog,
   OptionalResource,
+  ResourceTask,
   Commands,
   CommandArgs,
   PreviewPaths,
@@ -31,6 +32,8 @@ import type {
   SnapshotSummary,
   IntegrityStatus,
   GameSettings,
+  RuntimeSetupPlan,
+  RuntimeSetupStatus,
 } from "../types/launcher";
 import { activeGame, gameSettings } from "./game";
 export { isDesktop };
@@ -102,6 +105,8 @@ function previewPaths() {
     overrides.installRoot || joinPath(home, "Games/Neverness To Everness");
   const protonName = overrides.protonName || "GE-Proton11-5-x86_64";
   return {
+    dataHome,
+    steamRoot,
     installRoot,
     launcherRoot: joinPath(installRoot, distributions.cn.launcherDir),
     prefix: joinPath(dataHome, "oddity/prefix"),
@@ -180,6 +185,7 @@ const mock: Bootstrap = {
     activeGame: "nte",
     games: {
       nte: {
+        audio: { device: null, volume: 100 },
         distribution: "cn",
         installRoot: null,
         globalInstallRoot: null,
@@ -304,8 +310,8 @@ function previewSnapshotComparison(
       key: "launcher.version",
       section: "启动器",
       label: "Oddity 版本",
-      baseline: "0.1.0",
-      current: "0.1.0",
+      baseline: "0.2.0-alpha.1",
+      current: "0.2.0-alpha.1",
       status: "same",
     },
     {
@@ -769,39 +775,45 @@ const mockDownload: DownloadStatus = {
 const previewOptionalResources: OptionalResource[] = [
   {
     tag: "pakchunk101",
-    name: "pakchunk101",
+    name: "中文语音",
     version: "0.101.18",
     size: 1_793_007_011,
     state: "installed",
     selected: true,
+    needsUpdate: false,
   },
   {
     tag: "pakchunk102",
-    name: "pakchunk102",
+    name: "日语语音",
     version: "0.102.18",
     size: 1_752_625_939,
     state: "installed",
     selected: true,
+    needsUpdate: false,
   },
   {
     tag: "pakchunk103",
-    name: "pakchunk103",
+    name: "英语语音",
     version: "0.103.18",
     size: 1_836_921_904,
     state: "absent",
     selected: false,
+    needsUpdate: false,
   },
   {
     tag: "pakchunk104",
-    name: "pakchunk104",
+    name: "韩语语音",
     version: "0.104.18",
     size: 2_008_643_453,
     state: "absent",
     selected: false,
+    needsUpdate: false,
   },
 ];
 
 let previewPreloadCompleted = false;
+let previewPreloadCached = false;
+let previewPreloadResourceBytes: Record<string, number> = {};
 
 function previewCatalog(): ResourceCatalog {
   return clone({
@@ -815,9 +827,16 @@ function previewCatalog(): ResourceCatalog {
     preloadVersion: "1.5.0",
     preloadAvailable: true,
     preloadCompleted: previewPreloadCompleted,
-    preloadCached: previewPreloadCompleted,
-    preloadCachedVersion: previewPreloadCompleted ? "1.5.0" : "",
-    preloadCachedBytes: previewPreloadCompleted ? 11_752_693_396 : 0,
+    preloadCached: previewPreloadCached,
+    preloadCachedVersion: previewPreloadCached ? "1.5.0" : "",
+    preloadCachedBytes: previewPreloadCached
+      ? 5 * 1024 ** 3 +
+        Object.values(previewPreloadResourceBytes).reduce(
+          (total, bytes) => total + bytes,
+          0,
+        )
+      : 0,
+    preloadResourceBytes: previewPreloadResourceBytes,
     resources: previewOptionalResources,
   });
 }
@@ -850,11 +869,131 @@ const idleMigration: MigrationStatus = {
 };
 let previewMigration: MigrationStatus = clone(idleMigration);
 
+let previewSetupPlan: RuntimeSetupPlan | null = null;
+let previewSetupStatus: RuntimeSetupStatus = {
+  busy: false,
+  progress: {
+    component: "umu",
+    phase: "",
+    detail: "",
+    downloaded: 0,
+    total: 0,
+  },
+  error: null,
+  done: false,
+};
+let previewSetupProton: string | null = null;
+let previewSetupCreate = false;
+let previewSystemUmu = false;
+
 async function previewInvoke(
   command: keyof Commands,
   args?: CommandArgs[keyof CommandArgs],
 ): Promise<Commands[keyof Commands]> {
   switch (command) {
+    case "runtime_setup_info":
+      return {
+        needsSetup: false,
+        environment:
+          mock.settings.runtimeEnvironments.find(
+            (entry) =>
+              entry.id === gameSettings(mock.settings).activeEnvironment,
+          ) ?? null,
+        umu: mock.umuAvailable ? "/usr/bin/umu-run" : null,
+        proton: previewSetupProton,
+        protonDirectory: joinPath(preview.steamRoot, "compatibilitytools.d"),
+        systemUmu: previewSystemUmu,
+      };
+    case "runtime_setup_plan": {
+      const { allUsers, proton, createEnvironment } =
+        args as CommandArgs["runtime_setup_plan"];
+      previewSetupCreate = createEnvironment;
+      previewSetupPlan = {
+        umu: allUsers
+          ? "/usr/bin/umu-run"
+          : joinPath(preview.dataHome, "oddity/runtime/umu/umu-run"),
+        proton: proton || preview.protonPath.replace(/\/proton$/, ""),
+        installUmu: allUsers ? !previewSystemUmu : !mock.umuAvailable,
+        installProton: !proton,
+        systemCommand:
+          allUsers && !previewSystemUmu
+            ? [
+                "/usr/bin/pacman",
+                "-S",
+                "--needed",
+                "--noconfirm",
+                "umu-launcher",
+              ]
+            : null,
+        umuVersion: "1.4.4",
+        log: joinPath(preview.dataHome, "oddity/logs/runtime-setup.log"),
+      };
+      return clone(previewSetupPlan);
+    }
+    case "runtime_setup_apply":
+      if (!previewSetupPlan) throw new Error("请先查看安装计划");
+      previewSetupProton = previewSetupPlan.proton;
+      if (previewSetupPlan.systemCommand) previewSystemUmu = true;
+      for (const component of ["umu", "proton", "runtime"] as const) {
+        previewSetupStatus = {
+          busy: true,
+          done: false,
+          error: null,
+          progress: {
+            component,
+            phase: "prepare",
+            detail: `正在准备 ${component}`,
+            downloaded: 0,
+            total: 0,
+          },
+        };
+        await new Promise((resolve) => window.setTimeout(resolve, 1400));
+      }
+      mock.umuAvailable = true;
+      previewSetupStatus = {
+        busy: false,
+        progress: {
+          component: "runtime",
+          phase: "runtime",
+          detail: "运行时准备完成",
+          downloaded: 0,
+          total: 0,
+        },
+        error: null,
+        done: true,
+      };
+      if (
+        previewSetupCreate ||
+        !mock.settings.runtimeEnvironments.some(
+          (entry) =>
+            entry.game === activeGame(mock.settings) &&
+            entry.distribution === gameSettings(mock.settings).distribution,
+        )
+      ) {
+        await previewInvoke("environment_create", {
+          name: mock.settings.runtimeEnvironments.length
+            ? `运行环境 ${mock.settings.runtimeEnvironments.length + 1}`
+            : "默认运行环境",
+          protonPath: previewSetupProton,
+          sourceId: null,
+          distribution: gameSettings(mock.settings).distribution,
+        });
+      }
+      const created = mock.settings.runtimeEnvironments.at(-1);
+      if (previewSetupCreate && created)
+        await previewInvoke("environment_action", {
+          action: "switch",
+          id: created.id,
+        });
+      previewSetupPlan = null;
+      return null;
+    case "runtime_setup_status":
+      return clone(previewSetupStatus);
+    case "runtime_setup_dismiss":
+      return null;
+    case "runtime_setup_environment":
+      if (!mock.prefixExists) throw new Error("请先配置启动环境");
+      return clone(mock);
     case "game_accounts":
       return [];
     case "game_send_code":
@@ -1149,6 +1288,8 @@ async function previewInvoke(
       return previewCatalog();
     case "game_preload_delete":
       previewPreloadCompleted = false;
+      previewPreloadCached = false;
+      previewPreloadResourceBytes = {};
       Object.assign(mockDownload, {
         mode: "check",
         phase: "idle",
@@ -1171,17 +1312,59 @@ async function previewInvoke(
         error: "",
       });
       return previewCatalog();
-    case "game_resource_select": {
-      const { tags } = args as CommandArgs["game_resource_select"];
-      const known = new Set(previewOptionalResources.map((item) => item.tag));
-      const unknown = tags.find((tag) => !known.has(tag));
-      if (unknown) throw new Error(`未知的可选资源: ${unknown}`);
-      previewOptionalResources.forEach((resource) => {
-        if (resource.state === "absent")
-          resource.selected = tags.includes(resource.tag);
-      });
-      await new Promise((resolve) => setTimeout(resolve, 160));
+    case "game_resource_remove": {
+      const { tag, preload } = args as CommandArgs["game_resource_remove"];
+      const resource = previewOptionalResources.find(
+        (item) => item.tag === tag,
+      );
+      if (!resource) throw new Error(`未知的可选资源: ${tag}`);
+      if (preload) {
+        if (!previewPreloadResourceBytes[tag])
+          throw new Error("该语种没有可删除的预下载缓存");
+        delete previewPreloadResourceBytes[tag];
+        previewPreloadCompleted = false;
+      } else resource.state = "absent";
+      resource.selected = preload && resource.state !== "absent";
       return previewCatalog();
+    }
+    case "game_resource_download": {
+      const { tag } = args as CommandArgs["game_resource_download"];
+      const resource = previewOptionalResources.find(
+        (item) => item.tag === tag,
+      );
+      if (!resource) throw new Error(`未知的语音资源: ${tag}`);
+      resource.selected = true;
+      if (mockDownload.mode !== "resources") {
+        Object.assign(mockDownload, {
+          mode: "resources",
+          resourceTasks: {},
+          downloadedBytes: 0,
+          totalBytes: 0,
+        });
+      }
+      mockDownload.phase = "game";
+      const tasks = mockDownload.resourceTasks!;
+      if (["checking", "downloading"].includes(tasks[tag]?.phase || ""))
+        return clone(mockDownload);
+      const task: ResourceTask = {
+        phase: "downloading",
+        downloadedBytes: 0,
+        totalBytes: resource.size,
+        error: "",
+      };
+      tasks[tag] = task;
+      mockDownload.totalBytes += resource.size;
+      window.setTimeout(() => {
+        if (task.phase !== "downloading") return;
+        task.downloadedBytes = resource.size;
+        task.phase = "ready";
+        resource.state = "installed";
+        resource.needsUpdate = false;
+        mockDownload.downloadedBytes += resource.size;
+        if (Object.values(tasks).every((task) => task.phase === "ready"))
+          mockDownload.phase = "ready";
+      }, 2200);
+      return clone(mockDownload);
     }
     case "migration_plan": {
       const { distribution, target } = args as CommandArgs["migration_plan"];
@@ -1311,7 +1494,19 @@ async function previewInvoke(
       });
       if (mode !== "check") {
         window.setTimeout(() => {
-          if (mode === "preload") previewPreloadCompleted = true;
+          if (mode === "preload") {
+            previewPreloadCompleted = true;
+            previewPreloadCached = true;
+            previewPreloadResourceBytes = Object.fromEntries(
+              previewOptionalResources
+                .filter((resource) => resource.selected)
+                .map((resource) => [resource.tag, resource.size]),
+            );
+          }
+          if (mode === "apply")
+            previewOptionalResources.forEach((resource) => {
+              if (resource.selected) resource.state = "installed";
+            });
           Object.assign(mockDownload, {
             phase: mode === "preload" ? "preloaded" : "ready",
             completedFiles: 2,
@@ -1326,6 +1521,10 @@ async function previewInvoke(
       return clone(mockDownload);
     }
     case "game_download_cancel":
+      Object.values(mockDownload.resourceTasks || {}).forEach((task) => {
+        if (["checking", "downloading"].includes(task.phase))
+          task.phase = "cancelled";
+      });
       mockDownload.phase = "cancelled";
       return clone(mockDownload);
     case "environment_snapshot_overview":
@@ -1403,6 +1602,13 @@ async function previewInvoke(
       };
     case "game_mode_gpu_apply":
       throw new Error("请在原生启动器中应用 GPU 配置");
+    case "audio_status":
+      return {
+        devices: [{ index: 1, name: "demo-output", label: "系统输出设备" }],
+        defaultDevice: "demo-output",
+        streams: [],
+        error: null,
+      };
     case "game_mode_status":
       return {
         capabilities: (
@@ -1425,6 +1631,13 @@ async function previewInvoke(
       return previewGameStatus();
     case "take_launch_error":
       return null;
+    case "performance_overview":
+      return { active: null, recording: null, comparisons: [] };
+    case "performance_create":
+    case "performance_activate":
+    case "performance_report":
+    case "performance_export":
+      throw new Error("性能采样需要在桌面应用中使用");
     case "playtime_history":
       return previewHistory();
     case "playtime_export_poster": {

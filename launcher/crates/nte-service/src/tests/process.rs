@@ -133,6 +133,7 @@ fn game_mode_status_reports_capabilities_and_releases_the_finished_session() {
         .get_envs()
         .any(|(key, value)| key == "MANGOHUD" && value == Some(std::ffi::OsStr::new("1"))));
     let session = GameSession {
+        performance: std::sync::Arc::new(std::sync::Mutex::new(None)),
         id: 1,
         pid: 0,
         pgid: 0,
@@ -181,6 +182,7 @@ fn game_status_reflects_the_session() {
     assert!(!GameStatus::from_session(None).running);
 
     let session = GameSession {
+        performance: std::sync::Arc::new(std::sync::Mutex::new(None)),
         id: 7,
         pid: 1234,
         pgid: 1234,
@@ -214,6 +216,7 @@ fn game_status_reflects_the_session() {
 
 fn test_game_session(closing: bool) -> GameSession {
     GameSession {
+        performance: std::sync::Arc::new(std::sync::Mutex::new(None)),
         id: 11,
         pid: 4321,
         pgid: 4321,
@@ -765,6 +768,7 @@ fn tracks_playtime_while_the_game_process_is_alive() {
     let root = child.id();
     let pgid = i32::try_from(root).expect("pid fits i32");
     let session = GameSession {
+        performance: std::sync::Arc::new(std::sync::Mutex::new(None)),
         id: 1,
         pid: root,
         pgid,

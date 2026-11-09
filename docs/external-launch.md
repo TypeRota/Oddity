@@ -47,6 +47,20 @@ oddity --launch --help
 
 动作位于 Oddity 图标的右键菜单或应用菜单的动作菜单中. 主入口 Oddity 仍用于打开启动器界面. 旧版本安装的桌面入口不带 `--game`, 仍然可以正常启动.
 
+## XWayland 模式
+
+在 Oddity 图标的动作菜单中选择 `XWayland 模式`, 或运行:
+
+```bash
+oddity --xwayland
+```
+
+此动作打开启动器界面, 当前实例及其游戏使用 X11/XWayland. 可以组合 `--launch` 参数直接启动游戏. 显示模式只影响本次 Oddity 进程, 不写入运行环境设置.
+
+切换前请从托盘完全退出 Oddity. 已运行的 Wayland 实例无法通过单实例转发切换显示后端, 会提示退出后重试. 此动作不会创建独立的应用快捷方式.
+
+游戏与官方 SDK 进程不继承 `proxy` 和 `*_proxy` 代理环境变量 (忽略大小写). Oddity 自身的下载与登录请求仍沿用原代理环境.
+
 ## Steam
 
 1. 在 Steam 中添加非 Steam 游戏, 目标选择 `oddity`.

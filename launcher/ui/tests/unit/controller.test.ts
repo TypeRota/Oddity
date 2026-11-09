@@ -127,6 +127,7 @@ vi.mock("../../src/composables/useNotificationArrival", async () => {
   };
 });
 vi.mock("../../src/core/desktop", () => ({
+  listen: async () => () => {},
   desktopWindow: {
     getState: async () => {
       const focused = backend.focused;
@@ -159,30 +160,34 @@ function catalogFixture(): ResourceCatalog {
     preloadCached: false,
     preloadCachedVersion: "",
     preloadCachedBytes: 0,
+    preloadResourceBytes: {},
     resources: [
       {
         tag: "pakchunk101",
-        name: "pakchunk101",
+        name: "中文语音",
         version: "0.101.18",
         size: 1_000_000,
         state: "installed",
         selected: true,
+        needsUpdate: false,
       },
       {
         tag: "pakchunk102",
-        name: "pakchunk102",
+        name: "日语语音",
         version: "0.102.18",
         size: 2_000_000,
         state: "absent",
         selected: false,
+        needsUpdate: false,
       },
       {
         tag: "pakchunk103",
-        name: "pakchunk103",
+        name: "英语语音",
         version: "0.103.18",
         size: 3_000_000,
         state: "partial",
         selected: true,
+        needsUpdate: false,
       },
     ],
   };
@@ -262,12 +267,18 @@ beforeEach(() => {
           };
         case "launcher_background":
           return structuredClone(backend.background);
+        case "runtime_setup_info":
+          return { needsSetup: false };
+        case "runtime_setup_environment":
+          throw new Error("请先配置启动环境");
         case "bootstrap":
           return structuredClone(backend.data);
         case "check_update":
           return structuredClone(backend.result);
         case "game_status":
           return structuredClone(backend.status);
+        case "performance_overview":
+          return { active: null, recording: null, comparisons: [] };
         case "playtime_history":
           return structuredClone(backend.playtimeHistory);
         case "game_download_status":
@@ -309,13 +320,38 @@ beforeEach(() => {
             preloadCachedBytes: 0,
           };
           return structuredClone(backend.catalog);
-        case "game_resource_select": {
-          const { tags } = args as unknown as { tags: string[] };
-          backend.catalog.resources.forEach((resource) => {
-            if (resource.state === "absent")
-              resource.selected = tags.includes(resource.tag);
-          });
+        case "game_resource_remove": {
+          const { tag, preload } = args as unknown as {
+            tag: string;
+            preload: boolean;
+          };
+          const resource = backend.catalog.resources.find(
+            (item) => item.tag === tag,
+          )!;
+          resource.selected = preload && resource.state !== "absent";
+          if (preload) {
+            backend.catalog.preloadCompleted = false;
+            delete backend.catalog.preloadResourceBytes[tag];
+          } else resource.state = "absent";
           return structuredClone(backend.catalog);
+        }
+        case "game_resource_download": {
+          const { tag } = args as unknown as { tag: string };
+          backend.downloadStatus = {
+            ...backend.downloadStatus,
+            mode: "resources",
+            phase: "game",
+            resourceTasks: {
+              ...backend.downloadStatus.resourceTasks,
+              [tag]: {
+                phase: "downloading",
+                downloadedBytes: 0,
+                totalBytes: 100,
+                error: "",
+              },
+            },
+          };
+          return structuredClone(backend.downloadStatus);
         }
         case "save_settings":
           backend.data.settings = { ...args!.settings };
@@ -535,7 +571,23 @@ describe("启动与设置", () => {
     expect(c.form.theme).toBe("light");
   });
 
-  it("未创建运行环境时, 启动操作转到设置并提示创建", async () => {
+  it("首次使用进入启动环境配置, 不提示手动创建环境", async () => {
+    const original = backend.invoke.getMockImplementation()!;
+    backend.invoke.mockImplementation(async (command, args) => {
+      if (command === "runtime_setup_info") return { needsSetup: true };
+      return original(command, args);
+    });
+    backend.data = bootstrap({
+      ok: false,
+      error: "请先在设置中创建并选择 Proton 运行环境",
+      prefixExists: false,
+    });
+    const c = await boot();
+    expect(c.state.page).toBe("runtime-setup");
+    expect(noticeMessage()).toBeUndefined();
+  });
+
+  it("未创建运行环境时, 准备失败后进入启动环境配置", async () => {
     backend.data = bootstrap({
       prefix: "",
       prefixExists: false,
@@ -545,8 +597,8 @@ describe("启动与设置", () => {
     backend.invoke.mockClear();
     c.handleLaunchAction();
     await flushPromises();
-    expect(c.state.page).toBe("settings");
-    expect(noticeMessage()).toContain("请先在设置中创建");
+    expect(c.state.page).toBe("runtime-setup");
+    expect(noticeMessage()).toContain("请先配置启动环境");
     expect(backend.invoke).not.toHaveBeenCalledWith("launch_official");
   });
 
@@ -1322,36 +1374,134 @@ describe("更新检查", () => {
     expect(c.downloadView.value.detail).toContain("下次预下载");
   });
 
-  it("更新页读取可选资源并提交选择", async () => {
+  it("更新页按语种下载和更新, 下载期间仍可提交另一语种", async () => {
+    backend.catalog.resources[0].needsUpdate = true;
     const c = await boot();
     c.showPage("update");
     await nextTick();
     await flushPromises();
-    expect(backend.invoke).toHaveBeenCalledWith("game_resource_catalog");
-    expect(c.state.resourceCatalog?.resources.length).toBe(3);
-    expect(c.state.resourceCatalog?.preloadVersion).toBe("1.5.0");
-    expect(wrapper!.get("#game-preload").text()).toBe("资源预下载 1.5.0");
     await wrapper!.get(".resource-options__toggle").trigger("click");
-
-    const installed = wrapper!.get("#optional-resource-pakchunk101")
-      .element as HTMLInputElement;
-    expect(installed.disabled).toBe(true);
-    expect(installed.checked).toBe(true);
-
-    await wrapper!.get("#optional-resource-pakchunk102").setValue(true);
-    expect(
-      c.state.resourceCatalog?.resources.find(
-        (resource) => resource.tag === "pakchunk102",
-      )?.selected,
-    ).toBe(true);
-    expect(c.state.resourcesSaving).toBe(true);
-    await vi.advanceTimersByTimeAsync(400);
+    expect(wrapper!.get("#resource-download-pakchunk101").text()).toBe("更新");
+    expect(wrapper!.get("#resource-download-pakchunk102").text()).toBe("下载");
+    await wrapper!.get("#resource-download-pakchunk102").trigger("click");
     await flushPromises();
-    expect(backend.invoke).toHaveBeenCalledWith("game_resource_select", {
-      tags: ["pakchunk101", "pakchunk102", "pakchunk103"],
+    expect(backend.invoke).toHaveBeenCalledWith("game_resource_download", {
+      tag: "pakchunk102",
     });
-    expect(c.state.resourcesSaving).toBe(false);
-    expect(c.state.resourceCatalog?.resources.length).toBe(3);
+    expect(
+      wrapper!.get("#resource-download-pakchunk102").attributes("disabled"),
+    ).toBeDefined();
+    expect(
+      wrapper!.get("#resource-download-pakchunk103").attributes("disabled"),
+    ).toBeUndefined();
+    await wrapper!.get("#resource-download-pakchunk103").trigger("click");
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("game_resource_download", {
+      tag: "pakchunk103",
+    });
+    expect(Object.keys(c.state.download!.resourceTasks!)).toEqual([
+      "pakchunk102",
+      "pakchunk103",
+    ]);
+    backend.catalog.resources[1].state = "installed";
+    backend.downloadHandler({
+      ...backend.downloadStatus,
+      resourceTasks: {
+        ...backend.downloadStatus.resourceTasks,
+        pakchunk102: {
+          phase: "ready",
+          downloadedBytes: 100,
+          totalBytes: 100,
+          error: "",
+        },
+      },
+    });
+    await flushPromises();
+    expect(c.state.resourceCatalog!.resources[1].state).toBe("installed");
+  });
+
+  it("语音管理确认卸载并重新检查资源, 可再次下载", async () => {
+    const c = await boot();
+    backend.startStatus = { ...backend.downloadStatus, phase: "ready" };
+    c.showPage("update");
+    await nextTick();
+    await flushPromises();
+    await wrapper!.get(".resource-options__toggle").trigger("click");
+    expect(wrapper!.get("#resource-options-title").text()).toBe("语音资源管理");
+    await wrapper!.get("#resource-remove-pakchunk101").trigger("click");
+    expect(backend.invoke).not.toHaveBeenCalledWith(
+      "game_resource_remove",
+      expect.anything(),
+    );
+    document
+      .querySelector<HTMLButtonElement>("#voice-resource-remove-confirm")!
+      .click();
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("game_resource_remove", {
+      tag: "pakchunk101",
+      preload: false,
+    });
+    expect(c.state.resourceCatalog!.resources[0].state).toBe("absent");
+    expect(c.state.resourceCatalog!.resources[0].selected).toBe(false);
+    expect(backend.invoke).toHaveBeenCalledWith("game_download_start", {
+      mode: "check",
+      full: false,
+    });
+    await nextTick();
+    expect(wrapper!.get("#resource-download-pakchunk101").text()).toBe("下载");
+    await wrapper!.get("#resource-download-pakchunk101").trigger("click");
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("game_resource_download", {
+      tag: "pakchunk101",
+    });
+  });
+
+  it("按语种删除预下载不卸载已安装语音, 游戏运行时禁用删除", async () => {
+    backend.catalog.preloadCachedVersion = "1.5.0";
+    backend.catalog.preloadResourceBytes = {
+      pakchunk101: 1000,
+      pakchunk103: 2000,
+    };
+    backend.catalog.preloadCached = true;
+    backend.catalog.preloadCompleted = true;
+    const c = await boot();
+    c.showPage("update");
+    await nextTick();
+    await flushPromises();
+    await wrapper!.get(".resource-options__toggle").trigger("click");
+    expect(wrapper!.find("#resource-preload-remove-pakchunk102").exists()).toBe(
+      false,
+    );
+    expect(wrapper!.find("#resource-preload-remove-pakchunk103").exists()).toBe(
+      true,
+    );
+    await wrapper!.get("#resource-preload-remove-pakchunk101").trigger("click");
+    document
+      .querySelector<HTMLButtonElement>("#voice-resource-remove-confirm")!
+      .click();
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("game_resource_remove", {
+      tag: "pakchunk101",
+      preload: true,
+    });
+    expect(c.state.resourceCatalog!.resources[0].state).toBe("installed");
+    expect(c.state.resourceCatalog!.preloadCompleted).toBe(false);
+    expect(wrapper!.find("#resource-preload-remove-pakchunk101").exists()).toBe(
+      false,
+    );
+    expect(wrapper!.find("#resource-preload-remove-pakchunk103").exists()).toBe(
+      true,
+    );
+    c.state.game = "running";
+    await nextTick();
+    expect(
+      wrapper!.get("#resource-remove-pakchunk101").attributes("disabled"),
+    ).toBeDefined();
+    expect(
+      wrapper!
+        .get("#resource-preload-remove-pakchunk103")
+        .attributes("disabled"),
+    ).toBeDefined();
   });
 
   it("已完成预下载显示校验入口并可删除缓存", async () => {
@@ -1414,36 +1564,6 @@ describe("更新检查", () => {
     secondary!.click();
     await flushPromises();
     expect(localStorage.getItem("nte.preload.dismissed")).toBe("cn:1.5.0");
-  });
-
-  it("可选资源全选与取消全选只调整未安装项", async () => {
-    const c = await boot();
-    c.showPage("update");
-    await nextTick();
-    await flushPromises();
-    await wrapper!.get(".resource-options__toggle").trigger("click");
-    await wrapper!.get("#optional-resources-all").trigger("click");
-    expect(
-      c.state.resourceCatalog?.resources.every((resource) => resource.selected),
-    ).toBe(true);
-    await vi.advanceTimersByTimeAsync(400);
-    await flushPromises();
-    expect(backend.invoke).toHaveBeenLastCalledWith("game_resource_select", {
-      tags: ["pakchunk101", "pakchunk102", "pakchunk103"],
-    });
-    expect(wrapper!.get("#optional-resources-all").text()).toBe("取消全选");
-
-    await wrapper!.get("#optional-resources-all").trigger("click");
-    expect(
-      c.state.resourceCatalog?.resources
-        .filter((resource) => resource.state === "absent")
-        .every((resource) => !resource.selected),
-    ).toBe(true);
-    await vi.advanceTimersByTimeAsync(400);
-    await flushPromises();
-    expect(backend.invoke).toHaveBeenLastCalledWith("game_resource_select", {
-      tags: ["pakchunk101", "pakchunk103"],
-    });
   });
 
   it("为国际服保存独立目录并展示可暂停的下载任务", async () => {
@@ -1728,6 +1848,47 @@ describe("更新检查", () => {
       stage: "",
     });
     expect(c.downloadView.value.progress).toBe(100);
+  });
+
+  it("检查期间按清单条目展示进度和当前文件", async () => {
+    const c = await boot();
+    backend.downloadHandler({
+      ...backend.downloadStatus,
+      mode: "check",
+      phase: "checking",
+      stage: "check",
+      completedFiles: 0,
+      totalFiles: 0,
+    });
+    await nextTick();
+    expect(wrapper!.findAll("#page-update progress")).toHaveLength(0);
+    backend.downloadHandler({
+      ...backend.downloadStatus,
+      mode: "check",
+      phase: "checking",
+      stage: "check",
+      completedFiles: 42,
+      totalFiles: 100,
+      currentFile: "Client/Content/Paks/pakchunk0.pak",
+    });
+    await nextTick();
+    expect(c.downloadView.value.progress).toBe(42);
+    expect(c.downloadView.value.stageText).toBe("检查");
+    expect(document.body.textContent).toContain("已校验 42 / 100 个文件");
+    expect(document.body.textContent).toContain(
+      "正在检查: Client/Content/Paks/pakchunk0.pak",
+    );
+    // 计划状态已落库但阶段尚未切换时, 不应把检查进度重置成 0%.
+    backend.downloadHandler({
+      ...backend.downloadStatus,
+      mode: "check",
+      phase: "checking",
+      stage: "",
+      completedFiles: 0,
+      totalFiles: 5,
+    });
+    await nextTick();
+    expect(wrapper!.findAll("#page-update progress")).toHaveLength(0);
   });
 
   it("暂停后仍按已下载体积显示进度", async () => {

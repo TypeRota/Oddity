@@ -13,13 +13,16 @@ type Listener = (String, Box<dyn Fn(Value) + Send + 'static>);
 
 pub struct Service {
     pub state: AppState,
+    pub audio: crate::audio_commands::Audio,
     pub downloads: crate::download_commands::DownloadManager,
     pub integrity: crate::integrity_commands::IntegrityMonitor,
     pub playtime: crate::playtime_commands::Playtime,
+    pub performance: Arc<crate::performance_commands::Performance>,
     pub snapshots: crate::snapshot_commands::Snapshots,
     pub exports: crate::log_commands::LogExports,
     pub migration: Mutex<crate::migration_commands::MigrationManager>,
     pub migration_op: Mutex<()>,
+    pub runtime_setup: Mutex<crate::runtime_setup_commands::Setup>,
     pub focused: AtomicBool,
     pub visible: AtomicBool,
     pub stopping: AtomicBool,
@@ -37,7 +40,10 @@ impl Service {
         input: mpsc::SyncSender<InputTask>,
         data: &std::path::Path,
     ) -> Self {
+        let audio = crate::audio_commands::Audio::default();
+        audio.preferences(settings.current().audio.clone());
         Self {
+            audio,
             state: AppState {
                 settings: Mutex::new(settings),
                 game: Mutex::new(GameTracker::default()),
@@ -45,10 +51,12 @@ impl Service {
             downloads: Default::default(),
             integrity: crate::integrity_commands::IntegrityMonitor::new(data),
             playtime: crate::playtime_commands::Playtime::load(data),
+            performance: Arc::new(crate::performance_commands::Performance::load(data)),
             snapshots: crate::snapshot_commands::Snapshots::load(data),
             exports: Default::default(),
             migration: Mutex::new(crate::migration_commands::MigrationManager::default()),
             migration_op: Mutex::new(()),
+            runtime_setup: Default::default(),
             focused: AtomicBool::new(false),
             visible: AtomicBool::new(false),
             stopping: AtomicBool::new(false),

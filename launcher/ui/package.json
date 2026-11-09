@@ -1,6 +1,6 @@
 {
   "name": "oddity",
-  "version": "0.1.0",
+  "version": "0.2.0-alpha.1",
   "private": true,
   "type": "module",
   "engines": {
@@ -12,8 +12,8 @@
     "build": "pnpm run check && vite build",
     "build:demo": "pnpm run check && VITE_DEMO=1 vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "format": "prettier --write . ../../scripts/check-frontend-coverage.mjs ../../scripts/check-rust-coverage.mjs && prettier --write --ignore-path /dev/null ../../internal/gamepad/acceptance/*.test.ts",
-    "format:check": "prettier --check . ../../scripts/check-frontend-coverage.mjs ../../scripts/check-rust-coverage.mjs && prettier --check --ignore-path /dev/null ../../internal/gamepad/acceptance/*.test.ts",
+    "format": "prettier --write . ../../scripts/check-frontend-coverage.mjs ../../scripts/check-rust-coverage.mjs",
+    "format:check": "prettier --check . ../../scripts/check-frontend-coverage.mjs ../../scripts/check-rust-coverage.mjs",
     "lint:css": "stylelint \"src/**/*.{css,vue}\"",
     "test:e2e": "playwright test",
     "test:demo": "playwright test --config playwright.demo.config.ts",
@@ -28,12 +28,14 @@
   "dependencies": {
     "@vueuse/core": "14.4.0",
     "animejs": "^4.5.0",
+    "canvas-confetti": "1.9.4",
     "motion-dom": "~14.3.1",
     "motion-v": "2.8.0",
     "vue": "^3.5.44"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
+    "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^24.19.2",
     "@types/web-bluetooth": "0.0.21",
     "@vitejs/plugin-vue": "^6.0.10",

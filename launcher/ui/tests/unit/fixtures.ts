@@ -11,6 +11,7 @@ import type {
 export const defaultGame = (
   overrides: Partial<GameSettings> = {},
 ): GameSettings => ({
+  audio: { device: null, volume: 100 },
   distribution: "cn",
   installRoot: null,
   globalInstallRoot: null,

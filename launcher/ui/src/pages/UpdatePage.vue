@@ -191,9 +191,11 @@ const primary = computed(() => {
             ? state.download.verify
               ? "正在校验预下载"
               : "正在预下载资源"
-            : installed.value
-              ? "正在更新游戏"
-              : "正在安装游戏",
+            : state.download?.mode === "resources"
+              ? "正在下载语音资源"
+              : installed.value
+                ? "正在更新游戏"
+                : "正在安装游戏",
         icon: "i-download-simple",
         busy: true,
       };
@@ -214,7 +216,10 @@ const primary = computed(() => {
           icon: "i-download-simple",
           busy: false,
         };
-      if (state.download?.mode === "check")
+      if (
+        state.download?.mode === "check" ||
+        state.download?.mode === "resources"
+      )
         return {
           kind: "check" as const,
           label: "重新检查",
@@ -230,7 +235,8 @@ const primary = computed(() => {
     case "ready":
       return {
         kind: "check" as const,
-        label: "检查通过",
+        label:
+          state.download?.mode === "resources" ? "检查游戏资源" : "检查通过",
         icon: "i-check-circle",
         busy: false,
       };
@@ -308,14 +314,18 @@ const showProgress = computed(
     !awaitingInstall.value &&
     statusVisible.value &&
     state.download !== null &&
-    phase.value !== "checking" &&
+    (phase.value !== "checking" ||
+      (state.download.stage === "check" && state.download.totalFiles > 0)) &&
     (active.value ||
       state.download.pendingFiles > 0 ||
       phase.value === "preloaded"),
 );
 // 检查完成但尚未开始时只展示体积摘要，不显示 0% 进度条。
 const transferActive = computed(
-  () => downloading.value || phase.value === "cancelled",
+  () =>
+    downloading.value ||
+    phase.value === "checking" ||
+    phase.value === "cancelled",
 );
 const budgetVisible = computed(
   () =>
@@ -446,7 +456,11 @@ const isActive = computed(() => state.page === "update");
               <progress
                 :value="downloadView.progress"
                 max="100"
-                :aria-label="'资源下载进度 ' + downloadView.progress + '%'"
+                :aria-label="
+                  (phase === 'checking' ? '资源检查进度 ' : '资源下载进度 ') +
+                  downloadView.progress +
+                  '%'
+                "
               />
               <div class="download-meter__track" aria-hidden="true">
                 <motion.div
@@ -456,7 +470,7 @@ const isActive = computed(() => state.page === "update");
               </div>
             </div>
             <div v-if="transferActive" class="download-progress__meta">
-              <span v-if="state.download.verify"
+              <span v-if="state.download.verify || phase === 'checking'"
                 >已校验 {{ state.download.completedFiles }} /
                 {{ state.download.totalFiles }} 个文件</span
               >

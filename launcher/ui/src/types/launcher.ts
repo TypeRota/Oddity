@@ -5,6 +5,53 @@ import type {
   Profile,
   Feedback,
 } from "./gamepad";
+export interface PerformanceMetrics {
+  fps: number;
+  low1: number;
+  p95: number;
+  p99: number;
+  stallPercent: number;
+  vramMeanMib: number | null;
+  rssMeanMib: number | null;
+  gpuLoadMean: number | null;
+  powerMeanW: number | null;
+}
+export interface PerformanceFacts {
+  gameExecutable: string;
+  gameVersion: string | null;
+  launchMode: string;
+  displayBackend: string;
+  gameMode: GameModeOptions;
+  vkd3dConfig: string | null;
+  protonIdentity: string;
+  kernel: string | null;
+  cpu: string | null;
+  gpu: { uuid: string; name: string; driver: string } | null;
+}
+export interface PerformanceSession {
+  id: string;
+  side: string;
+  startedAt: number;
+  durationSeconds: number;
+  frames: number;
+  metrics: PerformanceMetrics;
+  facts: PerformanceFacts;
+  warnings: string[];
+}
+export interface PerformanceComparison {
+  id: string;
+  name: string;
+  createdAt: number;
+  a: RuntimeEnvironment;
+  b: RuntimeEnvironment;
+  sessions: PerformanceSession[];
+  error: string | null;
+}
+export interface PerformanceOverview {
+  recording: string | null;
+  active: string | null;
+  comparisons: PerformanceComparison[];
+}
 export type AttendanceTrigger = "off" | "launch" | "boot" | "daily" | "manual";
 export interface AttendanceTasks {
   communitySign: boolean;
@@ -135,7 +182,24 @@ export interface UpdateSettings {
   window: UpdateWindow | null;
 }
 export type GameId = "nte" | "hsr";
+export interface AudioOptions {
+  device: string | null;
+  volume: number;
+}
+export interface AudioStatus {
+  devices: { index: number; name: string; label: string }[];
+  defaultDevice: string | null;
+  streams: {
+    index: number;
+    pid: number | null;
+    device: number;
+    volume: number;
+    muted: boolean;
+  }[];
+  error: string | null;
+}
 export interface GameSettings {
+  audio: AudioOptions;
   distribution: "cn" | "global";
   installRoot: string | null;
   globalInstallRoot: string | null;
@@ -311,6 +375,7 @@ export interface OptionalResource {
   size: number;
   state: "absent" | "partial" | "installed";
   selected: boolean;
+  needsUpdate: boolean;
 }
 export interface ResourceCatalog {
   distribution: "cn" | "global";
@@ -323,6 +388,7 @@ export interface ResourceCatalog {
   preloadCached: boolean;
   preloadCachedVersion: string;
   preloadCachedBytes: number;
+  preloadResourceBytes: Record<string, number>;
   resources: OptionalResource[];
 }
 export type MigrationPhase =
@@ -373,8 +439,15 @@ export interface MigrationStatus {
   cleanupSource: string;
   canCancel: boolean;
 }
+export interface ResourceTask {
+  phase: "checking" | "downloading" | "ready" | "failed" | "cancelled";
+  downloadedBytes: number;
+  totalBytes: number;
+  error: string;
+}
 export interface DownloadStatus {
-  mode: "check" | "apply" | "launcher" | "preload";
+  resourceTasks?: Record<string, ResourceTask>;
+  mode: "check" | "apply" | "launcher" | "preload" | "resources";
   phase: DownloadPhase;
   /** manual 或 auto, 用于区分手动与自动任务. */
   origin: "manual" | "auto";
@@ -493,6 +566,12 @@ export interface SnapshotComparison {
 }
 
 export interface Commands {
+  runtime_setup_info: RuntimeSetupInfo;
+  runtime_setup_plan: RuntimeSetupPlan;
+  runtime_setup_apply: null;
+  runtime_setup_status: RuntimeSetupStatus;
+  runtime_setup_dismiss: null;
+  runtime_setup_environment: Bootstrap;
   browse_files: FileListing;
   gamepad_poll: GamepadSnapshot;
   gamepad_release_idle: null;
@@ -535,15 +614,22 @@ export interface Commands {
   cancel_launch: GameStatus;
   game_status: GameStatus;
   take_launch_error: string | null;
+  performance_overview: PerformanceOverview;
+  performance_create: null;
+  performance_activate: null;
+  performance_report: string;
+  performance_export: string;
   playtime_history: PlaytimeHistory;
   playtime_export_poster: string;
+  audio_status: AudioStatus;
   game_mode_status: GameModeStatus;
   game_mode_gpu_info: GpuInfo;
   game_mode_tuning_info: GameModeTuning;
   game_mode_tuning_apply: GameModeTuning;
   game_mode_gpu_apply: GpuInfo;
   game_resource_catalog: ResourceCatalog;
-  game_resource_select: ResourceCatalog;
+  game_resource_remove: ResourceCatalog;
+  game_resource_download: DownloadStatus;
   game_preload_delete: ResourceCatalog;
   migration_plan: MigrationPlan;
   migration_start: MigrationStatus;
@@ -563,6 +649,17 @@ export interface Commands {
   win_hide: null;
 }
 export interface CommandArgs {
+  audio_status: Record<string, never>;
+  runtime_setup_info: undefined;
+  runtime_setup_plan: {
+    allUsers: boolean;
+    proton: string | null;
+    createEnvironment: boolean;
+  };
+  runtime_setup_apply: undefined;
+  runtime_setup_status: undefined;
+  runtime_setup_dismiss: undefined;
+  runtime_setup_environment: undefined;
   browse_files: { path: string | null };
   gamepad_poll: undefined;
   gamepad_release_idle: undefined;
@@ -625,6 +722,11 @@ export interface CommandArgs {
   cancel_launch: undefined;
   game_status: undefined;
   take_launch_error: undefined;
+  performance_overview: undefined;
+  performance_create: { name: string; a: string; b: string };
+  performance_activate: { id: string | null };
+  performance_report: { id: string };
+  performance_export: { id: string; destination: string };
   playtime_history: undefined;
   playtime_export_poster: { destination: string; data: string };
   game_mode_status: undefined;
@@ -633,7 +735,8 @@ export interface CommandArgs {
   game_mode_tuning_apply: { config: GameModeTuning };
   game_mode_gpu_apply: { config: GpuConfig };
   game_resource_catalog: undefined;
-  game_resource_select: { tags: string[] };
+  game_resource_remove: { tag: string; preload: boolean };
+  game_resource_download: { tag: string };
   game_preload_delete: undefined;
   migration_plan: { distribution: "cn" | "global"; target: string };
   migration_start: { distribution: "cn" | "global"; target: string };
@@ -669,4 +772,34 @@ declare global {
   interface Window {
     __NTE_PREVIEW__?: PreviewPaths;
   }
+}
+
+export interface RuntimeSetupInfo {
+  environment: RuntimeEnvironment | null;
+  needsSetup: boolean;
+  umu: string | null;
+  proton: string | null;
+  protonDirectory: string;
+  systemUmu: boolean;
+}
+export interface RuntimeSetupPlan {
+  umu: string;
+  proton: string;
+  installUmu: boolean;
+  installProton: boolean;
+  systemCommand: string[] | null;
+  umuVersion: string;
+  log: string;
+}
+export interface RuntimeSetupStatus {
+  busy: boolean;
+  progress: {
+    component: "umu" | "proton" | "runtime";
+    phase: string;
+    detail: string;
+    downloaded: number;
+    total: number;
+  };
+  error: string | null;
+  done: boolean;
 }

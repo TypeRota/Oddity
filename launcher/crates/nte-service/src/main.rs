@@ -35,6 +35,7 @@ mod attendance_commands;
 mod protocol;
 mod service;
 use service::ServiceHandle;
+mod audio_commands;
 mod cli;
 mod direct_session;
 mod download_commands;
@@ -48,7 +49,9 @@ mod launch_progress;
 mod log_commands;
 mod migration_commands;
 mod native_session;
+mod performance_commands;
 mod playtime_commands;
+mod runtime_setup_commands;
 mod snapshot_commands;
 mod update_scheduler;
 
@@ -74,6 +77,7 @@ struct GameTracker {
 /// 本轮启动及其专属后台会话.
 #[derive(Debug, Clone)]
 struct GameSession {
+    performance: Arc<Mutex<Option<nte_core::performance::Recording>>>,
     id: u64,
     pid: u32,
     pgid: i32,
@@ -224,6 +228,7 @@ impl GameStatus {
 }
 
 struct LaunchInvocation {
+    performance: Option<nte_core::performance::Recording>,
     prefix_lock: Arc<nte_core::environment::PrefixLock>,
     install_lock: Arc<nte_core::install_lock::InstallLock>,
     result: LaunchResult,
@@ -495,6 +500,7 @@ fn watch_game_exit(
         let mut snapshot_success = false;
         let mut start_retry_at = Instant::now();
         let mut last_touch = Instant::now();
+        let mut last_sample = Instant::now() - Duration::from_secs(1);
         while !done.load(Ordering::Acquire) {
             let game_running = watch.alive();
             let running = game_running
@@ -502,16 +508,29 @@ fn watch_game_exit(
                     .background
                     .as_ref()
                     .is_some_and(|background| background.game_alive().unwrap_or(true));
+            let mut audio_pids: Vec<_> = watch.known.keys().copied().collect();
+            if let Some(background) = &session.background {
+                if let Ok(pids) = background.game_pids() {
+                    audio_pids.extend(pids);
+                }
+            }
+            audio_pids.sort_unstable();
+            audio_pids.dedup();
+            app.audio.processes(audio_pids.clone());
+            if game_running && last_sample.elapsed() >= Duration::from_secs(1) {
+                if let Ok(mut recording) = session.performance.lock() {
+                    if let Some(recording) = recording.as_mut() {
+                        if let Err(error) = recording.sample(&audio_pids) {
+                            eprintln!("性能硬件采样失败: {error:#}");
+                        }
+                    }
+                }
+                last_sample = Instant::now();
+            }
             if let Some(mode) = &session.game_mode {
                 if let Ok(mut mode) = mode.lock() {
                     if mode.needs_game_processes() {
-                        let mut pids: Vec<_> = watch.known.keys().copied().collect();
-                        if let Some(background) = &session.background {
-                            if let Ok(background_pids) = background.game_pids() {
-                                pids.extend(background_pids);
-                            }
-                        }
-                        mode.update_game_processes(&pids);
+                        mode.update_game_processes(&audio_pids);
                     }
                 }
             }
@@ -583,7 +602,9 @@ fn watch_game_exit(
                 if let Some(id) = session.snapshot.as_deref() {
                     snapshots.finish(id, None);
                 }
+                app.audio.processes(Vec::new());
                 finish_game_early(&app, &session);
+                finish_performance(&app, &session);
                 return;
             }
             thread::sleep(Duration::from_millis(500));
@@ -594,6 +615,19 @@ fn watch_game_exit(
             }
         }
     });
+}
+
+fn finish_performance(app: &ServiceHandle, session: &GameSession) {
+    let recording = session.performance.lock().ok().and_then(|mut r| r.take());
+    if let Some(recording) = recording {
+        let app = app.clone();
+        thread::spawn(move || {
+            if let Err(error) = app.performance.finish(&recording) {
+                eprintln!("性能报告保存失败: {error}");
+            }
+            let _ = app.emit("performance-updated", ());
+        });
+    }
 }
 
 fn session_alive(session: &GameSession) -> bool {
@@ -613,6 +647,8 @@ fn finalize_game_session(
         return;
     }
     session.monitor_done.store(true, Ordering::Release);
+    finish_performance(app, session);
+    app.audio.processes(Vec::new());
     if let Some(direct) = &session.direct {
         direct.close();
     }
@@ -935,18 +971,8 @@ fn persist_settings(settings: &Settings) -> Result<(), String> {
     Ok(())
 }
 
-fn which(cmd: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(cmd);
-        if let Ok(meta) = fs::metadata(&candidate) {
-            if meta.is_file() && (meta.permissions().mode() & 0o111) != 0 {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
+#[cfg(test)]
+use nte_core::runtime_setup::executable as which;
 
 fn game_profile(settings: &Settings) -> &'static GameProfile {
     settings.active_game.profile()
@@ -1289,7 +1315,7 @@ fn bootstrap_impl(settings: &Settings) -> Bootstrap {
         error.get_or_insert(message);
     }
     let proton = detect_proton(settings);
-    let umu = which("umu-run");
+    let umu = nte_core::runtime_setup::umu(&data_dir());
     let official_exe = launcher_root
         .as_ref()
         .and_then(|root| current_region(settings).map(|region| root.join(region.client_exe)));
@@ -1550,6 +1576,9 @@ fn save_settings(app: &service::Service, settings: Settings) -> Result<Bootstrap
     next.snapshot_success_minutes =
         nte_core::snapshots::normalize_success_minutes(next.snapshot_success_minutes);
     next.gamepad.validate()?;
+    for game in next.games.values() {
+        game.audio.validate()?;
+    }
     next.current()
         .game_mode
         .gamescope
@@ -1583,6 +1612,7 @@ fn save_settings(app: &service::Service, settings: Settings) -> Result<Bootstrap
         return Err("游戏资源任务正在进行, 暂时无法修改游戏地区或安装目录".into());
     }
     persist_settings(&next)?;
+    app.audio.preferences(next.current().audio.clone());
     *current = next.clone();
     drop(game);
     drop(current);
@@ -1876,15 +1906,22 @@ fn launch_impl_with_cancel(
     settings: &Settings,
     cancel: &AtomicBool,
 ) -> Result<LaunchInvocation, String> {
-    launch_impl_inner(settings, |_| Ok(click_profile()), None, cancel)
+    launch_impl_inner(settings, |_| Ok(click_profile()), None, None, cancel)
 }
 
 fn launch_impl_with_snapshots(
     settings: &Settings,
     snapshots: &snapshot_commands::Snapshots,
+    performance: &performance_commands::Performance,
     cancel: &AtomicBool,
 ) -> Result<LaunchInvocation, String> {
-    launch_impl_inner(settings, |_| Ok(click_profile()), Some(snapshots), cancel)
+    launch_impl_inner(
+        settings,
+        |_| Ok(click_profile()),
+        Some(snapshots),
+        Some(performance),
+        cancel,
+    )
 }
 
 #[cfg(test)]
@@ -1892,13 +1929,20 @@ fn launch_impl_with_profile(
     settings: &Settings,
     profile_provider: impl FnOnce(&Path) -> Result<ClickProfile, String>,
 ) -> Result<LaunchInvocation, String> {
-    launch_impl_inner(settings, profile_provider, None, &AtomicBool::new(false))
+    launch_impl_inner(
+        settings,
+        profile_provider,
+        None,
+        None,
+        &AtomicBool::new(false),
+    )
 }
 
 fn launch_impl_inner(
     settings: &Settings,
     profile_provider: impl FnOnce(&Path) -> Result<ClickProfile, String>,
     snapshots: Option<&snapshot_commands::Snapshots>,
+    performance: Option<&performance_commands::Performance>,
     cancel: &AtomicBool,
 ) -> Result<LaunchInvocation, String> {
     if settings.current().launch_mode == "direct" {
@@ -1929,7 +1973,8 @@ fn launch_impl_inner(
     let direct_exe = game_exe_for(profile, &launcher_root);
     let prefix = environment_commands::prefix(settings)?;
     environment_commands::verify_proton(settings)?;
-    let umu = which("umu-run").ok_or_else(|| "PATH 中未找到 umu-run".to_string())?;
+    let umu = nte_core::runtime_setup::umu(&data_dir())
+        .ok_or_else(|| "PATH 中未找到 umu-run".to_string())?;
     let proton = detect_proton(settings)
         .ok_or_else(|| "未找到可用的 Proton（需要 proton 与 toolmanifest.vdf）".to_string())?;
     if !prefix.join("drive_c").is_dir() {
@@ -2151,6 +2196,7 @@ fn launch_impl_inner(
             .env("PROTON_LOG", "0")
             .env("UMU_LOG", "error")
             .current_dir(&install_dir);
+        nte_core::launch::configure_network(&mut host);
         nte_core::launch::configure_display(
             &mut host,
             std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty()),
@@ -2175,6 +2221,7 @@ fn launch_impl_inner(
         cmd.arg(&exe);
     }
     cmd.args(&args);
+    nte_core::audio::configure(&mut cmd)?;
     cmd.env("WINEPREFIX", &prefix)
         .env("PROTONPATH", &proton.root)
         .env("GAMEID", "0")
@@ -2183,6 +2230,7 @@ fn launch_impl_inner(
         .env("UMU_LOG", "info")
         .env("PROTON_LOG", "0")
         .env("PROTON_VERB", "run");
+    nte_core::launch::configure_network(&mut cmd);
     nte_core::launch::configure_display(
         &mut cmd,
         std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty()),
@@ -2265,6 +2313,16 @@ fn launch_impl_inner(
         &settings.current().game_mode,
         &mut cmd,
     )));
+    let performance =
+        performance.and_then(
+            |performance| match performance.prepare(settings, &mut cmd) {
+                Ok(recording) => recording,
+                Err(error) => {
+                    eprintln!("{error}");
+                    None
+                }
+            },
+        );
     let snapshot_id = match (snapshots, &snapshot_facts) {
         (Some(store), Some(facts)) => match store.begin(facts.clone()) {
             Ok(id) => Some(id),
@@ -2326,6 +2384,7 @@ fn launch_impl_inner(
     }
 
     Ok(LaunchInvocation {
+        performance,
         prefix_lock,
         install_lock,
         result: LaunchResult {
@@ -2424,9 +2483,10 @@ async fn start_launch(app: ServiceHandle, settings: Settings) -> Result<LaunchRe
     let snapshot_success_after_ms =
         nte_core::snapshots::success_after_ms(settings.snapshot_success_minutes);
     let snapshots = app.snapshots.clone();
+    let performance = app.performance.clone();
 
     let invocation = match crate::service::spawn_blocking(move || {
-        launch_impl_with_snapshots(&settings, &snapshots, &cancel)
+        launch_impl_with_snapshots(&settings, &snapshots, &performance, &cancel)
     })
     .await
     {
@@ -2464,6 +2524,7 @@ async fn start_launch(app: ServiceHandle, settings: Settings) -> Result<LaunchRe
         tracker.launch_cancel = None;
         tracker.next_id = tracker.next_id.wrapping_add(1);
         let session = GameSession {
+            performance: Arc::new(Mutex::new(invocation.performance)),
             id: tracker.next_id,
             pid: invocation.result.pid,
             pgid: invocation.pgid,

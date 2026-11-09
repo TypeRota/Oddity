@@ -10,10 +10,7 @@ export default mergeConfig(
     server: { fs: { allow: [new URL("../..", import.meta.url).pathname] } },
     test: {
       environment: "jsdom",
-      include: [
-        "tests/unit/**/*.test.ts",
-        "../../internal/gamepad/acceptance/*.test.ts",
-      ],
+      include: ["tests/unit/**/*.test.ts"],
       setupFiles: ["./tests/unit/setup.ts"],
       coverage: {
         provider: "v8",

@@ -1278,6 +1278,11 @@ fn task_permissions_gate_each_request_in_manual_and_automatic_runs() {
         service.set_trigger(Trigger::Launch);
         let status = service.run(automatic).unwrap();
         assert_eq!(status.preferences.tasks, tasks);
+        assert!(
+            status.accounts[0].tasks_complete(&tasks),
+            "mask {mask}, automatic {automatic:?}, report {:?}",
+            status.accounts[0].last_report
+        );
         assert_eq!(
             serde_json::from_str::<Status>(&dir.read_text("state.json"))
                 .unwrap()
@@ -1326,7 +1331,6 @@ fn task_permissions_gate_each_request_in_manual_and_automatic_runs() {
             usize::from(tasks.coin_enabled()),
             "mask {mask}"
         );
-        assert!(status.accounts[0].tasks_complete(&tasks), "mask {mask}");
         service.run(None).unwrap();
         service.run(Some(Trigger::Launch)).unwrap();
         assert_eq!(server.targets().len(), requests, "mask {mask}");

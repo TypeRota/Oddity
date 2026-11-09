@@ -12,13 +12,13 @@ Oddity 负责资源检查, 下载和启动; 游戏本身仍由 Proton 运行. �
 | 游戏环境 | `umu-launcher`, Proton, 在设置中创建的运行环境 |
 | 存储 | 可写的游戏安装目录, 首次安装需要完整游戏资源 |
 
-> 安装包会声明 GTK 3, NSS 等必需依赖. `umu-launcher` 在 `.deb` 和 `.rpm` 中为推荐依赖, 在 Arch 包中为可选依赖, 需要确认已经安装.
+> 安装包声明 GTK 3, NSS, Python 和提供 `pkexec` 的软件包为必需依赖. 启动环境向导页面自动准备 umu 和 Proton; AppImage 会提示缺少的宿主依赖.
 
 > 视频解码使用随应用提供的 Chromium/FFmpeg. 安装包包含运行时, 无需另行安装 Electron.
 
 ## 安装 Oddity
 
-从 [Releases](https://github.com/LaT-SKY/Oddity/releases) 下载对应格式的包, 在下载目录执行:
+从 [Releases](https://github.com/TypeRota/Oddity/releases) 下载对应格式的包, 在下载目录执行:
 
 | 发行版 | 命令 |
 | --- | --- |
@@ -58,20 +58,22 @@ Nix 和 Gentoo 用户分别参阅 [Nix 指南](nix.md)和 [Gentoo 指南](gentoo
 
 如果需要在安装前手工核对下载的安装包, 或者启动器无法运行, 再使用下面的签名与校验和步骤作为备用验证.
 
-启用签名和不可变发布后, Release 会同时提供 `SHA256SUMS` 和 `SHA256SUMS.sigstore.json`. 校验和只能说明文件没有损坏, 不能说明来源; 签名和不可变 Release 用来确认安装包属于本项目的 Release 且摘要未被替换.
+启用签名和不可变发布后, Release 会同时提供 `SHA256SUMS`, `SHA256SUMS.sig` 和 `SHA256SUMS.pem`. 校验和只能说明文件没有损坏, 不能说明来源; 签名和不可变 Release 用来确认安装包属于本项目的 Release 且摘要未被替换.
 
 启用后发布的版本会同时满足:
 
 - Release 的附件在发布后不能修改或删除, tag 也不能移动; Release 页面标题下方会显示 `Immutable`.
-- `SHA256SUMS` 由发布 workflow 通过 Sigstore 无密钥签名, 签名记录在公开透明日志中.
+- `SHA256SUMS` 由 `sign-release` workflow 通过 Sigstore 无密钥签名, 签名记录在公开透明日志中.
 
-下载安装包时同时下载 `SHA256SUMS` 与 `SHA256SUMS.sigstore.json`, 然后验证签名 (需要 [cosign](https://docs.sigstore.dev/cosign/installation/) 3.x):
+下载安装包时同时下载 `SHA256SUMS`, `SHA256SUMS.sig` 与 `SHA256SUMS.pem`, 然后验证签名 (需要 [cosign](https://docs.sigstore.dev/cosign/installation/) 3.x):
 
 ```bash
-tag=oddity-v0.1.1
+tag=v0.1.2
+gh release download "$tag" --repo TypeRota/Oddity --pattern 'SHA256SUMS*'
 cosign verify-blob \
-  --bundle SHA256SUMS.sigstore.json \
-  --certificate-identity "https://github.com/LaT-SKY/Oddity/.github/workflows/release.yml@refs/tags/$tag" \
+  --certificate SHA256SUMS.pem \
+  --signature SHA256SUMS.sig \
+  --certificate-identity "https://github.com/TypeRota/Oddity/.github/workflows/sign-release.yml@refs/heads/main" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
 ```
@@ -87,11 +89,11 @@ sha256sum -c --ignore-missing SHA256SUMS
 也可以使用 [GitHub CLI](https://cli.github.com/) 直接验证文件属于对应的不可变 Release (需要 2.79 或更高版本):
 
 ```bash
-tag=oddity-v0.1.1
-gh release verify-asset --repo LaT-SKY/Oddity "$tag" ./oddity_0.1.1_amd64.deb
+tag=v0.1.2
+gh release verify-asset --repo TypeRota/Oddity "$tag" ./oddity_0.1.2_amd64.deb
 ```
 
-`gh release verify-asset` 只说明文件摘要与指定 Release 证明中的附件一致; `cosign` 验证 `SHA256SUMS` 由本仓库的发布 workflow 在对应 release tag 上签名, 再由 `sha256sum` 验证安装包摘要与这份签名清单一致. 这些步骤只确认 Release 归属和摘要匹配, 不证明安装包由发布 workflow 构建, 也不证明内容安全.
+`gh release verify-asset` 只说明文件摘要与指定 Release 证明中的附件一致; `cosign` 验证 `SHA256SUMS` 由本仓库的签名 workflow 在 `main` 上签名, 再由 `sha256sum` 验证安装包摘要与这份签名清单一致. 这些步骤只确认 Release 归属和摘要匹配, 不证明安装包由发布 workflow 构建, 也不证明内容安全.
 
 上面的版本号和文件名只是示例, 请替换为实际下载的 Release 和文件.
 
@@ -118,7 +120,11 @@ CPU 与优先级通过独立“应用配置”按钮授权写入 `/etc/gamemode.
 
 ## 准备游戏环境
 
-Oddity 通过 `umu-run` 调用 Proton. 开始前需要安装 `umu-run` 和 Proton, 再在设置中创建运行环境.
+打开 Oddity 时, 缺少启动环境会自动进入配置页面并开始准备. 默认仅为当前用户安装 umu; 勾选 **为全部用户安装 umu** 时, 页面列出系统安装操作, 经 `pkexec` 授权后执行. Proton 安装到当前用户的 Steam `compatibilitytools.d` 目录.
+
+也可选择本地 Proton, 或通过 **设置 → 运行环境 → 打开向导** 重新进入引导. 组件配置完成后, 已安装游戏会自动创建环境; 稍后安装的游戏在启动时自动创建环境. 详情见[启动环境向导](runtime-setup.md).
+
+以下为手动安装方式.
 
 ### umu-launcher
 
@@ -131,7 +137,7 @@ Oddity 通过 `umu-run` 调用 Proton. 开始前需要安装 `umu-run` 和 Proto
 Arch 的 `umu-launcher` 位于 [multilib 仓库](https://archlinux.org/packages/multilib/x86_64/umu-launcher/), 需要先确认该仓库已启用:
 
 ```bash
-sudo pacman -S --needed multilib/umu-launcher
+pkexec pacman -S --needed multilib/umu-launcher
 ```
 
 若提示找不到仓库或目标, 请检查 `/etc/pacman.conf` 的 `[multilib]` 配置并更新软件包数据库, 仓库启用方法见 [ArchWiki](https://wiki.archlinux.org/title/Official_repositories#multilib).
@@ -200,7 +206,7 @@ Proton 运行环境保存 Windows 环境和登录状态. 在 **设置 → 运行
 
 **新安装**
 
-先选择一个空目录, 再打开 **更新** 安装资源.
+先选择一个空目录, 再打开 **更新** 安装资源. 已自动配置启动组件时, 安装完成后启动游戏会自动创建运行环境.
 
 国服和国际服的安装目录互相独立, 切换地区不会移动或覆盖另一区服的文件.
 
@@ -233,9 +239,15 @@ Proton 运行环境保存 Windows 环境和登录状态. 在 **设置 → 运行
 
 需要从应用菜单, 桌面快捷方式或 Steam 直接启动时, 见[外部启动入口](external-launch.md).
 
-## 可选资源与预下载
+## 语音资源管理
 
-更新页的“可选资源”区域可以逐项选择尚未安装的资源包. 已有或部分安装的包会随版本更新维护; 取消选择不会卸载已有文件. 目录体积表示整包文件大小, 本轮实际下载量由资源检查和补丁计划决定.
+在 **更新 → 语音资源管理** 中点击各语种右侧的 **下载** 或 **更新**. 可以同时下载多个语种, 各行分别显示进度, 共用设置中的下载限速. 每次操作只处理对应语种, 无需进入游戏.
+
+**卸载** 删除对应语种的已安装文件及资源记录. **删除预下载** 仅清理该语种的预下载缓存, 保留基础资源和其他语种. 清理尚未安装语种的缓存后不会自动重新预下载; 已安装语种仍随版本更新维护.
+
+删除前请退出游戏并等待资源任务结束. 卸载不改变游戏内的语音语言设置, 如游戏使用了所卸载的语种, 请在游戏内切换至其他已安装语种.
+
+按语种清理需要取得对应预下载版本的资源清单. 清单已撤回的旧缓存可通过更新页顶部的 **删除预下载** 按钮整版本清理.
 
 预下载完成只表示未来资源缓存已准备好. 正式更新仍会重新核对正式清单和本地文件, 复用匹配缓存并完成安装. 自定义缓存位于其他磁盘时, 预下载空间提示读取缓存盘; 正式安装的跨盘复制支持暂停, 仍需要安装盘暂存空间.
 
@@ -288,7 +300,7 @@ rm -f "${XDG_DATA_HOME:-$HOME/.local/share}"/icons/hicolor/*/apps/oddity.png
 
 ## 从源码构建
 
-需要 Rust 工具链, Node.js >= 24.19.0 和 pnpm 12.14.0. Debian / Ubuntu 的构建依赖可以按 [CI 依赖列表](../.github/actions/install-linux-deps/action.yml)安装:
+需要 Rust 工具链, Node.js >= 24.19.0 和 pnpm 12.14.0. Debian / Ubuntu 的构建依赖可以按 [CI 依赖列表](../.gitea/workflows/rust-quality.yml)安装:
 
 ```bash
 pkexec apt install build-essential pkg-config cmake libssl-dev libudev-dev \
@@ -299,7 +311,7 @@ pkexec apt install build-essential pkg-config cmake libssl-dev libudev-dev \
 在仓库根目录执行:
 
 ```bash
-git clone https://github.com/LaT-SKY/Oddity.git
+git clone https://git.miprota.cc/Oddity/Oddity.git
 cd Oddity/launcher
 pnpm --dir ui install --frozen-lockfile
 pnpm --dir ui run build

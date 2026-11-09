@@ -1,7 +1,8 @@
 use crate::service::ServiceHandle;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -56,6 +57,22 @@ pub struct DownloadStatus {
     /// 当前计划预计额外占用的字节.
     pub(crate) disk_required_bytes: u64,
     error: String,
+    pub(crate) resource_tasks: BTreeMap<String, ResourceTask>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceTask {
+    phase: String,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+    error: String,
+}
+
+impl ResourceTask {
+    fn running(&self) -> bool {
+        matches!(self.phase.as_str(), "checking" | "downloading")
+    }
 }
 
 impl Default for DownloadStatus {
@@ -89,6 +106,7 @@ impl Default for DownloadStatus {
             disk_available_bytes: None,
             disk_required_bytes: 0,
             error: String::new(),
+            resource_tasks: BTreeMap::new(),
         }
     }
 }
@@ -140,6 +158,8 @@ pub struct ResourceCatalog {
     preload_cached_version: String,
     /// 缓存目录当前占用的字节数.
     preload_cached_bytes: u64,
+    /// 可按语种清理的未来版本缓存大小.
+    preload_resource_bytes: BTreeMap<String, u64>,
     resources: Vec<game::optional::OptionalResource>,
 }
 
@@ -208,6 +228,21 @@ fn catalog_payload(
         game::preload::cached_version(config).map(|cached| (cached.version, cached.bytes))
     });
     let (preload_cached_version, preload_cached_bytes) = cached.unwrap_or((String::new(), 0));
+    let mut preload_resource_bytes = BTreeMap::new();
+    if preload_cached_bytes > 0 && preload_available && preload_cached_version == preload_version {
+        // 清单不可用时保留整版本清理, 不显示无法确认归属的逐语种入口.
+        if let Ok(Some(future)) = game::check::load_preload_remote(config) {
+            for base in &future.bundle.manifest.base_versions {
+                if let Ok(bytes) =
+                    game::preload::optional_cached_bytes(&future.config, &future.bundle, &base.tag)
+                {
+                    if bytes > 0 {
+                        preload_resource_bytes.insert(base.tag.clone(), bytes);
+                    }
+                }
+            }
+        }
+    }
     Ok(ResourceCatalog {
         distribution: settings.current().distribution.as_str().into(),
         install_root: config.install_root.display().to_string(),
@@ -218,6 +253,7 @@ fn catalog_payload(
         preload_cached: preload_cached_bytes > 0,
         preload_cached_version,
         preload_cached_bytes,
+        preload_resource_bytes,
         resources: game::optional::catalog(config, bundle)
             .map_err(|error| format!("读取可选资源状态失败: {error}"))?,
     })
@@ -229,43 +265,342 @@ pub fn game_resource_catalog(app: ServiceHandle) -> Result<ResourceCatalog, Stri
     catalog_payload(&settings, &config, &bundle)
 }
 
-pub fn game_resource_select(
+/// 资源删除与下载共用安装锁, 删除后丢弃旧的检查结果.
+pub fn game_resource_remove(
     app: ServiceHandle,
-    tags: Vec<String>,
+    tag: String,
+    preload: bool,
 ) -> Result<ResourceCatalog, String> {
     let (settings, config, bundle) = load_catalog_context(&app)?;
-    {
-        let inner = app
-            .downloads
-            .inner
-            .lock()
-            .map_err(|error| error.to_string())?;
-        if busy(&inner.status.phase) {
-            return Err("游戏资源任务正在进行, 暂时无法修改可选资源".into());
-        }
-    }
+    let future = if preload {
+        Some(
+            game::check::load_preload_remote(&config)
+                .map_err(|error| format!("读取预下载资源清单失败: {error}"))?
+                .ok_or("当前没有可删除的语音预下载资源")?,
+        )
+    } else {
+        None
+    };
+    let resources = game::optional::catalog(&config, &bundle).map_err(|error| error.to_string())?;
     let _install_lock = nte_core::install_lock::InstallLock::acquire(&config.install_root)
         .map_err(|error| error.to_string())?;
-    {
-        // 拿到安装锁后再确认一次, 避免与刚启动的任务交错.
-        let inner = app
-            .downloads
-            .inner
-            .lock()
+    let mut inner = app
+        .downloads
+        .inner
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if busy(&inner.status.phase) {
+        return Err("游戏资源任务正在进行, 暂时无法删除语音资源".into());
+    }
+    let game = app.state.game.lock().map_err(|error| error.to_string())?;
+    if game.starting || game.session.as_ref().is_some_and(session_alive) {
+        return Err("游戏正在运行, 暂时无法删除语音资源".into());
+    }
+    if let Some(future) = future {
+        let removed = game::preload::remove_optional(&future.config, &future.bundle, &tag)
+            .map_err(|error| format!("删除语音预下载失败: {error}"))?;
+        if removed == 0 {
+            return Err("该语种没有可删除的预下载缓存".into());
+        }
+        let tags = resources
+            .into_iter()
+            .filter(|resource| resource.selected && resource.tag != tag)
+            .map(|resource| resource.tag)
+            .collect::<Vec<_>>();
+        game::optional::save_selection(&config, &bundle, &tags)
             .map_err(|error| error.to_string())?;
-        if busy(&inner.status.phase) {
-            return Err("游戏资源任务正在进行, 暂时无法修改可选资源".into());
-        }
+    } else {
+        game::optional::remove(&config, &bundle, &tag)
+            .map_err(|error| format!("卸载语音资源失败: {error}"))?;
     }
-    {
-        let game = app.state.game.lock().map_err(|error| error.to_string())?;
-        if game.starting || game.session.as_ref().is_some_and(session_alive) {
-            return Err("游戏正在运行, 暂时无法修改可选资源".into());
-        }
-    }
-    game::optional::save_selection(&config, &bundle, &tags)
-        .map_err(|error| format!("保存可选资源失败: {error}"))?;
+    inner.status = DownloadStatus::default();
+    let status = inner.status.clone();
+    drop(game);
+    drop(inner);
+    let _ = app.emit("game-download-state", status);
     catalog_payload(&settings, &config, &bundle)
+}
+
+/// 每个语种独立规划和执行, 同一安装目录的语种任务共享限速与安装锁.
+pub fn game_resource_download(app: ServiceHandle, tag: String) -> Result<DownloadStatus, String> {
+    let (settings, config, bundle) = load_catalog_context(&app)?;
+    let mut inner = app
+        .downloads
+        .inner
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let game = app.state.game.lock().map_err(|error| error.to_string())?;
+    if game.environment_busy || game.migration_busy || crate::migration_commands::repair_pending() {
+        return Err("运行环境或安装目录任务正在进行, 暂时无法下载语音资源".into());
+    }
+    if game.starting || game.session.as_ref().is_some_and(session_alive) {
+        return Err("游戏正在运行, 请退出游戏后下载语音资源".into());
+    }
+    let joining = inner.resource_group.is_some();
+    if busy(&inner.status.phase) && !joining {
+        return Err("游戏资源任务正在进行".into());
+    }
+    if joining
+        && (inner.status.install_root != config.install_root.display().to_string()
+            || inner.status.distribution != settings.current().distribution.as_str()
+            || inner.status.remote_version != bundle.config.res_version)
+    {
+        return Err("请等待当前安装目录的语音任务结束".into());
+    }
+    if joining
+        && inner
+            .cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    {
+        return Err("语音资源任务正在停止".into());
+    }
+    if inner
+        .status
+        .resource_tasks
+        .get(&tag)
+        .is_some_and(ResourceTask::running)
+    {
+        return Err("该语音资源正在下载".into());
+    }
+    let install_lock = match &inner.resource_group {
+        Some(group) => group.install_lock.clone(),
+        None => Arc::new(
+            nte_core::install_lock::InstallLock::acquire(&config.install_root)
+                .map_err(|error| error.to_string())?,
+        ),
+    };
+    let resources = game::optional::catalog(&config, &bundle).map_err(|error| error.to_string())?;
+    if !resources.iter().any(|resource| resource.tag == tag) {
+        return Err(format!("未知的可选资源: {tag}"));
+    }
+    let tags = resources
+        .into_iter()
+        .filter(|resource| resource.selected || resource.tag == tag)
+        .map(|resource| resource.tag)
+        .collect::<Vec<_>>();
+    game::optional::save_selection(&config, &bundle, &tags).map_err(|error| error.to_string())?;
+    if !joining {
+        let cancel = Arc::new(AtomicBool::new(false));
+        inner.cancel = Some(cancel);
+        inner.resource_group = Some(ResourceGroup {
+            install_lock: install_lock.clone(),
+            limiter: Arc::new(RateLimiter::with_connections(
+                settings.current().updates.limit_bytes_per_second,
+                config.max_threads.clamp(1, 8),
+            )),
+            reserved: BTreeMap::new(),
+        });
+        inner.status = DownloadStatus {
+            mode: "resources".into(),
+            phase: "game".into(),
+            distribution: settings.current().distribution.as_str().into(),
+            install_root: config.install_root.display().to_string(),
+            remote_version: bundle.config.res_version.clone(),
+            installed: config.patcher_dir.join("ResList.xml").is_file(),
+            ..Default::default()
+        };
+    }
+    let group = inner.resource_group.as_mut().expect("语音任务组已建立");
+    group.reserved.insert(tag.clone(), 0);
+    let limiter = group.limiter.clone();
+    let cancel = inner
+        .cancel
+        .as_ref()
+        .expect("语音任务取消标识已建立")
+        .clone();
+    inner.status.resource_tasks.insert(
+        tag.clone(),
+        ResourceTask {
+            phase: "checking".into(),
+            downloaded_bytes: 0,
+            total_bytes: 0,
+            error: String::new(),
+        },
+    );
+    inner.status.optional_tags = inner.status.resource_tasks.keys().cloned().collect();
+    inner.status.phase = "game".into();
+    inner.status.error.clear();
+    let status = inner.status.clone();
+    let _ = app.emit("game-download-state", status.clone());
+    drop(game);
+    drop(inner);
+    crate::service::spawn_blocking(move || {
+        let result = (|| -> Result<(), String> {
+            let mut plan =
+                game::optional::plan(&config, &bundle, &tag, &|| cancel.load(Ordering::Relaxed))
+                    .map_err(|error| format!("检查语音资源失败: {error}"))?;
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            // 每个语种可使用完整并发度, 实际 HTTP 连接受任务组共享预算约束.
+            plan.max_threads = config.max_threads;
+            {
+                let mut inner = app
+                    .downloads
+                    .inner
+                    .lock()
+                    .map_err(|error| error.to_string())?;
+                let available = disk::available_bytes(&config.install_root)
+                    .map_err(|error| error.to_string())?;
+                let group = inner.resource_group.as_mut().expect("运行中的语音任务组");
+                let reserved = group
+                    .reserved
+                    .values()
+                    .copied()
+                    .fold(0u64, u64::saturating_add);
+                let required = plan.required_disk_bytes();
+                if required.saturating_add(reserved) > available {
+                    return Err("磁盘空间不足, 无法同时下载所选语音资源".into());
+                }
+                group.reserved.insert(tag.clone(), required);
+                inner.status.disk_available_bytes = Some(available);
+                inner.status.disk_required_bytes = required.saturating_add(reserved);
+                inner.status.total_files += plan.items.len();
+                let task = inner
+                    .status
+                    .resource_tasks
+                    .get_mut(&tag)
+                    .expect("语音任务已登记");
+                task.phase = "downloading".into();
+                task.total_bytes = plan.total_bytes();
+                inner.status.total_bytes = inner
+                    .status
+                    .resource_tasks
+                    .values()
+                    .map(|task| task.total_bytes)
+                    .sum();
+                let _ = app.emit("game-download-state", inner.status.clone());
+            }
+            let report = game::download::apply_plan_observed_shared(
+                &config,
+                &plan,
+                &ApplyOptions {
+                    update_ledger: false,
+                    probe_cdns: false,
+                    ..Default::default()
+                },
+                &limiter,
+                Some(&tag),
+                &mut |_| {},
+                &mut |_, bytes| {
+                    let Ok(mut inner) = app.downloads.inner.lock() else {
+                        return;
+                    };
+                    if let Some(task) = inner.status.resource_tasks.get_mut(&tag) {
+                        task.downloaded_bytes += bytes;
+                    }
+                    inner.status.downloaded_bytes = inner
+                        .status
+                        .resource_tasks
+                        .values()
+                        .map(|task| task.downloaded_bytes)
+                        .sum();
+                    let now = Instant::now();
+                    if inner
+                        .last_progress
+                        .is_some_and(|last| now.duration_since(last) < Duration::from_millis(150))
+                    {
+                        return;
+                    }
+                    inner.last_progress = Some(now);
+                    let _ = app.emit("game-download-state", inner.status.clone());
+                },
+                &mut |path, stage| {
+                    publish(&app, |status| {
+                        status.current_file = path.into();
+                        status.stage = stage.as_str().into();
+                    })
+                },
+                &mut |result| {
+                    if result.ok {
+                        publish(&app, |status| status.completed_files += 1);
+                    }
+                },
+                &|| cancel.load(Ordering::Relaxed),
+            );
+            let successful = report
+                .results
+                .iter()
+                .filter(|result| result.ok && !result.skipped)
+                .map(|result| result.path.clone())
+                .chain(plan.verified.iter().map(|item| item.path().to_string()))
+                .collect::<Vec<_>>();
+            {
+                let _ledger = app
+                    .downloads
+                    .resource_ledger
+                    .lock()
+                    .map_err(|error| error.to_string())?;
+                game::ledger::update_after_apply(&config, &plan, &successful, false)
+                    .map_err(|error| format!("写入语音资源记录失败: {error}"))?;
+            }
+            if report.failed > 0 || report.ledger_error.is_some() {
+                let error = report
+                    .ledger_error
+                    .or_else(|| report.results.iter().find_map(|item| item.error.clone()))
+                    .unwrap_or_default();
+                return Err(format!("语音资源下载失败: {error}"));
+            }
+            Ok(())
+        })();
+        // 发布终态前释放本工作线程的锁引用; 最后一个任务同时释放任务组.
+        drop(install_lock);
+        if let Ok(mut inner) = app.downloads.inner.lock() {
+            let cancelled = cancel.load(Ordering::Relaxed);
+            if let Some(task) = inner.status.resource_tasks.get_mut(&tag) {
+                task.phase = if cancelled {
+                    "cancelled"
+                } else if result.is_err() {
+                    "failed"
+                } else {
+                    "ready"
+                }
+                .into();
+                task.error = result.err().filter(|_| !cancelled).unwrap_or_default();
+            }
+            if let Some(group) = &mut inner.resource_group {
+                group.reserved.remove(&tag);
+            }
+            inner.status.disk_required_bytes = inner
+                .resource_group
+                .as_ref()
+                .map_or(0, |group| group.reserved.values().sum());
+            if !inner
+                .status
+                .resource_tasks
+                .values()
+                .any(ResourceTask::running)
+            {
+                inner.resource_group = None;
+                inner.cancel = None;
+                inner.status.phase = if cancelled {
+                    "cancelled"
+                } else if inner
+                    .status
+                    .resource_tasks
+                    .values()
+                    .any(|task| task.phase == "failed")
+                {
+                    "failed"
+                } else {
+                    "ready"
+                }
+                .into();
+                inner.status.error = inner
+                    .status
+                    .resource_tasks
+                    .values()
+                    .find(|task| task.phase == "failed")
+                    .map(|task| task.error.clone())
+                    .unwrap_or_default();
+                inner.status.current_file.clear();
+                inner.status.stage.clear();
+            }
+            let _ = app.emit("game-download-state", inner.status.clone());
+        }
+    });
+    Ok(status)
 }
 
 #[derive(Default)]
@@ -275,11 +610,19 @@ pub(crate) struct DownloadInner {
     last_progress: Option<Instant>,
     /// 最近一次成功应用任务的实测吞吐, 含 app_id, 用于下次检查估算完成时间.
     throughput: Option<(String, Throughput)>,
+    resource_group: Option<ResourceGroup>,
+}
+
+struct ResourceGroup {
+    install_lock: Arc<nte_core::install_lock::InstallLock>,
+    limiter: Arc<RateLimiter>,
+    reserved: BTreeMap<String, u64>,
 }
 
 #[derive(Default)]
 pub struct DownloadManager {
     pub(crate) inner: Mutex<DownloadInner>,
+    resource_ledger: Mutex<()>,
 }
 
 pub(crate) fn busy(phase: &str) -> bool {
@@ -399,6 +742,9 @@ fn cap_download_throughput(mut throughput: Throughput, limit_bytes_per_second: u
     throughput
 }
 
+/// 检查期间进度事件的最小间隔; 清单条目多时避免频繁刷新界面.
+const CHECK_PROGRESS_INTERVAL: Duration = Duration::from_millis(120);
+
 fn check_game(
     app: &ServiceHandle,
     settings: &Settings,
@@ -429,18 +775,80 @@ fn check_game(
         throughput,
         settings.current().updates.limit_bytes_per_second,
     );
-    let plan = game::check::check_cancellable_with_estimates(
+    // 回调可能远密于界面刷新间隔, 交给单独的发布线程保留最新值;
+    // 开始哈希大文件时即使落在节流窗口内, 也会在间隔结束后补发.
+    let (progress_tx, progress_rx) = mpsc::channel();
+    let publisher = {
+        let app = app.clone();
+        std::thread::Builder::new()
+            .name("oddity-check-progress".into())
+            .spawn(move || publish_check_progress(&app, &progress_rx))
+            .map_err(|error| format!("启动检查进度线程失败: {error}"))?
+    };
+    let mut on_progress = move |progress: game::check::CheckProgress| {
+        let _ = progress_tx.send(progress);
+    };
+    let result = game::check::check_cancellable_observed(
         &game_config,
         CheckOptions {
             full,
             optional: OptionalSelection::Configured,
         },
         Some(&throughput),
+        &mut on_progress,
         &|| cancel.load(Ordering::Relaxed),
-    )
-    .map_err(|error| format!("检查游戏资源失败: {error}"))?;
+    );
+    // 先结束检查再等发布线程收尾, 保证进度先于计划状态落库.
+    drop(on_progress);
+    let _ = publisher.join();
+    let plan = result.map_err(|error| format!("检查游戏资源失败: {error}"))?;
     publish_game_plan(app, settings, root, &plan);
     Ok(plan)
+}
+
+/// 按固定间隔发布检查进度, 但始终补发最新值.
+///
+/// 只在回调里丢弃节流窗口内的事件会让界面停留在上一个文件, 而开始
+/// 哈希大文件后可能很久没有新回调; 这里保留最新值, 在间隔结束后补发.
+fn publish_check_progress(app: &ServiceHandle, rx: &mpsc::Receiver<game::check::CheckProgress>) {
+    let Ok(first) = rx.recv() else {
+        return;
+    };
+    publish_check_progress_state(app, &first);
+    let mut last = Instant::now();
+    let mut pending: Option<game::check::CheckProgress> = None;
+    loop {
+        let wait = CHECK_PROGRESS_INTERVAL.saturating_sub(last.elapsed());
+        match rx.recv_timeout(wait) {
+            Ok(progress) => pending = Some(progress),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Some(progress) = pending.take() {
+                    publish_check_progress_state(app, &progress);
+                    last = Instant::now();
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        if last.elapsed() >= CHECK_PROGRESS_INTERVAL {
+            if let Some(progress) = pending.take() {
+                publish_check_progress_state(app, &progress);
+                last = Instant::now();
+            }
+        }
+    }
+    if let Some(progress) = pending {
+        publish_check_progress_state(app, &progress);
+    }
+}
+
+fn publish_check_progress_state(app: &ServiceHandle, progress: &game::check::CheckProgress) {
+    publish(app, |status| {
+        status.total_files = progress.total;
+        status.completed_files = progress.checked;
+        status.current_file = progress.current.clone();
+        status.current_file_bytes = 0;
+        status.stage = "check".into();
+    });
 }
 
 fn publish_game_plan(
@@ -475,7 +883,14 @@ fn publish_game_plan(
         status.unverified_files = plan.unverified.len();
         status.pending_files = plan.items.len();
         status.total_bytes = total_bytes;
-        status.total_files = plan.items.len();
+        // 检查进度已经给出完成状态, 阶段切换前不要改写计数, 避免进度回跳.
+        if status.stage != "check" {
+            status.total_files = plan.items.len();
+            status.completed_files = 0;
+            status.current_file.clear();
+            status.current_file_bytes = 0;
+            status.stage.clear();
+        }
         status.patch_files = patch_files;
         status.patch_bytes = patch_bytes;
         status.full_files = plan.items.len().saturating_sub(patch_files);

@@ -36,6 +36,12 @@ fn requires_current_game(command: &str) -> bool {
             | "game_status"
             | "take_launch_error"
             | "close_game"
+            | "runtime_setup_environment"
+            | "performance_overview"
+            | "performance_create"
+            | "performance_activate"
+            | "performance_report"
+            | "performance_export"
             | "environment_create"
             | "environment_action"
             | "migration_plan"
@@ -55,10 +61,12 @@ fn requires_current_game(command: &str) -> bool {
             | "game_mode_gpu_apply"
             | "game_mode_tuning_info"
             | "game_mode_tuning_apply"
+            | "audio_status"
             | "game_mode_status"
             | "game_resource_catalog"
             | "game_preload_delete"
-            | "game_resource_select"
+            | "game_resource_remove"
+            | "game_resource_download"
             | "game_download_status"
             | "game_download_start"
             | "game_download_cancel"
@@ -271,16 +279,34 @@ pub async fn dispatch(
             .map_err(|e| json!(e))?,
         )
         .map_err(|e| json!(e.to_string())),
-        "game_resource_select" => {
+        "game_resource_download" => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
             struct Args {
-                tags: Vec<String>,
+                tag: String,
             }
             let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
             serde_json::to_value(
                 crate::service::spawn_blocking(move || {
-                    crate::download_commands::game_resource_select(app, args.tags)
+                    crate::download_commands::game_resource_download(app, args.tag)
+                })
+                .await
+                .map_err(|e| json!(e.to_string()))?
+                .map_err(|e| json!(e))?,
+            )
+            .map_err(|e| json!(e.to_string()))
+        }
+        "game_resource_remove" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                tag: String,
+                preload: bool,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            serde_json::to_value(
+                crate::service::spawn_blocking(move || {
+                    crate::download_commands::game_resource_remove(app, args.tag, args.preload)
                 })
                 .await
                 .map_err(|e| json!(e.to_string()))?
@@ -312,6 +338,52 @@ pub async fn dispatch(
         }
         "game_download_cancel" => serde_json::to_value(
             crate::download_commands::game_download_cancel(&app.downloads),
+        )
+        .map_err(|e| json!(e.to_string())),
+        "runtime_setup_info" => {
+            serde_json::to_value(crate::runtime_setup_commands::info(&app).map_err(|e| json!(e))?)
+                .map_err(|e| json!(e.to_string()))
+        }
+        "runtime_setup_status" => {
+            serde_json::to_value(crate::runtime_setup_commands::status(&app).map_err(|e| json!(e))?)
+                .map_err(|e| json!(e.to_string()))
+        }
+        "runtime_setup_dismiss" => {
+            crate::runtime_setup_commands::dismiss().map_err(|e| json!(e))?;
+            Ok(Value::Null)
+        }
+        "runtime_setup_plan" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                all_users: bool,
+                proton: Option<String>,
+                create_environment: bool,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            crate::service::spawn_blocking(move || {
+                crate::runtime_setup_commands::plan(
+                    &app,
+                    args.all_users,
+                    args.proton,
+                    args.create_environment,
+                )
+            })
+            .await
+            .map_err(|e| json!(e.to_string()))?
+            .map_err(|e| json!(e))
+            .and_then(|p| serde_json::to_value(p).map_err(|e| json!(e.to_string())))
+        }
+        "runtime_setup_apply" => {
+            crate::runtime_setup_commands::apply(app)
+                .await
+                .map_err(|e| json!(e))?;
+            Ok(Value::Null)
+        }
+        "runtime_setup_environment" => serde_json::to_value(
+            crate::runtime_setup_commands::ensure_environment(app)
+                .await
+                .map_err(|e| json!(e))?,
         )
         .map_err(|e| json!(e.to_string())),
         "environment_create" => {
@@ -664,6 +736,9 @@ pub async fn dispatch(
                 .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,
         )
         .map_err(|e| json!(e.to_string())),
+        "audio_status" => {
+            serde_json::to_value(app.audio.status()).map_err(|e| json!(e.to_string()))
+        }
         "game_mode_status" => serde_json::to_value(
             crate::game_mode_status(&app.state)
                 .await
@@ -687,6 +762,33 @@ pub async fn dispatch(
                 .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,
         )
         .map_err(|e| json!(e.to_string())),
+        "performance_overview"
+        | "performance_create"
+        | "performance_activate"
+        | "performance_report"
+        | "performance_export" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                name: Option<String>,
+                a: Option<String>,
+                b: Option<String>,
+                id: Option<String>,
+                destination: Option<String>,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            crate::performance_commands::command(
+                app.clone(),
+                command.trim_start_matches("performance_").to_string(),
+                args.name,
+                args.a,
+                args.b,
+                args.id,
+                args.destination,
+            )
+            .await
+            .map_err(|e| json!(e))
+        }
         "playtime_history" => serde_json::to_value(
             crate::playtime_commands::playtime_history(&app.playtime)
                 .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,

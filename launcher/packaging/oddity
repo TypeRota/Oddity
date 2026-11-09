@@ -4,12 +4,14 @@ headless=0
 recovery=0
 launch=0
 help=0
+xwayland=0
 for argument do
   case "$argument" in
     --taygedo-attendance) headless=1 ;;
     --recovery) recovery=1 ;;
     --launch) launch=1 ;;
     --help|-h) help=1 ;;
+    --xwayland) xwayland=1 ;;
   esac
 done
 if [ "$headless" = 1 ] || { [ "$launch" = 1 ] && [ "$help" = 1 ]; }; then
@@ -17,5 +19,9 @@ if [ "$headless" = 1 ] || { [ "$launch" = 1 ] && [ "$help" = 1 ]; }; then
 fi
 if [ "$recovery" = 1 ]; then
   exec "$appdir/resources/bin/oddity-recovery" "$@"
+fi
+if [ "$xwayland" = 1 ]; then
+  unset WAYLAND_DISPLAY
+  exec "$appdir/oddity-shell" --ozone-platform=x11 "$@"
 fi
 exec "$appdir/oddity-shell" "$@"

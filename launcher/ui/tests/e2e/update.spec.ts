@@ -18,24 +18,33 @@ test("预下载完成保留独立状态", async ({ page }) => {
   await expect(preload).toBeEnabled();
 });
 
-test("可选资源切换即时生效并同步预下载版本", async ({ page }) => {
+test("按语种下载可并发提交, 名称使用正文字体", async ({ page }) => {
   await page.goto("/#update");
   const update = page.locator("#page-update");
-  const summary = update.locator(".resource-options__summary");
-  await expect(summary).toHaveText("2/4 项 · 3.3 GiB");
-  await expect(update.locator("#game-preload")).toHaveText("资源预下载 1.5.0");
-  await expect(update.locator(".resource-row")).toHaveCount(0);
   await update.locator(".resource-options__toggle").click();
-  await expect(update.locator("#optional-resource-pakchunk101")).toBeDisabled();
-  await update.locator("#optional-resource-pakchunk103").check();
-  await expect(summary).toHaveText("3/4 项 · 5.0 GiB");
-  await update.locator("#optional-resources-all").click();
-  await expect(summary).toHaveText("4/4 项 · 6.9 GiB");
-  await expect(update.locator("#optional-resources-all")).toHaveText(
-    "取消全选",
+  const english = update.locator("#resource-download-pakchunk103");
+  const korean = update.locator("#resource-download-pakchunk104");
+  await expect(english).toHaveText("下载");
+  await english.click();
+  await expect(english).toBeDisabled();
+  await expect(korean).toBeEnabled();
+  await korean.click();
+  await expect(korean).toBeDisabled();
+  await expect(english).toHaveText("更新");
+  await expect(korean).toHaveText("更新");
+  await expect(update.locator(".resource-options__summary")).toHaveText(
+    "4/4 项 · 6.9 GiB",
   );
-  await update.locator("#optional-resources-all").click();
-  await expect(summary).toHaveText("2/4 项 · 3.3 GiB");
+  const typography = await update
+    .locator(".resource-row__tag")
+    .first()
+    .evaluate((node) => ({
+      name: getComputedStyle(node).fontFamily,
+      body: getComputedStyle(document.body).fontFamily,
+      spacing: getComputedStyle(node).letterSpacing,
+    }));
+  expect(typography.name).toBe(typography.body);
+  expect(typography.spacing).toBe("normal");
 });
 
 test("预下载完成后可校验并删除缓存", async ({ page }) => {
@@ -125,4 +134,43 @@ test("更新摘要、暂停继续与窄面板布局", async ({ page }) => {
   expect(overflow.scrollbar).toBe("none");
   await page.screenshot({ path: "test-results/update-compact.png" });
   expect(errors).toEqual([]);
+});
+
+test("语音资源支持卸载, 重新下载和按语种清理预下载", async ({ page }) => {
+  await page.goto("/#update");
+  const update = page.locator("#page-update");
+  await update.locator(".resource-options__toggle").click();
+  await expect(update.locator("#resource-options-title")).toHaveText(
+    "语音资源管理",
+  );
+  await update.locator("#resource-remove-pakchunk101").click();
+  await expect(
+    page.getByRole("heading", { name: "卸载语音资源", exact: true }),
+  ).toBeVisible();
+  await page.locator("#voice-resource-remove-confirm").click();
+  const chinese = update.locator("#resource-download-pakchunk101");
+  await expect(chinese).toHaveText("下载");
+  await chinese.click();
+  await expect(chinese).toBeDisabled();
+  await expect(chinese).toHaveText("更新");
+  await expect(update.locator("#resource-remove-pakchunk101")).toBeVisible();
+  await update.locator("#game-preload").click();
+  await expect(update.locator("#game-preload")).toHaveText("校验预下载");
+  await update.locator("#resource-preload-remove-pakchunk101").click();
+  await page.locator("#voice-resource-remove-confirm").click();
+  await expect(
+    update.locator("#resource-preload-remove-pakchunk101"),
+  ).toHaveCount(0);
+  await expect(
+    update.locator("#resource-preload-remove-pakchunk102"),
+  ).toBeVisible();
+  await expect(chinese).toHaveText("更新");
+  await expect(chinese).toBeDisabled();
+  await expect(update.locator("#game-preload")).toHaveText("资源预下载 1.5.0");
+  await page.setViewportSize({ width: 860, height: 760 });
+  await expect(update.locator("#resource-options-title")).toBeVisible();
+  await page.screenshot({
+    path: "/tmp/oddity-75-voice-buttons.png",
+    fullPage: true,
+  });
 });

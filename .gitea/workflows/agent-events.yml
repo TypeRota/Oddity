@@ -56,8 +56,8 @@ jobs:
 
           def notify(kind, number, text):
               body = ("<!-- dsh-superagent:event:" + kind + " -->\n"
-                  "> 🤖 自动通知：本评论由 Gitea Actions 转发，仅说明触发事件，不是人工留言，也不是新的人工指令；授权与处理方式以该事件和仓库规则为准。\n\n"
-                  "事件：" + text + "\n\n@TypeRota 请按仓库规则处理本次事件。")
+                  "> 🤖 自动通知：本评论由 Gitea Actions 转发，仅说明触发事件，不是人工留言。\n\n"
+                  "事件：" + text)
               status, data = api("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
               print("comment", number, status, (data or {}).get("id"))
 
@@ -96,9 +96,9 @@ jobs:
               if action == "assigned" and "TypeRota" in assignees:
                   notify("implement-issue", number, f"{sender} 将本 Issue 指派给 @TypeRota，请求实现本 Issue。")
               elif action in ("label_updated", "labeled") and "TypeRota: implement" in added and not issue.get("pull_request"):
-                  notify("implement-issue", number, f"{sender} 给本 Issue 添加了标签「TypeRota: implement」，请求实现本 Issue。")
+                  notify("implement-issue", number, f"{sender} 给本 Issue 添加了标签「TypeRota: implement」，请求 @TypeRota 实现本 Issue。")
               elif action in ("label_updated", "labeled") and "TypeRota: autofix" in added and issue.get("pull_request"):
-                  notify("autofix-pull", number, f"{sender} 给本 PR 添加了标签「TypeRota: autofix」，请求进入自动修复模式。")
+                  notify("autofix-pull", number, f"{sender} 给本 PR 添加了标签「TypeRota: autofix」，请求 @TypeRota 进入自动修复模式。")
               else:
                   print("skip issue event", action, labels, assignees)
               raise SystemExit(0)
@@ -115,11 +115,11 @@ jobs:
               if action == "review_requested" and "TypeRota" in reviewers:
                   notify("review-pull", number, f"{sender} 请求 @TypeRota 评审本 PR。")
               elif action in ("label_updated", "labeled") and "TypeRota: review" in added:
-                  notify("review-pull", number, f"{sender} 给本 PR 添加了标签「TypeRota: review」，请求评审本 PR。")
+                  notify("review-pull", number, f"{sender} 给本 PR 添加了标签「TypeRota: review」，请求 @TypeRota 评审本 PR。")
               elif action in ("label_updated", "labeled") and "TypeRota: autofix" in added:
-                  notify("autofix-pull", number, f"{sender} 给本 PR 添加了标签「TypeRota: autofix」，请求进入自动修复模式。")
+                  notify("autofix-pull", number, f"{sender} 给本 PR 添加了标签「TypeRota: autofix」，请求 @TypeRota 进入自动修复模式。")
               elif action == "opened" and "TypeRota: autofix" in labels:
-                  notify("autofix-pull", number, f"{sender} 打开本 PR 时已带有标签「TypeRota: autofix」。")
+                  notify("autofix-pull", number, f"{sender} 打开本 PR 时已带有标签「TypeRota: autofix」，请求 @TypeRota 进入自动修复模式。")
               else:
                   print("skip pull event", action, labels, reviewers)
               raise SystemExit(0)
@@ -132,7 +132,7 @@ jobs:
                   raise SystemExit(0)
               title = f"[AGENT] 发布检查 {tag}"
               body = ("<!-- dsh-superagent:event:release-check -->\n"
-                  "> 🤖 自动通知：本 Issue 由 Gitea Actions 自动创建，是发布通知，不是人工请求；处理方式以仓库规则为准。\n\n"
+                  "> 🤖 自动通知：本 Issue 由 Gitea Actions 自动创建，是自动发布通知，不是人工请求。\n\n"
                   f"发布：{release.get('html_url', '')}\n标签：{tag}\n触发者：{sender}\n")
               create_agent_issue(title, body)
               raise SystemExit(0)
@@ -140,10 +140,11 @@ jobs:
           if event_name == "schedule":
               title = "[AGENT] 每周记忆整理"
               body = ("<!-- dsh-superagent:event:memory-consolidate -->\n"
-                  "> 🤖 自动通知：本 Issue 由 Gitea Actions 定时创建，是每周记忆整理请求，不是人工留言；处理方式以仓库规则为准。\n\n"
-                  "@TypeRota 请按 memory-consolidate 规则整理 TypeRota/Memory。\n")
+                  "> 🤖 自动通知：本 Issue 由 Gitea Actions 定时创建，是每周记忆整理提醒，不是人工留言。\n\n"
+                  "@TypeRota 记忆整理时间到了。\n")
               create_agent_issue(title, body)
               raise SystemExit(0)
 
           print("no forwarded event")
           PY
+

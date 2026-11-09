@@ -5,6 +5,7 @@
 //! exposes only the public launcher and resource-update behavior.
 
 pub mod attendance;
+pub mod audio;
 pub mod background;
 pub mod bulletin;
 pub mod config;
@@ -26,8 +27,10 @@ pub mod manifest;
 pub mod migration;
 pub mod notifications;
 mod paths;
+pub mod performance;
 pub mod playtime;
 pub mod recovery;
+pub mod runtime_setup;
 pub mod settings;
 pub mod snapshots;
 pub mod throttle;

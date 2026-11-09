@@ -274,7 +274,7 @@ pub(crate) fn current_inputs(settings: &Settings) -> snapshots::Inputs {
         .as_ref()
         .and_then(|root| LauncherConfig::load(settings.active_game, root).ok())
         .map(|config| config.version);
-    let umu = crate::which("umu-run");
+    let umu = nte_core::runtime_setup::umu(&crate::data_dir());
     let gamescope = &settings.current().game_mode.gamescope;
     snapshots::Inputs {
         distribution: settings.current().distribution,
