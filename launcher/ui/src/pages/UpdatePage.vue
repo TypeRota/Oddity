@@ -191,9 +191,11 @@ const primary = computed(() => {
             ? state.download.verify
               ? "正在校验预下载"
               : "正在预下载资源"
-            : installed.value
-              ? "正在更新游戏"
-              : "正在安装游戏",
+            : state.download?.mode === "resources"
+              ? "正在下载语音资源"
+              : installed.value
+                ? "正在更新游戏"
+                : "正在安装游戏",
         icon: "i-download-simple",
         busy: true,
       };
@@ -214,7 +216,10 @@ const primary = computed(() => {
           icon: "i-download-simple",
           busy: false,
         };
-      if (state.download?.mode === "check")
+      if (
+        state.download?.mode === "check" ||
+        state.download?.mode === "resources"
+      )
         return {
           kind: "check" as const,
           label: "重新检查",
@@ -230,7 +235,8 @@ const primary = computed(() => {
     case "ready":
       return {
         kind: "check" as const,
-        label: "检查通过",
+        label:
+          state.download?.mode === "resources" ? "检查游戏资源" : "检查通过",
         icon: "i-check-circle",
         busy: false,
       };

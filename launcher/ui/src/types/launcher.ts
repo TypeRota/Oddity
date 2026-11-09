@@ -328,6 +328,7 @@ export interface OptionalResource {
   size: number;
   state: "absent" | "partial" | "installed";
   selected: boolean;
+  needsUpdate: boolean;
 }
 export interface ResourceCatalog {
   distribution: "cn" | "global";
@@ -340,6 +341,7 @@ export interface ResourceCatalog {
   preloadCached: boolean;
   preloadCachedVersion: string;
   preloadCachedBytes: number;
+  preloadResourceBytes: Record<string, number>;
   resources: OptionalResource[];
 }
 export type MigrationPhase =
@@ -390,8 +392,15 @@ export interface MigrationStatus {
   cleanupSource: string;
   canCancel: boolean;
 }
+export interface ResourceTask {
+  phase: "checking" | "downloading" | "ready" | "failed" | "cancelled";
+  downloadedBytes: number;
+  totalBytes: number;
+  error: string;
+}
 export interface DownloadStatus {
-  mode: "check" | "apply" | "launcher" | "preload";
+  resourceTasks?: Record<string, ResourceTask>;
+  mode: "check" | "apply" | "launcher" | "preload" | "resources";
   phase: DownloadPhase;
   /** manual 或 auto, 用于区分手动与自动任务. */
   origin: "manual" | "auto";
@@ -567,7 +576,8 @@ export interface Commands {
   game_mode_tuning_apply: GameModeTuning;
   game_mode_gpu_apply: GpuInfo;
   game_resource_catalog: ResourceCatalog;
-  game_resource_select: ResourceCatalog;
+  game_resource_remove: ResourceCatalog;
+  game_resource_download: DownloadStatus;
   game_preload_delete: ResourceCatalog;
   migration_plan: MigrationPlan;
   migration_start: MigrationStatus;
@@ -668,7 +678,8 @@ export interface CommandArgs {
   game_mode_tuning_apply: { config: GameModeTuning };
   game_mode_gpu_apply: { config: GpuConfig };
   game_resource_catalog: undefined;
-  game_resource_select: { tags: string[] };
+  game_resource_remove: { tag: string; preload: boolean };
+  game_resource_download: { tag: string };
   game_preload_delete: undefined;
   migration_plan: { distribution: "cn" | "global"; target: string };
   migration_start: { distribution: "cn" | "global"; target: string };

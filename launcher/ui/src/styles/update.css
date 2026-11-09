@@ -82,7 +82,7 @@
 }
 .download-fields {
   margin-top: 28px;
-  padding-block: 24px 28px;
+  padding-block: 24px 0;
   border-top: 1px solid var(--line);
 }
 .download-fields .field > label {
@@ -317,10 +317,10 @@
     font-size: var(--text-2xl);
   }
 }
-/* 可选资源选择. 与安装目录同级, 只承载资源条目和选择状态. */
+/* 语音资源选择与管理. */
 .resource-options {
-  margin-top: 24px;
-  padding-block: 22px 26px;
+  margin-top: 16px;
+  padding-block: 14px 16px;
   border-top: 1px solid var(--line);
 }
 .resource-options__head {
@@ -367,6 +367,7 @@
 }
 .resource-options__hint {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-8);
   margin: var(--space-6) 0 0;
@@ -380,6 +381,7 @@
 }
 .resource-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-12);
   min-height: 46px;
@@ -398,7 +400,8 @@
 }
 .resource-row__tag {
   color: var(--bone);
-  font-family: var(--mono);
+  font-family: var(--font);
+  letter-spacing: normal;
   font-size: var(--text-sm);
 }
 .resource-row__meta {
@@ -421,10 +424,6 @@
 .resource-row__state.is-partial {
   color: var(--warn);
   background: var(--warn-fill);
-}
-.resource-row__switch {
-  display: inline-flex;
-  flex: none;
 }
 .resource-options__skeleton {
   display: flex;

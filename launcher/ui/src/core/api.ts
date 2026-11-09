@@ -16,6 +16,7 @@ import type {
   MigrationStatus,
   ResourceCatalog,
   OptionalResource,
+  ResourceTask,
   Commands,
   CommandArgs,
   PreviewPaths,
@@ -779,6 +780,7 @@ const previewOptionalResources: OptionalResource[] = [
     size: 1_793_007_011,
     state: "installed",
     selected: true,
+    needsUpdate: false,
   },
   {
     tag: "pakchunk102",
@@ -787,6 +789,7 @@ const previewOptionalResources: OptionalResource[] = [
     size: 1_752_625_939,
     state: "installed",
     selected: true,
+    needsUpdate: false,
   },
   {
     tag: "pakchunk103",
@@ -795,6 +798,7 @@ const previewOptionalResources: OptionalResource[] = [
     size: 1_836_921_904,
     state: "absent",
     selected: false,
+    needsUpdate: false,
   },
   {
     tag: "pakchunk104",
@@ -803,10 +807,13 @@ const previewOptionalResources: OptionalResource[] = [
     size: 2_008_643_453,
     state: "absent",
     selected: false,
+    needsUpdate: false,
   },
 ];
 
 let previewPreloadCompleted = false;
+let previewPreloadCached = false;
+let previewPreloadResourceBytes: Record<string, number> = {};
 
 function previewCatalog(): ResourceCatalog {
   return clone({
@@ -820,9 +827,16 @@ function previewCatalog(): ResourceCatalog {
     preloadVersion: "1.5.0",
     preloadAvailable: true,
     preloadCompleted: previewPreloadCompleted,
-    preloadCached: previewPreloadCompleted,
-    preloadCachedVersion: previewPreloadCompleted ? "1.5.0" : "",
-    preloadCachedBytes: previewPreloadCompleted ? 11_752_693_396 : 0,
+    preloadCached: previewPreloadCached,
+    preloadCachedVersion: previewPreloadCached ? "1.5.0" : "",
+    preloadCachedBytes: previewPreloadCached
+      ? 5 * 1024 ** 3 +
+        Object.values(previewPreloadResourceBytes).reduce(
+          (total, bytes) => total + bytes,
+          0,
+        )
+      : 0,
+    preloadResourceBytes: previewPreloadResourceBytes,
     resources: previewOptionalResources,
   });
 }
@@ -1274,6 +1288,8 @@ async function previewInvoke(
       return previewCatalog();
     case "game_preload_delete":
       previewPreloadCompleted = false;
+      previewPreloadCached = false;
+      previewPreloadResourceBytes = {};
       Object.assign(mockDownload, {
         mode: "check",
         phase: "idle",
@@ -1296,17 +1312,59 @@ async function previewInvoke(
         error: "",
       });
       return previewCatalog();
-    case "game_resource_select": {
-      const { tags } = args as CommandArgs["game_resource_select"];
-      const known = new Set(previewOptionalResources.map((item) => item.tag));
-      const unknown = tags.find((tag) => !known.has(tag));
-      if (unknown) throw new Error(`未知的可选资源: ${unknown}`);
-      previewOptionalResources.forEach((resource) => {
-        if (resource.state === "absent")
-          resource.selected = tags.includes(resource.tag);
-      });
-      await new Promise((resolve) => setTimeout(resolve, 160));
+    case "game_resource_remove": {
+      const { tag, preload } = args as CommandArgs["game_resource_remove"];
+      const resource = previewOptionalResources.find(
+        (item) => item.tag === tag,
+      );
+      if (!resource) throw new Error(`未知的可选资源: ${tag}`);
+      if (preload) {
+        if (!previewPreloadResourceBytes[tag])
+          throw new Error("该语种没有可删除的预下载缓存");
+        delete previewPreloadResourceBytes[tag];
+        previewPreloadCompleted = false;
+      } else resource.state = "absent";
+      resource.selected = preload && resource.state !== "absent";
       return previewCatalog();
+    }
+    case "game_resource_download": {
+      const { tag } = args as CommandArgs["game_resource_download"];
+      const resource = previewOptionalResources.find(
+        (item) => item.tag === tag,
+      );
+      if (!resource) throw new Error(`未知的语音资源: ${tag}`);
+      resource.selected = true;
+      if (mockDownload.mode !== "resources") {
+        Object.assign(mockDownload, {
+          mode: "resources",
+          resourceTasks: {},
+          downloadedBytes: 0,
+          totalBytes: 0,
+        });
+      }
+      mockDownload.phase = "game";
+      const tasks = mockDownload.resourceTasks!;
+      if (["checking", "downloading"].includes(tasks[tag]?.phase || ""))
+        return clone(mockDownload);
+      const task: ResourceTask = {
+        phase: "downloading",
+        downloadedBytes: 0,
+        totalBytes: resource.size,
+        error: "",
+      };
+      tasks[tag] = task;
+      mockDownload.totalBytes += resource.size;
+      window.setTimeout(() => {
+        if (task.phase !== "downloading") return;
+        task.downloadedBytes = resource.size;
+        task.phase = "ready";
+        resource.state = "installed";
+        resource.needsUpdate = false;
+        mockDownload.downloadedBytes += resource.size;
+        if (Object.values(tasks).every((task) => task.phase === "ready"))
+          mockDownload.phase = "ready";
+      }, 2200);
+      return clone(mockDownload);
     }
     case "migration_plan": {
       const { distribution, target } = args as CommandArgs["migration_plan"];
@@ -1436,7 +1494,19 @@ async function previewInvoke(
       });
       if (mode !== "check") {
         window.setTimeout(() => {
-          if (mode === "preload") previewPreloadCompleted = true;
+          if (mode === "preload") {
+            previewPreloadCompleted = true;
+            previewPreloadCached = true;
+            previewPreloadResourceBytes = Object.fromEntries(
+              previewOptionalResources
+                .filter((resource) => resource.selected)
+                .map((resource) => [resource.tag, resource.size]),
+            );
+          }
+          if (mode === "apply")
+            previewOptionalResources.forEach((resource) => {
+              if (resource.selected) resource.state = "installed";
+            });
           Object.assign(mockDownload, {
             phase: mode === "preload" ? "preloaded" : "ready",
             completedFiles: 2,
@@ -1451,6 +1521,10 @@ async function previewInvoke(
       return clone(mockDownload);
     }
     case "game_download_cancel":
+      Object.values(mockDownload.resourceTasks || {}).forEach((task) => {
+        if (["checking", "downloading"].includes(task.phase))
+          task.phase = "cancelled";
+      });
       mockDownload.phase = "cancelled";
       return clone(mockDownload);
     case "environment_snapshot_overview":

@@ -614,9 +614,14 @@ export function downloadBusy() {
 }
 
 function downloadWritesFiles(
-  mode?: "check" | "apply" | "launcher" | "preload" | null,
+  mode?: "check" | "apply" | "launcher" | "preload" | "resources" | null,
 ) {
-  return mode === "apply" || mode === "launcher" || mode === "preload";
+  return (
+    mode === "apply" ||
+    mode === "launcher" ||
+    mode === "preload" ||
+    mode === "resources"
+  );
 }
 
 function downloadBlocksLaunch() {
@@ -715,8 +720,10 @@ export const downloadView = computed(() => {
         ? status.verify
           ? "正在校验预下载"
           : "正在预下载游戏资源"
-        : "正在下载游戏资源",
-    ready: "游戏资源已就绪",
+        : status?.mode === "resources"
+          ? "正在下载语音资源"
+          : "正在下载游戏资源",
+    ready: status?.mode === "resources" ? "语音资源已就绪" : "游戏资源已就绪",
     preloaded:
       status?.verify && !status.downloadedBytes
         ? "预下载校验完成"
@@ -795,7 +802,9 @@ export const downloadView = computed(() => {
             : phase === "checking"
               ? "正在读取官方清单并核对本地文件"
               : phase === "ready"
-                ? "资源检查完成, 可以启动游戏"
+                ? status?.mode === "resources"
+                  ? "语音资源下载完成"
+                  : "资源检查完成, 可以启动游戏"
                 : phase === "cancelled"
                   ? status?.mode === "check"
                     ? "可重新检查游戏资源"
@@ -1557,12 +1566,21 @@ export async function checkUpdate(full = false, silent = false) {
 
 function applyDownloadStatus(status: DownloadStatus) {
   downloadRevision++;
+  const previousTasks = state.download?.resourceTasks;
   const previous = state.download?.phase;
   const previousAuto = state.download?.autoWaiting || "";
   const sameDistribution =
     !state.bootstrap ||
     status.distribution === gameSettings(state.bootstrap.settings).distribution;
   state.download = status;
+  if (
+    status.mode === "resources" &&
+    Object.entries(status.resourceTasks || {}).some(
+      ([tag, task]) =>
+        task.phase === "ready" && previousTasks?.[tag]?.phase !== "ready",
+    )
+  )
+    void loadResourceCatalog(true);
   if (
     sameDistribution &&
     status.autoWaiting === "metered" &&
@@ -1659,19 +1677,22 @@ export async function loadDownloadStatus() {
   } catch {}
 }
 
+let downloadPolling = false;
 function pollDownloadStatus() {
-  if (isDesktop()) return;
+  if (isDesktop() || downloadPolling) return;
+  downloadPolling = true;
   const poll = () => {
-    if (!downloadBusy()) return;
+    if (!downloadBusy()) {
+      downloadPolling = false;
+      return;
+    }
     void loadDownloadStatus().then(() => schedule(poll, 250));
   };
   schedule(poll, 250);
 }
 
 let resourceCatalogRevision = 0;
-let optionalSelectionTimer = 0;
-let optionalSelectionTags: string[] | null = null;
-let optionalSelectionRevision = 0;
+export const resourceDownloadsStarting = reactive(new Set<string>());
 
 // 后端总是读取已保存的设置, 表单尚未提交时先不读取目录.
 function formMatchesSavedSettings() {
@@ -1730,80 +1751,58 @@ export async function loadResourceCatalog(force = false) {
   }
 }
 
-function queueOptionalSelectionSave() {
-  state.resourcesSaving = true;
-  if (optionalSelectionTimer) window.clearTimeout(optionalSelectionTimer);
-  // 连续切换只在停顿后提交一次, 期间界面保持乐观状态.
-  optionalSelectionTimer = schedule(() => {
-    optionalSelectionTimer = 0;
-    void flushOptionalSelection();
-  }, 320);
-}
-
-async function flushOptionalSelection() {
-  const tags = optionalSelectionTags;
-  if (!tags) return;
-  const revision = optionalSelectionRevision;
-  const epoch = generation;
-  try {
-    const next = await invoke("game_resource_select", { tags });
-    if (epoch !== generation || revision !== optionalSelectionRevision) return;
-    if (
-      next &&
-      next.distribution === form.distribution &&
-      normalizedRoot(next.installRoot) === normalizedRoot(currentInstallRoot())
-    ) {
-      state.resourceCatalog = next;
-      refreshPlanAfterOptionalSelection();
-    }
-  } catch (error) {
-    if (epoch !== generation || revision !== optionalSelectionRevision) return;
-    state.resourcesError =
-      error instanceof Error ? error.message : String(error);
-    notify(state.resourcesError, "error", 6500);
-    optionalSelectionTags = null;
-    void loadResourceCatalog(true);
-  } finally {
-    if (epoch === generation && revision === optionalSelectionRevision)
-      state.resourcesSaving = false;
-  }
-}
-
-// 所选资源改变计划内容; 已结束的预下载和暂停的下载保留自己的状态.
-function refreshPlanAfterOptionalSelection() {
-  const phase = state.download?.phase;
-  if (!phase || downloadBusy()) return;
+export async function removeOptionalResource(tag: string, preload: boolean) {
   if (
-    !["ready", "needs-install", "needs-update", "needs-verify"].includes(phase)
-  )
-    return;
-  void startGameDownload("check", false, true);
-}
-
-export function selectOptionalResource(tag: string, selected: boolean) {
-  const catalog = state.resourceCatalog;
-  if (
-    !catalog ||
     !resourceCatalogMatches.value ||
+    state.resourcesSaving ||
     state.resourcesLoading ||
     downloadBusy() ||
     state.game !== "idle"
   )
-    return;
-  const resource = catalog.resources.find((item) => item.tag === tag);
+    return false;
+  const epoch = generation;
+  state.resourcesSaving = true;
+  try {
+    const catalog = await invoke("game_resource_remove", { tag, preload });
+    if (epoch !== generation) return false;
+    state.resourceCatalog = catalog;
+    state.resourcesError = "";
+    notify(preload ? "语音预下载已删除." : "语音资源已卸载.", "ok", 4000);
+    await startGameDownload("check", false, true);
+    return true;
+  } catch (error) {
+    if (epoch === generation) notify(String(error), "error", 6500);
+    return false;
+  } finally {
+    if (epoch === generation) state.resourcesSaving = false;
+  }
+}
+
+export async function downloadOptionalResource(tag: string) {
   if (
-    !resource ||
-    resource.state !== "absent" ||
-    resource.selected === selected
+    !resourceCatalogMatches.value ||
+    state.resourcesSaving ||
+    state.resourcesLoading ||
+    runtimeEnvironmentBusy.value ||
+    state.game !== "idle" ||
+    resourceDownloadsStarting.has(tag) ||
+    (downloadBusy() && state.download?.mode !== "resources")
   )
     return;
-  resource.selected = selected;
-  optionalSelectionTags = catalog.resources
-    .filter((item) => item.selected)
-    .map((item) => item.tag);
-  optionalSelectionRevision++;
-  state.resourcesError = "";
-  queueOptionalSelectionSave();
+  const task = state.download?.resourceTasks?.[tag];
+  if (task && ["checking", "downloading"].includes(task.phase)) return;
+  const epoch = generation;
+  resourceDownloadsStarting.add(tag);
+  try {
+    const status = await invoke("game_resource_download", { tag });
+    if (epoch !== generation) return;
+    applyDownloadStatus(status);
+    pollDownloadStatus();
+  } catch (error) {
+    if (epoch === generation) notify(String(error), "error", 6500);
+  } finally {
+    if (epoch === generation) resourceDownloadsStarting.delete(tag);
+  }
 }
 
 const PRELOAD_DISMISSED_KEY = "nte.preload.dismissed";
@@ -1926,32 +1925,6 @@ export async function deletePreloadResources() {
   } catch (error) {
     if (epoch === generation) notify(String(error), "error", 6500);
   }
-}
-
-export function toggleAllOptionalResources() {
-  const catalog = state.resourceCatalog;
-  if (
-    !catalog ||
-    !resourceCatalogMatches.value ||
-    state.resourcesLoading ||
-    downloadBusy() ||
-    state.game !== "idle"
-  )
-    return;
-  const selectable = catalog.resources.filter(
-    (item) => item.state === "absent",
-  );
-  if (!selectable.length) return;
-  const select = selectable.some((item) => !item.selected);
-  selectable.forEach((item) => {
-    item.selected = select;
-  });
-  optionalSelectionTags = catalog.resources
-    .filter((item) => item.selected)
-    .map((item) => item.tag);
-  optionalSelectionRevision++;
-  state.resourcesError = "";
-  queueOptionalSelectionSave();
 }
 
 export async function startGameDownload(
@@ -3141,6 +3114,7 @@ export function dispose() {
   });
   gameRecordsRetryTimer = null;
   downloadStarting.value = null;
+  downloadPolling = false;
   autoSaveQueued = false;
   autoSaveRunning = false;
   autoSaveTimer = null;
@@ -3149,9 +3123,7 @@ export function dispose() {
   checkRefreshPending = false;
   pendingCheck = null;
   resourceCatalogRevision++;
-  optionalSelectionTimer = 0;
-  optionalSelectionTags = null;
-  optionalSelectionRevision++;
+  resourceDownloadsStarting.clear();
   saveStatusTimer = 0;
   lastSavedSettings = "";
   saveChain = Promise.resolve(true);

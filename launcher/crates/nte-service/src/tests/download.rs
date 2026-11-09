@@ -140,6 +140,13 @@ impl Fixture {
         )
     }
 
+    fn select(&self, tags: Vec<String>) -> Result<ResourceCatalog, String> {
+        let (settings, config, bundle) = load_catalog_context(&self.app)?;
+        game::optional::save_selection(&config, &bundle, &tags)
+            .map_err(|error| error.to_string())?;
+        catalog_payload(&settings, &config, &bundle)
+    }
+
     fn status(&self) -> DownloadStatus {
         game_download_status(&self.app.downloads)
     }
@@ -927,19 +934,14 @@ fn resource_catalog_saves_selection_and_records_optional_tags() {
     );
     assert!(!catalog.resources[0].selected);
 
-    let selected = game_resource_select(fixture.app.clone(), vec![tag.to_string()]).unwrap();
+    let selected = fixture.select(vec![tag.to_string()]).unwrap();
     assert!(selected.resources[0].selected);
     assert!(fixture
         .dir
         .join("NTELauncher/UserData/Patcher/PatcherSDK/nte-resource-selection.json")
         .is_file());
-    let error = game_resource_select(fixture.app.clone(), vec!["pakchunk999".into()]).unwrap_err();
+    let error = fixture.select(vec!["pakchunk999".into()]).unwrap_err();
     assert!(error.contains("未知的可选资源"), "{error}");
-
-    fixture.app.state.game.lock().unwrap().starting = true;
-    let error = game_resource_select(fixture.app.clone(), vec![tag.to_string()]).unwrap_err();
-    assert!(error.contains("游戏正在运行"), "{error}");
-    fixture.app.state.game.lock().unwrap().starting = false;
 
     assert!(!fixture.dir.join(path).exists());
     fixture.run("apply", false, false).unwrap();
@@ -960,6 +962,56 @@ fn resource_catalog_saves_selection_and_records_optional_tags() {
         .iter()
         .any(|entry| entry.filename == path && entry.md5 == hash));
     assert!(ledger.res.iter().all(|entry| entry.filename != path));
+
+    let ledger_before = fixture
+        .dir
+        .read("NTELauncher/UserData/Patcher/PatcherSDK/ResList.xml");
+    let selection_before = fixture
+        .dir
+        .read("NTELauncher/UserData/Patcher/PatcherSDK/nte-resource-selection.json");
+    let error = game_resource_remove(fixture.app.clone(), "pakchunk999".into(), false).unwrap_err();
+    assert!(error.contains("未知的可选资源"), "{error}");
+    fixture.app.state.game.lock().unwrap().starting = true;
+    let error = game_resource_remove(fixture.app.clone(), tag.into(), false).unwrap_err();
+    assert!(error.contains("游戏正在运行"), "{error}");
+    fixture.app.state.game.lock().unwrap().starting = false;
+    fixture.app.downloads.inner.lock().unwrap().status.phase = "game".into();
+    let error = game_resource_remove(fixture.app.clone(), tag.into(), false).unwrap_err();
+    assert!(error.contains("游戏资源任务正在进行"), "{error}");
+    fixture.app.downloads.inner.lock().unwrap().status.phase = "ready".into();
+    assert_eq!(fixture.dir.read(path), bytes);
+    assert_eq!(
+        fixture
+            .dir
+            .read("NTELauncher/UserData/Patcher/PatcherSDK/ResList.xml"),
+        ledger_before
+    );
+    assert_eq!(
+        fixture
+            .dir
+            .read("NTELauncher/UserData/Patcher/PatcherSDK/nte-resource-selection.json"),
+        selection_before
+    );
+
+    let removed = game_resource_remove(fixture.app.clone(), tag.into(), false).unwrap();
+    assert_eq!(
+        removed.resources[0].state,
+        game::optional::ResourceState::Absent
+    );
+    assert!(!removed.resources[0].selected);
+    assert!(!fixture.dir.join(path).exists());
+    let ledger = game::check::load_local_ledger(&config).unwrap().unwrap();
+    assert!(ledger.base_versions.iter().all(|record| record.tag != tag));
+    assert_eq!(fixture.dir.read(DATA), fixture.data);
+    assert_eq!(fixture.status().phase, "idle");
+    fixture.run("apply", false, false).unwrap();
+    assert_eq!(fixture.status().phase, "ready");
+    assert!(fixture.status().optional_tags.is_empty());
+    assert!(!fixture.dir.join(path).exists());
+    let selected = fixture.select(vec![tag.into()]).unwrap();
+    assert!(selected.resources[0].selected);
+    fixture.run("apply", false, false).unwrap();
+    assert_eq!(fixture.dir.read(path), bytes);
 }
 #[test]
 fn preload_includes_selected_optional_resources_without_touching_live_files() {
@@ -1041,7 +1093,7 @@ fn preload_includes_selected_optional_resources_without_touching_live_files() {
     assert_eq!(catalog.resources.len(), 1);
     assert!(!catalog.resources[0].selected);
     assert!(!catalog.preload_completed);
-    game_resource_select(fixture.app.clone(), vec![tag.to_string()]).unwrap();
+    fixture.select(vec![tag.to_string()]).unwrap();
 
     let ledger = fixture
         .dir
@@ -1087,6 +1139,10 @@ fn preload_includes_selected_optional_resources_without_touching_live_files() {
     assert!(catalog.preload_cached);
     assert_eq!(catalog.preload_cached_version, "2.0");
     assert!(catalog.preload_cached_bytes > 0);
+    assert_eq!(
+        catalog.preload_resource_bytes.get(tag),
+        Some(&(future.len() as u64))
+    );
 
     // 已完成时再次预下载只做校验, 不进入下载阶段.
     prepare_task(
@@ -1101,6 +1157,23 @@ fn preload_includes_selected_optional_resources_without_touching_live_files() {
     run_task(&fixture.app, &fixture.settings, "preload", false, &cancel).unwrap();
     assert_eq!(fixture.status().phase, "preloaded");
     assert_eq!(fixture.status().pending_files, 0);
+
+    // 只清理当前语种的预下载, 基础缓存和正式文件继续保留.
+    let removed = game_resource_remove(fixture.app.clone(), tag.into(), true).unwrap();
+    assert!(!removed.preload_completed);
+    assert!(removed.preload_cached);
+    assert!(!removed.resources[0].selected);
+    assert!(!removed.preload_resource_bytes.contains_key(tag));
+    assert!(game_resource_remove(fixture.app.clone(), tag.into(), true)
+        .unwrap_err()
+        .contains("没有可删除"));
+    let mut remaining = Vec::new();
+    collect_files(&staging, &mut remaining);
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(std::fs::read(&remaining[0]).unwrap(), future_base);
+    assert_eq!(std::fs::read(&ledger).unwrap(), old_ledger);
+    assert_eq!(std::fs::read(fixture.dir.join(DATA)).unwrap(), old_data);
+    fixture.select(vec![tag.into()]).unwrap();
 
     let deleted = game_preload_delete(fixture.app.clone()).unwrap();
     assert!(!deleted.preload_completed);
@@ -1170,4 +1243,181 @@ fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             out.push(path);
         }
     }
+}
+
+fn configure_voice_downloads(fixture: &Fixture) -> [(String, Vec<u8>, String); 2] {
+    let voices = [
+        ("pakchunk101", vec![31; 64 * 1024]),
+        ("pakchunk102", vec![47; 64 * 1024]),
+    ]
+    .map(|(tag, bytes)| {
+        let path = format!("Client/WindowsNoEditor/HT/Content/TagPatchPaks/{tag}-Windows.pak");
+        (tag.to_string(), bytes, path)
+    });
+    let mut xml = format!("<ResList version=\"2.0\" tag=\"baseTag\"><Res filename=\"{DATA}\" md5=\"{}\" filesize=\"{}\"/>", md5_bytes(b"new base version"), 16);
+    for (tag, bytes, path) in &voices {
+        let hash = md5_bytes(bytes);
+        xml.push_str(&format!("<BaseVersion version=\"0.{}.0\" tag=\"{tag}\"><ResList><Res filename=\"{path}\" md5=\"{hash}\" filesize=\"{}\"/></ResList></BaseVersion>", &tag[8..], bytes.len()));
+        fixture.server.route(
+            format!("/test/Res/{}/{hash}.{}", &hash[..1], bytes.len()),
+            bytes,
+        );
+    }
+    xml.push_str("</ResList>");
+    fixture.server.route(
+        "/test/Version/Windows/config.xml",
+        format!(
+            "<Config><ResVersion>2.0</ResVersion><Hash>hash</Hash><listHash>{}</listHash></Config>",
+            md5_bytes(xml.as_bytes())
+        ),
+    );
+    fixture.server.route(
+        "/test/Version/Windows/version/2.0/ResList.bin.zip",
+        zip(
+            "ResList.bin",
+            &game::pxml::encode(xml.as_bytes(), "1289").unwrap(),
+        ),
+    );
+    voices
+}
+
+fn wait_resource_tasks(fixture: &Fixture) -> DownloadStatus {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = fixture.status();
+        if !busy(&status.phase) {
+            return status;
+        }
+        assert!(Instant::now() < deadline, "语音任务未结束: {status:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn voice_downloads_run_concurrently_without_updating_base_and_keep_both_ledger_tags() {
+    let fixture = Fixture::new(Distribution::Cn, true);
+    fixture.ledger();
+    let voices = configure_voice_downloads(&fixture);
+    fixture
+        .app
+        .state
+        .settings
+        .lock()
+        .unwrap()
+        .current_mut()
+        .updates
+        .limit_bytes_per_second = 64 * 1024;
+    let first = game_resource_download(fixture.app.clone(), voices[0].0.clone()).unwrap();
+    assert_eq!(first.resource_tasks[&voices[0].0].phase, "checking");
+    let second = game_resource_download(fixture.app.clone(), voices[1].0.clone()).unwrap();
+    assert_eq!(second.mode, "resources");
+    assert_eq!(second.resource_tasks.len(), 2);
+    assert!(
+        game_resource_download(fixture.app.clone(), voices[0].0.clone())
+            .unwrap_err()
+            .contains("正在下载")
+    );
+    assert!(game_download_start(fixture.app.clone(), "apply".into(), false).is_err());
+    assert!(game_resource_remove(fixture.app.clone(), voices[0].0.clone(), false).is_err());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = fixture.status();
+        let targets = fixture.server.targets();
+        let both_requested = voices.iter().all(|(_, bytes, _)| {
+            let hash = md5_bytes(bytes);
+            let target = format!("/test/Res/{}/{hash}.{}", &hash[..1], bytes.len());
+            targets
+                .iter()
+                .any(|request| request.split('?').next() == Some(target.as_str()))
+        });
+        if status
+            .resource_tasks
+            .values()
+            .all(|task| task.phase == "downloading")
+            && both_requested
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "语音未并发下载: {status:?}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let started = Instant::now();
+    let status = wait_resource_tasks(&fixture);
+    assert_eq!(status.phase, "ready", "{status:?}");
+    assert!(status
+        .resource_tasks
+        .values()
+        .all(|task| task.phase == "ready"));
+    assert!(
+        started.elapsed() >= Duration::from_secs(1),
+        "未遵守两个语种共享的限速"
+    );
+    assert_eq!(fixture.dir.read(DATA), fixture.data);
+    let (_, config, _) = load_catalog_context(&fixture.app).unwrap();
+    let ledger = game::check::load_local_ledger(&config).unwrap().unwrap();
+    assert_eq!(ledger.version, "1.0");
+    assert_eq!(ledger.base_versions.len(), 2);
+    for (tag, bytes, path) in voices {
+        assert_eq!(fixture.dir.read(path), bytes);
+        assert!(ledger.base_versions.iter().any(|base| base.tag == tag));
+    }
+    let selection =
+        std::fs::read_to_string(config.patcher_dir.join("nte-resource-selection.json")).unwrap();
+    assert!(selection.contains("pakchunk101") && selection.contains("pakchunk102"));
+    assert!(nte_core::install_lock::InstallLock::acquire(fixture.dir.path()).is_ok());
+}
+
+#[test]
+fn voice_downloads_cancel_together_and_failed_tags_can_be_retried() {
+    let fixture = Fixture::new(Distribution::Cn, true);
+    let voices = configure_voice_downloads(&fixture);
+    fixture
+        .app
+        .state
+        .settings
+        .lock()
+        .unwrap()
+        .current_mut()
+        .updates
+        .limit_bytes_per_second = 1024;
+    game_resource_download(fixture.app.clone(), voices[0].0.clone()).unwrap();
+    game_resource_download(fixture.app.clone(), voices[1].0.clone()).unwrap();
+    game_download_cancel(&fixture.app.downloads);
+    let status = wait_resource_tasks(&fixture);
+    assert_eq!(status.phase, "cancelled");
+    assert!(status
+        .resource_tasks
+        .values()
+        .all(|task| task.phase == "cancelled"));
+    assert_eq!(fixture.dir.read(DATA), fixture.data);
+    assert!(
+        game_resource_download(fixture.app.clone(), "unknown".into())
+            .unwrap_err()
+            .contains("未知的可选资源")
+    );
+    fixture
+        .app
+        .state
+        .settings
+        .lock()
+        .unwrap()
+        .current_mut()
+        .updates
+        .limit_bytes_per_second = 0;
+    let hash = md5_bytes(&voices[0].1);
+    fixture.server.route(
+        format!("/test/Res/{}/{hash}.{}", &hash[..1], voices[0].1.len()),
+        b"invalid content",
+    );
+    game_resource_download(fixture.app.clone(), voices[0].0.clone()).unwrap();
+    let status = wait_resource_tasks(&fixture);
+    assert_eq!(status.phase, "failed", "{status:?}");
+    assert!(!status.resource_tasks[&voices[0].0].error.is_empty());
+    fixture.server.route(
+        format!("/test/Res/{}/{hash}.{}", &hash[..1], voices[0].1.len()),
+        &voices[0].1,
+    );
+    game_resource_download(fixture.app.clone(), voices[0].0.clone()).unwrap();
+    assert_eq!(wait_resource_tasks(&fixture).phase, "ready");
+    assert_eq!(fixture.dir.read(&voices[0].2), voices[0].1);
 }

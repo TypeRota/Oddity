@@ -2,7 +2,7 @@
 //!
 //! 同一个任务内的所有连接共享一个令牌桶, 限速值才等于实际总带宽.
 
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// 令牌桶限速器; limit 为 0 时不限制.
@@ -11,6 +11,9 @@ pub struct RateLimiter {
     limit: u64,
     capacity: u64,
     state: Mutex<State>,
+    connections: usize,
+    active: Mutex<usize>,
+    available: Condvar,
 }
 
 #[derive(Debug)]
@@ -31,11 +34,47 @@ impl RateLimiter {
         Self {
             limit,
             capacity,
+            connections: usize::MAX,
+            active: Mutex::new(0),
+            available: Condvar::new(),
             state: Mutex::new(State {
                 tokens: capacity as f64,
                 last: Instant::now(),
             }),
         }
+    }
+
+    /// 多个独立资源共享连接预算, 单个资源可以使用全部空闲连接.
+    pub fn with_connections(limit: u64, connections: usize) -> Self {
+        Self {
+            connections: connections.max(1),
+            ..Self::new(limit)
+        }
+    }
+
+    pub(crate) fn connection(
+        &self,
+        cancelled: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Option<Connection<'_>> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        while *active >= self.connections {
+            if cancelled() {
+                return None;
+            }
+            active = self
+                .available
+                .wait_timeout(active, Duration::from_millis(100))
+                .unwrap_or_else(|error| error.into_inner())
+                .0;
+        }
+        if cancelled() {
+            return None;
+        }
+        *active += 1;
+        Some(Connection(self))
     }
 
     pub fn limit(&self) -> u64 {
@@ -79,11 +118,48 @@ impl RateLimiter {
     }
 }
 
+/// 持有至响应正文读取结束, 保证等待限速时连接仍计入预算.
+pub(crate) struct Connection<'a>(&'a RateLimiter);
+
+impl Drop for Connection<'_> {
+    fn drop(&mut self) {
+        let mut active = self
+            .0
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *active -= 1;
+        self.0.available.notify_one();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn transfers_share_the_connection_budget_and_waiters_can_cancel() {
+        let limiter = RateLimiter::with_connections(0, 5);
+        let connections = (0..5)
+            .map(|_| limiter.connection(&|| false).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(*limiter.active.lock().unwrap(), 5);
+        let cancelled = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                limiter
+                    .connection(&|| cancelled.load(Ordering::Relaxed))
+                    .is_none()
+            });
+            cancelled.store(true, Ordering::Relaxed);
+            assert!(waiter.join().unwrap());
+        });
+        drop(connections);
+        assert_eq!(*limiter.active.lock().unwrap(), 0);
+        assert!(limiter.connection(&|| false).is_some());
+    }
 
     #[test]
     fn unlimited_transfers_do_not_wait() {

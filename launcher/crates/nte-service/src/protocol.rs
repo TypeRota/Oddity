@@ -60,7 +60,8 @@ fn requires_current_game(command: &str) -> bool {
             | "game_mode_status"
             | "game_resource_catalog"
             | "game_preload_delete"
-            | "game_resource_select"
+            | "game_resource_remove"
+            | "game_resource_download"
             | "game_download_status"
             | "game_download_start"
             | "game_download_cancel"
@@ -273,16 +274,34 @@ pub async fn dispatch(
             .map_err(|e| json!(e))?,
         )
         .map_err(|e| json!(e.to_string())),
-        "game_resource_select" => {
+        "game_resource_download" => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
             struct Args {
-                tags: Vec<String>,
+                tag: String,
             }
             let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
             serde_json::to_value(
                 crate::service::spawn_blocking(move || {
-                    crate::download_commands::game_resource_select(app, args.tags)
+                    crate::download_commands::game_resource_download(app, args.tag)
+                })
+                .await
+                .map_err(|e| json!(e.to_string()))?
+                .map_err(|e| json!(e))?,
+            )
+            .map_err(|e| json!(e.to_string()))
+        }
+        "game_resource_remove" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                tag: String,
+                preload: bool,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            serde_json::to_value(
+                crate::service::spawn_blocking(move || {
+                    crate::download_commands::game_resource_remove(app, args.tag, args.preload)
                 })
                 .await
                 .map_err(|e| json!(e.to_string()))?

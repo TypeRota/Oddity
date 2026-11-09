@@ -216,7 +216,7 @@ fn record_contains(record: &BaseVersion, kind: &UpdateKind) -> bool {
             .any(|entry| matches(&entry.name, &entry.md5, entry.size))
 }
 
-fn serialize(m: &GameManifest) -> String {
+pub(crate) fn serialize(m: &GameManifest) -> String {
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n");
     out.push_str(&format!(
