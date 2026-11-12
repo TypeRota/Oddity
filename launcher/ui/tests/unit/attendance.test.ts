@@ -11,8 +11,8 @@ vi.mock("../../src/core/api", () => ({
   isDesktop: () => false,
 }));
 import * as c from "../../src/core/controller";
-import { bootstrap } from "./fixtures";
-import Component from "../../src/components/TaygedoSettings.vue";
+// 签到设置属于异环包 UI, 这里直接挂载包内组件验证行为.
+import Component from "@packages/game-nte/ui/src/domains/settings/TaygedoSettings.vue";
 let wrapper: VueWrapper;
 let status: AttendanceStatus;
 const account = (id: string): AttendanceAccount => ({
@@ -42,7 +42,6 @@ beforeEach(() => {
     },
   };
   api.invoke.mockReset().mockImplementation(async (command, args) => {
-    if (command === "save_settings") return bootstrap();
     if (command === "attendance_send_code") return "device-test";
     if (command === "attendance_login" || command === "attendance_login_sms")
       status.accounts.push(account(String(status.accounts.length + 1)));

@@ -1,0 +1,6 @@
+[package]
+name = "oddity-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command and event declarations shared by the Oddity host and UI"

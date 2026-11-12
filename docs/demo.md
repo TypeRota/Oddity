@@ -53,4 +53,4 @@ pnpm run test:demo
 
 界面改动合并到 `main` 后, 需要重新构建并部署静态文件, 才会出现在演示站.
 
-示例数据主要在 `launcher/ui/src/core/api.ts` 与 `launcher/ui/src/core/demo.ts`, 新增界面需要补充示例数据时修改这两个文件.
+宿主命令的示例数据在 `launcher/ui/src/core/api.ts` 与 `launcher/ui/src/core/demo.ts`; 游戏包命令的演示数据在包的 `ui/src/preview.ts`, 宿主按当前游戏命名空间取用. 新增界面需要补充示例数据时按命令归属修改对应文件.

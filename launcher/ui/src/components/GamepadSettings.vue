@@ -28,7 +28,7 @@ const iconOptions = [
           id="set-gamepad-enabled"
           v-model="form.gamepad.enabled"
           label="启用手柄操作"
-          @change="queueSettingsSave(0)"
+          @change="queueSettingsSave('host', 0)"
       /></SettingRow>
       <SettingRow label="按键图标" for="set-gamepad-icons-trigger"
         ><BaseSelect
@@ -36,7 +36,7 @@ const iconOptions = [
           v-model="form.gamepad.icons"
           :options="iconOptions"
           label="按键图标"
-          @change="queueSettingsSave(0)"
+          @change="queueSettingsSave('host', 0)"
       /></SettingRow>
       <div class="gamepad-icon-preview">
         <span><GamepadGlyph button="confirm" />确认</span
@@ -56,9 +56,9 @@ const iconOptions = [
             @input="
               form.gamepad.deadZone =
                 ($event.target as HTMLInputElement).valueAsNumber / 100;
-              queueSettingsSave();
+              queueSettingsSave('host');
             "
-            @change="queueSettingsSave(0)"
+            @change="queueSettingsSave('host', 0)"
           /><output>{{ Math.round(form.gamepad.deadZone * 100) }}%</output>
         </div></SettingRow
       >
@@ -70,7 +70,7 @@ const iconOptions = [
           v-model="form.gamepad.vibration"
           label="手柄振动"
           @change="
-            queueSettingsSave(0);
+            queueSettingsSave('host', 0);
             gamepadFeedback('stop');
           "
       /></SettingRow>
@@ -84,8 +84,8 @@ const iconOptions = [
             max="100"
             step="1"
             :disabled="!form.gamepad.vibration"
-            @input="queueSettingsSave()"
-            @change="queueSettingsSave(0)"
+            @input="queueSettingsSave('host')"
+            @change="queueSettingsSave('host', 0)"
           /><output>{{ form.gamepad.strength }}%</output>
         </div></SettingRow
       >

@@ -1,0 +1,39 @@
+[package]
+name = "oddity-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Oddity 宿主内核: 服务循环, 命令分发, 会话与全部宿主域"
+
+[dependencies]
+oddity-platform = { path = "../oddity-platform" }
+oddity-contract = { path = "../oddity-contract" }
+oddity-runtime = { path = "../oddity-runtime" }
+libc = "0.2"
+anyhow.workspace = true
+base64 = "0.23"
+md-5.workspace = true
+sha2.workspace = true
+ureq.workspace = true
+zip.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+quick-xml = { workspace = true, features = ["serialize"] }
+regex = "1"
+tempfile = "3"
+encoding_rs_io = "0.1"
+zbus = { version = "5.19", features = ["blocking-api"] }
+resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+csv = "1"
+sdl3 = { version = "0.20.0", features = ["build-from-source-static"] }
+sdl3-sys = { version = "0.7.2", features = ["sdl-unix-console-build", "no-sdl-video", "no-sdl-gpu", "no-sdl-render", "no-sdl-camera", "no-sdl-dialog", "no-sdl-tray"] }
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "time", "macros"] }
+
+[features]
+# 集成测试需要的宿主调试入口 (会话句柄等).
+testing = []
+
+[dev-dependencies]
+# 仅运行时安装测试里用于构造 tar 分发包夹具.
+tar = "0.4"
+flate2.workspace = true

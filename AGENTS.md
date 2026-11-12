@@ -4,20 +4,35 @@
 
 Oddity is a Linux launcher for *Neverness To Everness* (NTE).
 
-- **Platform:** Linux x86_64, Wayland and X11.
-- **UI:** Electron 44, Chromium, native window.
-- **Runtime:** `umu-run` with Proton.
-- **Scope:** Replaces the launcher, not the game itself.
+### Arch
 
-### Architecture
-
-- `nte-core`: Shared business logic, independent of Electron and CLI.
-- `nte-cli`: Command-line interface built on `nte-core`.
-- `nte-service`: Rust application state, commands and process lifecycle.
+- `oddity-platform`: Platform primitives shared by the launcher and game packages: HTTP, files, hashing, archives, diffs, INI parsing, directory trees, Wine path rewriting, audio, network metering, clock, process, locks, keyring and desktop notifications.
+- `oddity-contract`: The single declaration source for commands and events, and the basis for the generated Electron allowlist, renderer TypeScript types, browser demo command keys and `launcher/CONTRACTS.md`.
+- `oddity-runtime`: Runtime contracts shared by the host and game packages: command groups, tasks, install domains, launch and assembly.
+- `oddity-host`: Host kernel, command dispatch, sessions and all host domains; independent of Electron and game packages.
+- `oddity-backend`: Backend binary (`oddity-backend`); the backend assembly point for game packages and the process startup order; its lib target is reused by `oddity-cli`.
+- `oddity-cli`: Headless CLI (binary `nte-cli`) built on `oddity-host`, `oddity-runtime` and the backend assembly; dispatches package commands through the package CLI surface.
+- `oddity-recovery`: Native emergency recovery window (binary `oddity-recovery`), independent of Electron.
+- `launcher/packages`: Game packages (Rust backend and Vue UI); each declares its command groups and UI contributions, and playable games also supply their install domain and launch implementation.
 - `launcher/ui/electron`: Electron main process and isolated preload.
 - `launcher/ui`: Vite + TypeScript + Vue 3 frontend.
 
-Prefer reusable logic in `nte-core` over duplication.
+Prefer reusable logic in `oddity-host` over duplication.
+
+## Code and Repository Rules
+
+1. Do not write implementation status, collaboration progress, milestones, decisions, reflections, or memos in code comments.
+2. PRs must reference Issues using `Closes`, `Refs`, or `Fixed`, instead of **fucking** using dogshit as a prefix.
+3. PR descriptions must not mention your own coverage tests or unit tests!
+4. Do not fabricate author information.
+5. Do not fucking introduce any explanations related to old decisions in any text. Absolutely fucking prohibited!
+6. Create a worktree based on the latest `origin/main`. Do not modify files directly in the existing workspace.
+7. Do not disclose any personal information, **including directory structures**!
+8. Issue replies must be brief and clear, instead of treating them like a **fucking dumpster for spewing bullshit**.
+9. Issue bodies must be concise and clear. Don't fucking tell other people what to do. Fuck you, nobody wants to hear your endless stream of worthless bullshit!
+10. Do not push untracked directories to the remote just because you think they should be uploaded!
+11. Do not write your stupid progress reports or research reports into `docs/` or `internal/`!
+12. The repository is a public space. Think carefully about whether what you're writing is intended for contributors. Content intended for your user must never appear in the repository!
 
 ## Working Principles
 
@@ -43,7 +58,7 @@ When encountering unfamiliar functionality, do not immediately implement it from
 ## Branches and PRs
 
 - Before creating a branch or submitting a PR, confirm that your branch is based on the latest `origin/main`.
-- Before opening a PR, read [.github/workflows/check-pr-title.yml](.github/workflows/check-pr-title.yml) and match its allowed types, scopes and subject pattern.
+- Before opening a PR, follow the PR title rules in [CONTRIBUTING.md](CONTRIBUTING.md), using either the module form or the semantic form.
 - Do not use PRs as a dumping ground for irrelevant remarks that are not meant for maintainers.
 
 ## Decision Management
@@ -58,3 +73,4 @@ When encountering unfamiliar functionality, do not immediately implement it from
 ## Completion
 
 Briefly report what was implemented, what was verified, and any remaining issues.
+

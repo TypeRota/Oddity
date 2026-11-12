@@ -2,8 +2,11 @@ import { matchesGlob } from "node:path";
 
 const pathRules = {
   "area: ui": ["launcher/ui/**"],
-  "area: cli": ["launcher/crates/nte-cli/**"],
-  "area: launcher": ["launcher/crates/nte-service/**"],
+  "area: cli": ["launcher/crates/oddity-cli/**"],
+  "area: launcher": [
+    "launcher/crates/oddity-host/**",
+    "launcher/crates/oddity-backend/**",
+  ],
   "area: packaging": [
     "launcher/packaging/**",
     "launcher/scripts/install-desktop.sh",
@@ -21,13 +24,11 @@ const pathRules = {
     "nix/**",
   ],
   "area: updater": [
-    "launcher/crates/nte-core/src/game/**",
-    "launcher/crates/nte-core/src/update.rs",
-    "launcher/crates/nte-core/src/manifest.rs",
+    "launcher/packages/game-nte/backend/src/update/**",
   ],
   "area: proton": [
-    "launcher/crates/nte-core/src/launch.rs",
-    "launcher/crates/nte-core/src/config.rs",
+    "launcher/crates/oddity-host/src/environment.rs",
+    "launcher/crates/oddity-host/src/runtime_setup.rs",
   ],
   ci: [".github/**", "scripts/**"],
 };

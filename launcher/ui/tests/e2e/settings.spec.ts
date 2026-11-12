@@ -21,7 +21,7 @@ test("分类显示相关设置, 保存现有数据且切换时保留滚动位置
     .poll(() => panel.evaluate((el) => el.scrollTop))
     .toBeGreaterThan(50);
   const top = await panel.evaluate((el) => el.scrollTop);
-  await settingsCategory(page, "game");
+  await settingsCategory(page, "nte-game");
   await page.locator("#set-install").fill("/tmp/settings-layout");
   await page.locator("#set-install").press("Tab");
   await expect(page.locator("#settings-form")).toHaveAttribute(
@@ -33,7 +33,7 @@ test("分类显示相关设置, 保存现有数据且切换时保留滚动位置
   expect(
     (await page.locator("#page-settings .settings-head").boundingBox())!.y,
   ).toBe(header!.y);
-  await settingsCategory(page, "game");
+  await settingsCategory(page, "nte-game");
   await expect(page.locator("#set-install")).toHaveValue(
     "/tmp/settings-layout",
   );
@@ -62,7 +62,7 @@ test("搜索名称和关键词, 键盘定位并聚焦设置项, Escape 先清空
   ).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(search).toHaveValue("");
-  await expect(page.locator('[data-category="game"]')).toHaveAttribute(
+  await expect(page.locator('[data-category="nte-game"]')).toHaveAttribute(
     "aria-current",
     "true",
   );
@@ -89,21 +89,24 @@ test("分类键盘切换, 运行环境入口直接定位, 窄面板不产生横�
   ).toBeVisible();
   await page.locator('[data-category="runtime"]').focus();
   await page.keyboard.press("ArrowDown");
-  await expect(page.locator('[data-category="account"]')).toBeFocused();
+  await expect(page.locator('[data-category="nte-account"]')).toBeFocused();
   await expect(page.locator("#attendance-action")).toBeVisible();
   await page.setViewportSize({ width: 640, height: 520 });
-  await settingsCategory(page, "game");
+  await settingsCategory(page, "nte-game");
   const bounds = await page
     .locator("#page-settings .settings-categories")
     .boundingBox();
   expect(bounds!.height).toBeLessThan(60);
   expect(
     await page
-      .locator("#settings-panel-game")
+      .locator("#settings-panel-nte-game")
       .evaluate((el) => el.scrollWidth - el.clientWidth),
   ).toBeLessThanOrEqual(1);
   await expect(page.locator("#set-install")).toBeVisible();
-  await expect(page.locator("#settings-panel-game")).toHaveCSS("opacity", "1");
+  await expect(page.locator("#settings-panel-nte-game")).toHaveCSS(
+    "opacity",
+    "1",
+  );
   await expect(page.locator(".notification-stack")).toHaveAttribute(
     "data-phase",
     "0",

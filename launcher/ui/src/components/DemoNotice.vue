@@ -1,10 +1,19 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import BaseButton from "./BaseButton.vue";
 import BaseModal from "./BaseModal.vue";
-import { ui, closeDemoNotice } from "../core/controller";
+import { ui, closeDemoNotice, state } from "../core/controller";
+import { factsFrom } from "../host/facts";
+import { declaredGameName } from "../host/pages";
 
 const RELEASES_URL = "https://github.com/LaT-SKY/Oddity/releases/latest";
 const SOURCE_URL = "https://github.com/LaT-SKY/Oddity";
+
+// 法律声明指名当前游戏; 没有展示声明时退回通用文案.
+const legalTarget = computed(() => {
+  const game = declaredGameName(factsFrom(state.bootstrap));
+  return game ? `《${game}》` : "游戏";
+});
 
 function openExternal(url: string) {
   window.open(url, "_blank", "noopener,noreferrer");
@@ -38,7 +47,7 @@ function update(open: boolean) {
         >
       </div>
       <p class="demo-notice__legal">
-        Oddity 是第三方项目, 与《异环》开发方和发行方无隶属关系;
+        Oddity 是第三方项目, 与{{ legalTarget }}开发方和发行方无隶属关系;
         游戏名称、商标与官方美术素材归其权利人所有.
       </p>
     </div>

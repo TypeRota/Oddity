@@ -72,7 +72,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
 cargo llvm-cov report --fail-under-lines 80
-cargo build --release --locked -p nte-service -p nte-cli -p nte-recovery
+cargo build --release --locked -p oddity-backend -p oddity-cli -p oddity-recovery
 cd ..
 ```
 
@@ -135,13 +135,13 @@ Issue 标题必须带类型前缀：
 [QUESTION] Proton 版本应该怎么选
 ```
 
-如果标题没有前缀，CI 会根据标签自动补全。
+标题前缀应与类型标签保持一致。
 
-一个 Issue 只能有一个类型标签，若带多个类型标签会检查失败，请只保留一个。
+一个 Issue 只保留一个类型标签。
 
 ### PR 标题
 
-PR 标题会经过 CI 检查，你可以使用以下两种写法：
+PR 标题使用以下两种写法之一：
 
 ```text
 ui: 调整设置页的间距
@@ -151,7 +151,7 @@ fix(updater): 修复断点续传进度计算
 ```
 
 - 模块式写法使用 `module: change`。
-- 语义化写法使用 `type(scope): change`，type 和 scope 必须是仓库允许的值。
+- 语义化写法使用 `type(scope): change`，type 表示变更类别，scope 表示受影响的模块。
 - 冒号使用半角 `:`。
 - 标题描述不要以大写字母开头。
 - 破坏性变更在冒号前加 `!`，例如 `refactor(config)!: 调整设置文件结构`。

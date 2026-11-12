@@ -1,0 +1,7 @@
+{
+  "name": "@oddity/game-fixture-ui",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts"
+}

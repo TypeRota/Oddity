@@ -45,7 +45,7 @@ test("选择器方向键预览、Escape 取消、Enter 确认与暗色浮层", a
 
 test("分段控件保持键盘焦点, 登录表单跟随选择切换", async ({ page }) => {
   await page.goto("/#settings");
-  await settingsCategory(page, "account");
+  await settingsCategory(page, "nte-account");
   await page.locator("#attendance-action").click();
   const dialog = page.getByRole("dialog");
   const password = dialog.getByRole("tab", { name: "密码登录" });
@@ -94,7 +94,7 @@ test("登录字段横向交接、弹窗高度连续变化与快速切换", async
   });
   await page.goto("/#settings");
   await page.clock.runFor(1500);
-  await settingsCategory(page, "account");
+  await settingsCategory(page, "nte-account");
   await page.locator("#attendance-action").click();
   await page.clock.runFor(1000);
   const dialog = page.getByRole("dialog");

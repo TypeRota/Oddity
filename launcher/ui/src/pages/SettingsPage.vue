@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { motion, useAnimate } from "motion-v";
-import { computed, nextTick, reactive, ref, watch } from "vue";
+import { computed, nextTick, reactive, ref, watch, type Component } from "vue";
 import {
   state,
   showPage,
@@ -11,41 +11,39 @@ import {
   applyHeroMedia,
   queueSettingsSave,
   redetect,
-  settingsPathsLocked,
   runtimeEnvironmentBusy,
-  migrationBusy,
   runtimePathsLocked,
 } from "../core/controller";
 import {
-  settingsCategories,
   settingsEntries,
   settingsNavigation as navigation,
   type SettingsCategory,
   type SettingsEntry,
 } from "../core/settingsCatalog";
+import {
+  selectSettingsSections,
+  settingsSearchEntries,
+  settingsSections,
+  type SettingsSearchEntry,
+} from "../host/settings";
+import { factsFrom } from "../host/facts";
 import { useControlMotion } from "../composables/useControlMotion";
 import { useScrubNavigation } from "../composables/useScrubNavigation";
 import RuntimeEnvironments from "../components/RuntimeEnvironments.vue";
-import GameAccountDialog from "../components/GameAccountDialog.vue";
-import { activeGame } from "../core/game";
-import TaygedoSettings from "../components/TaygedoSettings.vue";
 import BaseSelect from "../components/BaseSelect.vue";
 import BaseSwitch from "../components/BaseSwitch.vue";
 import BaseButton from "../components/BaseButton.vue";
 import BaseInput from "../components/BaseInput.vue";
-import DirectoryField from "../components/DirectoryField.vue";
 import SettingGroup from "../components/settings/SettingGroup.vue";
 import SettingRow from "../components/settings/SettingRow.vue";
 import LogExport from "../components/LogExport.vue";
 import EnvironmentSnapshots from "../components/EnvironmentSnapshots.vue";
-import InstallMigration from "../components/InstallMigration.vue";
 import AudioSettings from "../components/AudioSettings.vue";
 import GamepadSettings from "../components/GamepadSettings.vue";
 import BaseDisclosure from "../components/BaseDisclosure.vue";
-import type { IntegrityState, MeteredPolicy } from "../types/launcher";
+import type { IntegrityState } from "../types/launcher";
 
 const root = ref<HTMLElement | null>(null);
-const gameAccountsOpen = ref(false);
 const { control, surface, reduced } = useControlMotion();
 const [, animate] = useAnimate();
 // 分类面板按首次访问挂载, 避免启动时构建全部设置项。
@@ -61,140 +59,52 @@ watch(
   },
   { immediate: true },
 );
+// 事实随 bootstrap 更新; 分区贡献按当前游戏过滤.
+const facts = computed(() => factsFrom(state.bootstrap));
+// 分区列表 = 宿主通用分区 + 当前可见的贡献分区, 导航与搜索共用这一份.
+const sections = computed(() => settingsSections(facts.value));
+const contributedSections = computed(() => selectSettingsSections(facts.value));
+const sectionComponents = computed(
+  () =>
+    Object.fromEntries(
+      contributedSections.value.map((section) => [
+        section.id,
+        section.component,
+      ]),
+    ) as Record<string, Component>,
+);
+const searchEntries = computed(() =>
+  settingsSearchEntries(facts.value, contributedSections.value),
+);
+watch(sections, (list) => {
+  // 当前分区随游戏切换消失时回到第一个可见分区, 避免停在空面板.
+  if (!list.some((section) => section.id === navigation.category)) {
+    navigation.category = list[0]?.id ?? "appearance";
+  }
+});
 const themeOptions = [
   { label: "亮色", value: "light" },
   { label: "暗色", value: "dark" },
-];
-const distributionOptions = [
-  { label: "国服", value: "cn" },
-  { label: "国际服", value: "global" },
 ];
 const mediaOptions = [
   { label: "动态视频", value: "video" },
   { label: "静态照片", value: "photo" },
 ];
-const directSupported = computed(
-  () =>
-    form.distribution === "cn" &&
-    activeGame(state.bootstrap?.settings) === "nte",
-);
-const launchOptions = computed(() => [
-  {
-    label: "后台启动 (推荐)",
-    value: "background",
-    hint: "等待官方资源检查, 自动登录并启动游戏, 隐藏官方主窗口.",
-  },
-  {
-    label: "前台启动",
-    value: "official",
-    hint: "显示官方窗口, 请从该窗口点击启动游戏.",
-  },
-  {
-    label: "直接启动",
-    value: "direct",
-    hint: "使用所选游戏账号登录并直接启动游戏. 目前仅支持国服.",
-    disabled: !directSupported.value,
-  },
-]);
-const launchModeHint = computed(
-  () =>
-    launchOptions.value.find((option) => option.value === form.launchMode)
-      ?.hint,
-);
-const meteredOptions = [
-  {
-    label: "询问用户",
-    value: "ask",
-    hint: "检测到计费网络时先暂停, 由通知里的按钮确认后继续.",
-  },
-  {
-    label: "暂停自动下载",
-    value: "pause",
-    hint: "计费网络下不自动下载, 切换到普通网络后继续.",
-  },
-  {
-    label: "照常下载",
-    value: "allow",
-    hint: "无论是否计费都自动下载.",
-  },
-];
-const meteredHint = computed(
-  () =>
-    meteredOptions.find((option) => option.value === form.updates.metered)
-      ?.hint,
-);
-const LIMIT_MAX_MIB = 1024;
-const MIB = 1024 * 1024;
-function formatLimit(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0";
-  const mib = bytes / MIB;
-  // 小数值保留更多小数位, 避免 1 KiB/s 这类设置被格式化成 0.
-  const text = mib >= 1 ? mib.toFixed(3) : mib.toFixed(6);
-  return String(Number(text));
-}
-const limitDraft = ref(formatLimit(form.updates.limitBytesPerSecond));
-const limitInvalid = ref(false);
-let limitEditing = false;
-watch(
-  () => form.updates.limitBytesPerSecond,
-  (bytes) => {
-    if (!limitEditing) {
-      limitDraft.value = formatLimit(bytes);
-      limitInvalid.value = false;
-    }
-  },
-);
-function applyLimitDraft() {
-  // type=number 时 Vue 的 v-model 会把值转成 number.
-  const text = String(limitDraft.value).trim();
-  if (!text) {
-    form.updates.limitBytesPerSecond = 0;
-    limitInvalid.value = false;
-    queueSettingsSave();
-    return;
-  }
-  const value = Number(text);
-  if (!Number.isFinite(value) || value < 0 || value > LIMIT_MAX_MIB) {
-    limitInvalid.value = true;
-    return;
-  }
-  limitInvalid.value = false;
-  const bytes = Math.round(value * MIB);
-  if (bytes !== form.updates.limitBytesPerSecond) {
-    form.updates.limitBytesPerSecond = bytes;
-    queueSettingsSave();
-  }
-}
-function onLimitInput() {
-  limitEditing = true;
-  applyLimitDraft();
-}
-function onLimitChange() {
-  limitEditing = false;
-  applyLimitDraft();
-  // 非法输入在失焦时回到最后一次有效值.
-  limitDraft.value = formatLimit(form.updates.limitBytesPerSecond);
-  limitInvalid.value = false;
-  queueSettingsSave(0);
-}
 function updateSnapshotSuccessMinutes(value: number) {
   if (form.snapshotSuccessMinutes !== value) {
     form.snapshotSuccessMinutes = value;
-    queueSettingsSave(0);
+    queueSettingsSave("host", 0);
   }
 }
-const meteredPolicy = computed({
-  get: () => form.updates.metered as string,
-  set: (value: string) => {
-    form.updates.metered = value as MeteredPolicy;
-  },
-});
 const searching = computed(() => !!navigation.query.trim());
+function sectionLabel(category: string): string {
+  return sections.value.find((section) => section.id === category)?.label ?? "";
+}
 const results = computed(() => {
   const words = navigation.query.trim().toLocaleLowerCase().split(/\s+/);
-  return settingsEntries.filter((entry) =>
+  return searchEntries.value.filter((entry) =>
     words.every((word) =>
-      `${entry.label} ${entry.description} ${entry.keywords} ${settingsCategories.find((category) => category.id === entry.category)!.label}`
+      `${entry.label} ${entry.description} ${entry.keywords} ${sectionLabel(entry.category)}`
         .toLocaleLowerCase()
         .includes(word),
     ),
@@ -228,7 +138,7 @@ function clickCategory(event: MouseEvent, category: SettingsCategory) {
   if (categorySuppressed(event)) return;
   chooseCategory(category);
 }
-async function locate(item: SettingsEntry) {
+async function locate(item: SettingsSearchEntry) {
   visited.add(item.category);
   chooseCategory(item.category);
   await nextTick();
@@ -247,22 +157,23 @@ async function locate(item: SettingsEntry) {
   );
 }
 function categoryKeys(event: KeyboardEvent) {
-  const index = settingsCategories.findIndex(
+  const list = sections.value;
+  const index = list.findIndex(
     (category) => category.id === navigation.category,
   );
   const next =
     event.key === "ArrowDown" || event.key === "ArrowRight"
-      ? (index + 1) % settingsCategories.length
+      ? (index + 1) % list.length
       : event.key === "ArrowUp" || event.key === "ArrowLeft"
-        ? (index - 1 + settingsCategories.length) % settingsCategories.length
+        ? (index - 1 + list.length) % list.length
         : event.key === "Home"
           ? 0
           : event.key === "End"
-            ? settingsCategories.length - 1
+            ? list.length - 1
             : -1;
   if (next < 0) return;
   event.preventDefault();
-  chooseCategory(settingsCategories[next].id);
+  chooseCategory(list[next].id);
   root.value
     ?.querySelector<HTMLElement>(`[data-category="${navigation.category}"]`)
     ?.focus();
@@ -456,7 +367,7 @@ const integritySummary = computed(() => {
           @lostpointercapture="categoryLost"
         >
           <motion.button
-            v-for="category in settingsCategories"
+            v-for="category in sections"
             :key="category.id"
             type="button"
             class="settings-category category-tab"
@@ -493,7 +404,7 @@ const integritySummary = computed(() => {
         >
           <fieldset class="settings-fields" :disabled="runtimeEnvironmentBusy">
             <motion.div
-              v-for="category in settingsCategories"
+              v-for="category in sections"
               :key="category.id"
               :id="`settings-panel-${category.id}`"
               class="settings-panel"
@@ -555,7 +466,7 @@ const integritySummary = computed(() => {
                       :aria-describedby="describedby"
                       @change="
                         applyTheme(form.theme);
-                        queueSettingsSave(0);
+                        queueSettingsSave('host', 0);
                       "
                     />
                   </SettingRow>
@@ -575,7 +486,7 @@ const integritySummary = computed(() => {
                       :aria-describedby="describedby"
                       @change="
                         applyHeroMedia(form.heroMedia);
-                        queueSettingsSave(0);
+                        queueSettingsSave('host', 0);
                       "
                     />
                   </SettingRow>
@@ -592,7 +503,7 @@ const integritySummary = computed(() => {
                       v-model="form.adaptiveTheme"
                       :label="entry('adaptive-theme').label"
                       :describedby="describedby"
-                      @change="queueSettingsSave(0)"
+                      @change="queueSettingsSave('host', 0)"
                     />
                   </SettingRow>
                   <SettingRow
@@ -608,7 +519,7 @@ const integritySummary = computed(() => {
                       v-model="form.relativeHeatmap"
                       :label="entry('relative-heatmap').label"
                       :describedby="describedby"
-                      @change="queueSettingsSave(0)"
+                      @change="queueSettingsSave('host', 0)"
                     />
                   </SettingRow>
                   <SettingRow
@@ -624,7 +535,7 @@ const integritySummary = computed(() => {
                       v-model="form.stackBulletins"
                       :label="entry('bulletins').label"
                       :describedby="describedby"
-                      @change="queueSettingsSave(0)"
+                      @change="queueSettingsSave('host', 0)"
                     />
                   </SettingRow>
                   <SettingRow
@@ -643,7 +554,7 @@ const integritySummary = computed(() => {
                       @change="
                         applyReduceMotion(form.reduceMotion);
                         applyHeroMedia(form.heroMedia);
-                        queueSettingsSave(0);
+                        queueSettingsSave('host', 0);
                       "
                     />
                   </SettingRow>
@@ -662,7 +573,7 @@ const integritySummary = computed(() => {
                       :describedby="describedby"
                       @change="
                         applyHeroMedia(form.heroMedia);
-                        queueSettingsSave(0);
+                        queueSettingsSave('host', 0);
                       "
                     />
                   </SettingRow>
@@ -681,7 +592,7 @@ const integritySummary = computed(() => {
                       v-model="form.minimizeToTrayOnClose"
                       :label="entry('tray').label"
                       :describedby="describedby"
-                      @change="queueSettingsSave(0)"
+                      @change="queueSettingsSave('host', 0)"
                     />
                   </SettingRow>
                   <SettingRow
@@ -697,226 +608,7 @@ const integritySummary = computed(() => {
                       v-model="form.showLauncherAfterGameExit"
                       :label="entry('return').label"
                       :describedby="describedby"
-                      @change="queueSettingsSave(0)"
-                    />
-                  </SettingRow>
-                </SettingGroup>
-              </template>
-              <template
-                v-else-if="visited.has(category.id) && category.id === 'game'"
-              >
-                <SettingGroup title="游戏安装">
-                  <p
-                    v-if="settingsPathsLocked"
-                    class="settings-lock"
-                    role="status"
-                  >
-                    {{
-                      migrationBusy
-                        ? "安装目录迁移进行中, 暂时无法修改运行路径."
-                        : state.game !== "idle" || runtimeEnvironmentBusy
-                          ? "游戏或运行环境任务进行中, 暂时无法修改运行路径."
-                          : "游戏资源任务进行中, 暂时无法修改游戏地区和安装目录."
-                    }}
-                  </p>
-                  <SettingRow
-                    data-setting="distribution"
-                    tabindex="-1"
-                    label="游戏地区"
-                    for="set-distribution-trigger"
-                    ><BaseSelect
-                      id="set-distribution"
-                      label="游戏地区"
-                      v-model="form.distribution"
-                      :options="distributionOptions"
-                      :disabled="settingsPathsLocked"
-                      @change="queueSettingsSave(0)"
-                  /></SettingRow>
-                  <div
-                    class="settings-path"
-                    data-setting="install"
-                    tabindex="-1"
-                  >
-                    <DirectoryField
-                      id="set-install"
-                      v-model="form.installRoot"
-                      label="国服安装目录"
-                      placeholder="/path/to/Neverness To Everness"
-                      :disabled="settingsPathsLocked"
-                      @input="queueSettingsSave()"
-                      @change="queueSettingsSave(0)"
-                    />
-                  </div>
-                  <div
-                    class="settings-path"
-                    data-setting="global-install"
-                    tabindex="-1"
-                  >
-                    <DirectoryField
-                      id="set-global-install"
-                      v-model="form.globalInstallRoot"
-                      label="国际服安装目录"
-                      placeholder="~/Games/Neverness To Everness Global"
-                      :disabled="settingsPathsLocked"
-                      @input="queueSettingsSave()"
-                      @change="queueSettingsSave(0)"
-                    />
-                  </div>
-                  <SettingRow
-                    data-setting="migration"
-                    tabindex="-1"
-                    label="迁移安装目录"
-                    description="移动到其他位置, 保留运行环境和预下载资源."
-                  >
-                    <div class="settings-migration">
-                      <InstallMigration
-                        distribution="cn"
-                        :disabled="settingsPathsLocked"
-                      />
-                      <InstallMigration
-                        distribution="global"
-                        :disabled="settingsPathsLocked"
-                      />
-                    </div>
-                  </SettingRow>
-                </SettingGroup>
-                <SettingGroup title="启动"
-                  ><SettingRow
-                    data-setting="launch"
-                    tabindex="-1"
-                    label="启动方式"
-                    :description="launchModeHint"
-                    for="set-mode-trigger"
-                    ><BaseSelect
-                      id="set-mode"
-                      label="启动方式"
-                      v-model="form.launchMode"
-                      :options="launchOptions"
-                      :disabled="runtimePathsLocked"
-                      @change="queueSettingsSave(0)"
-                  /></SettingRow>
-                  <SettingRow
-                    data-setting="game-account"
-                    tabindex="-1"
-                    label="游戏账号"
-                    :description="
-                      directSupported
-                        ? '用于下次直接启动, 与塔吉多账号分别保存.'
-                        : '游戏账号登录目前仅支持《异环》国服.'
-                    "
-                  >
-                    <BaseButton
-                      :disabled="!directSupported"
-                      @click="gameAccountsOpen = true"
-                      >管理游戏账号</BaseButton
-                    >
-                  </SettingRow>
-                </SettingGroup>
-                <SettingGroup title="资源更新">
-                  <div
-                    class="settings-path"
-                    data-setting="preload-dir"
-                    tabindex="-1"
-                  >
-                    <DirectoryField
-                      id="set-preload-root"
-                      v-model="form.preloadRoot"
-                      label="预下载资源目录"
-                      placeholder="~/Games/OddityPreload"
-                      :disabled="settingsPathsLocked"
-                      @input="queueSettingsSave()"
-                      @change="queueSettingsSave(0)"
-                    />
-                    <p class="field__hint">
-                      留空时使用安装目录内的默认缓存路径.
-                    </p>
-                  </div>
-                  <SettingRow
-                    data-setting="updates"
-                    tabindex="-1"
-                    label="自动下载"
-                    for="set-auto-download"
-                    description="发现游戏资源更新后自动下载. 仅在启动器运行且游戏未运行时执行."
-                    v-slot="{ describedby }"
-                  >
-                    <BaseSwitch
-                      id="set-auto-download"
-                      v-model="form.updates.autoDownload"
-                      label="自动下载"
-                      :describedby="describedby"
-                      @change="queueSettingsSave(0)"
-                    />
-                  </SettingRow>
-                  <SettingRow
-                    v-if="form.updates.autoDownload"
-                    label="计费网络"
-                    :description="meteredHint"
-                    for="set-metered-trigger"
-                  >
-                    <BaseSelect
-                      id="set-metered"
-                      label="计费网络"
-                      v-model="meteredPolicy"
-                      :options="meteredOptions"
-                      @change="queueSettingsSave(0)"
-                    />
-                  </SettingRow>
-                  <SettingRow
-                    v-if="form.updates.autoDownload"
-                    label="自动下载时段"
-                    for="set-updates-window"
-                    description="仅在指定时段内开始或继续自动下载, 支持跨零点."
-                    v-slot="{ describedby }"
-                  >
-                    <BaseSwitch
-                      id="set-updates-window"
-                      v-model="form.updates.windowEnabled"
-                      label="自动下载时段"
-                      :describedby="describedby"
-                      @change="queueSettingsSave(0)"
-                    />
-                  </SettingRow>
-                  <div
-                    v-if="
-                      form.updates.autoDownload && form.updates.windowEnabled
-                    "
-                    class="field-grid updates-schedule"
-                  >
-                    <label class="field"
-                      ><span>开始时间</span
-                      ><BaseInput
-                        id="set-updates-window-start"
-                        v-model="form.updates.windowStart"
-                        type="time"
-                        @change="queueSettingsSave(0)"
-                    /></label>
-                    <label class="field"
-                      ><span>结束时间</span
-                      ><BaseInput
-                        id="set-updates-window-end"
-                        v-model="form.updates.windowEnd"
-                        type="time"
-                        @change="queueSettingsSave(0)"
-                    /></label>
-                  </div>
-                  <SettingRow
-                    label="下载限速 (MiB/s)"
-                    for="set-download-limit"
-                    description="支持小数, 0 表示不限速. 手动下载同样生效."
-                    v-slot="{ describedby }"
-                  >
-                    <BaseInput
-                      id="set-download-limit"
-                      v-model="limitDraft"
-                      type="number"
-                      min="0"
-                      :max="LIMIT_MAX_MIB"
-                      step="any"
-                      inputmode="decimal"
-                      :invalid="limitInvalid"
-                      :aria-describedby="describedby"
-                      @input="onLimitInput"
-                      @change="onLimitChange"
+                      @change="queueSettingsSave('host', 0)"
                     />
                   </SettingRow>
                 </SettingGroup>
@@ -939,31 +631,12 @@ const integritySummary = computed(() => {
                 </SettingGroup>
                 <RuntimeEnvironments />
               </div>
-              <template
+              <component
                 v-else-if="
-                  visited.has(category.id) && category.id === 'account'
+                  visited.has(category.id) && sectionComponents[category.id]
                 "
-              >
-                <div data-setting="account" tabindex="-1">
-                  <TaygedoSettings
-                    v-if="isActive && form.distribution === 'cn'"
-                  />
-                  <SettingGroup
-                    v-else-if="form.distribution === 'global'"
-                    title="账号与签到"
-                    ><p class="field__hint">
-                      塔吉多签到和实时数据仅适用于国服.
-                      国际服请使用官方账号服务.
-                    </p>
-                    <BaseButton
-                      variant="ghost"
-                      icon="i-game-controller"
-                      @click="chooseCategory('game')"
-                      >选择游戏地区</BaseButton
-                    ></SettingGroup
-                  >
-                </div>
-              </template>
+                :is="sectionComponents[category.id]"
+              />
               <template v-else-if="visited.has(category.id)">
                 <div data-setting="snapshots" tabindex="-1">
                   <EnvironmentSnapshots
@@ -1062,12 +735,8 @@ const integritySummary = computed(() => {
               <span
                 ><strong>{{ item.label }}</strong
                 ><small
-                  >{{
-                    settingsCategories.find(
-                      (category) => category.id === item.category,
-                    )!.label
-                  }}
-                  · {{ item.description }}</small
+                  >{{ sectionLabel(item.category) }} ·
+                  {{ item.description }}</small
                 ></span
               ><svg class="icon" aria-hidden="true">
                 <use href="#i-arrow-up-right" />
@@ -1078,14 +747,4 @@ const integritySummary = computed(() => {
       </div>
     </div>
   </motion.section>
-  <GameAccountDialog
-    v-model:open="gameAccountsOpen"
-    :selected="form.gameAccountId"
-    :theme="form.theme"
-    :reduce-motion="form.reduceMotion"
-    @select="
-      form.gameAccountId = $event;
-      queueSettingsSave(0);
-    "
-  />
 </template>

@@ -22,7 +22,7 @@ module.exports = async () => {
     npmRebuild: false,
     directories: {
       output: "../../dist/electron",
-      buildResources: "../crates/nte-service/icons",
+      buildResources: "../host/icons",
     },
     files: ["dist/**", "desktop-dist/**", "package.json", "!node_modules/**/*"],
     extraResources: [
@@ -31,13 +31,13 @@ module.exports = async () => {
         to: "bin",
         filter: ["oddity-backend", "nte-cli", "oddity-recovery"],
       },
-      { from: "../crates/nte-service/icons", to: "icons", filter: ["*.png"] },
+      { from: "../host/icons", to: "icons", filter: ["*.png"] },
     ],
     extraFiles: [
       { from: "../../LICENSE", to: "LICENSE.oddity" },
       { from: "../../THIRD_PARTY.md", to: "THIRD_PARTY.md" },
       { from: "../../README.md", to: "README.md" },
-      { from: "../crates/nte-service/icons", to: "icons", filter: ["*.png"] },
+      { from: "../host/icons", to: "icons", filter: ["*.png"] },
       { from: "../packaging/oddity.desktop", to: "oddity.desktop" },
       {
         from: "../packaging/oddity-recovery.desktop",
@@ -48,7 +48,7 @@ module.exports = async () => {
     linux: {
       target: ["deb", "rpm", "AppImage"],
       category: "Game",
-      icon: "../crates/nte-service/icons",
+      icon: "../host/icons",
       syncDesktopName: true,
       desktop: {
         entry: {

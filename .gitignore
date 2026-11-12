@@ -26,6 +26,8 @@ coverage-summary.txt
 internal/
 research/
 *.snap.json
+# 本地需求与实现规格
+specs/
 
 # ============================================================
 # Captured logs (may contain account ids / machine paths)

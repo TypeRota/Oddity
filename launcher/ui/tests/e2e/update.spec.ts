@@ -1,8 +1,8 @@
 import { test, expect } from "@playwright/test";
 
 test("预下载完成保留独立状态", async ({ page }) => {
-  await page.goto("/#update");
-  const update = page.locator("#page-update");
+  await page.goto("/#nte-update");
+  const update = page.locator("#page-nte-update");
   const preload = update.locator("#game-preload");
   await expect(update.locator("#game-download-primary")).toHaveText("检查通过");
   await preload.click();
@@ -19,8 +19,8 @@ test("预下载完成保留独立状态", async ({ page }) => {
 });
 
 test("按语种下载可并发提交, 名称使用正文字体", async ({ page }) => {
-  await page.goto("/#update");
-  const update = page.locator("#page-update");
+  await page.goto("/#nte-update");
+  const update = page.locator("#page-nte-update");
   await update.locator(".resource-options__toggle").click();
   const english = update.locator("#resource-download-pakchunk103");
   const korean = update.locator("#resource-download-pakchunk104");
@@ -48,8 +48,8 @@ test("按语种下载可并发提交, 名称使用正文字体", async ({ page }
 });
 
 test("预下载完成后可校验并删除缓存", async ({ page }) => {
-  await page.goto("/#update");
-  const update = page.locator("#page-update");
+  await page.goto("/#nte-update");
+  const update = page.locator("#page-nte-update");
   await expect(update.locator("#game-preload")).toHaveText("资源预下载 1.5.0");
   await update.locator("#game-preload").click();
   await expect(
@@ -66,8 +66,8 @@ test("预下载完成后可校验并删除缓存", async ({ page }) => {
 test("更新摘要、暂停继续与窄面板布局", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto("/#update");
-  const update = page.locator("#page-update");
+  await page.goto("/#nte-update");
+  const update = page.locator("#page-nte-update");
   const primary = page.locator("#game-download-primary");
   const budget = update.locator(".disk-budget");
   const homeStatus = page.locator("#home-status");
@@ -137,8 +137,8 @@ test("更新摘要、暂停继续与窄面板布局", async ({ page }) => {
 });
 
 test("语音资源支持卸载, 重新下载和按语种清理预下载", async ({ page }) => {
-  await page.goto("/#update");
-  const update = page.locator("#page-update");
+  await page.goto("/#nte-update");
+  const update = page.locator("#page-nte-update");
   await update.locator(".resource-options__toggle").click();
   await expect(update.locator("#resource-options-title")).toHaveText(
     "语音资源管理",

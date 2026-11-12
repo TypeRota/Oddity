@@ -46,6 +46,11 @@ jobs:
           cd checkout/launcher/ui
           pnpm install --frozen-lockfile
           pnpm run build
+      - name: 检查契约与注册表生成物
+        run: |
+          cd checkout/launcher
+          cargo run --locked -p contract-gen -- --check
+          cargo run --locked -p ui-registry-gen -- --check
       - name: 检查格式与 Clippy
         run: |
           cd checkout/launcher
@@ -56,6 +61,11 @@ jobs:
           cd checkout/launcher
           cargo test --workspace --locked
           cargo build --workspace --locked
+      - name: 减法装配冒烟
+        run: |
+          cd checkout/launcher
+          cargo test -p oddity-backend --no-default-features --locked
+          cargo test -p oddity-backend --no-default-features --features game-fixture --locked
       - name: 检查覆盖率
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"

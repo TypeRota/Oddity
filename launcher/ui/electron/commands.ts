@@ -1,3 +1,5 @@
+// 由 launcher/tools/contract-gen 生成, 请勿手改.
+// 声明源: launcher/crates/oddity-contract/src/lib.rs.
 import type { Commands } from "../src/types/launcher";
 export const commands = {
   runtime_setup_info: true,
@@ -31,7 +33,7 @@ export const commands = {
   integrity_acknowledge: true,
   check_update: true,
   fetch_bulletins: true,
-  save_settings: true,
+  update_settings_section: true,
   environment_create: true,
   environment_action: true,
   migration_plan: true,
@@ -57,8 +59,9 @@ export const commands = {
   game_status: true,
   take_launch_error: true,
   performance_overview: true,
-  performance_create: true,
-  performance_activate: true,
+  performance_recording: true,
+  performance_pin: true,
+  performance_delete: true,
   performance_report: true,
   performance_export: true,
   playtime_history: true,
@@ -77,6 +80,9 @@ export const commands = {
   game_download_start: true,
   game_download_cancel: true,
   close_game: true,
+  fixture_echo: true,
+  fixture_info: true,
+  fixture_fail: true,
   win_minimize: true,
   win_toggle_maximize: true,
   win_close: true,

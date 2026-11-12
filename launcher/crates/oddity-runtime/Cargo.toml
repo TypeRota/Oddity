@@ -1,0 +1,11 @@
+[package]
+name = "oddity-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Game package loading and command group registry for the Oddity host"
+
+[dependencies]
+oddity-contract = { path = "../oddity-contract" }
+serde.workspace = true
+serde_json.workspace = true

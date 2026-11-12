@@ -15,7 +15,14 @@ test("游戏模式分类、搜索、禁用状态与设置页布局一致", async
       .evaluateAll((items) =>
         items.map((item) => (item as HTMLElement).dataset.page),
       ),
-  ).toEqual(["home", "update", "game-mode", "bulletin", "records", "settings"]);
+  ).toEqual([
+    "home",
+    "nte-update",
+    "game-mode",
+    "nte-bulletin",
+    "records",
+    "settings",
+  ]);
   await panel.getByRole("button", { name: "重新检测", exact: true }).click();
   await page.getByRole("button", { name: "关闭通知", exact: true }).click();
   await expect(page.locator(".notification-card")).toHaveCount(0);
@@ -116,35 +123,34 @@ test("游戏模式分类、搜索、禁用状态与设置页布局一致", async
   await expect(page.locator("#page-home")).toBeVisible();
   await page.locator('[data-page="game-mode"]').click();
   await expect(panel).toBeVisible();
-  await page.locator('[data-page="bulletin"]').click();
-  await expect(page.locator("#page-bulletin")).toBeVisible();
+  await page.locator('[data-page="nte-bulletin"]').click();
+  await expect(page.locator("#page-nte-bulletin")).toBeVisible();
   expect(errors).toEqual([]);
 });
 
-test("性能比较在游戏模式中可搜索, 浏览器预览明确提示桌面采样", async ({
-  page,
-}) => {
+test("性能记录在游戏模式中可搜索, 浏览器预览展示示例记录", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/#game-mode");
   const panel = page.locator("#page-game-mode");
-  await panel.getByRole("searchbox").fill("性能比较");
+  await panel.getByRole("searchbox").fill("性能记录");
   await panel
     .locator(".settings-result")
-    .filter({ hasText: "性能比较" })
+    .filter({ hasText: "性能记录" })
     .click();
-  const comparison = panel.locator("#game-mode-panel-comparison");
-  await expect(comparison).toBeVisible();
-  await expect(comparison).toContainText("性能采样需要在桌面应用中使用");
-  await expect(
-    comparison.getByRole("button", { name: "创建比较", exact: true }),
-  ).toBeDisabled();
-  await page.screenshot({ path: "test-results/performance-comparison.png" });
+  const records = panel.locator("#game-mode-panel-records");
+  await expect(records).toBeVisible();
+  await expect(records).toContainText(
+    "浏览器预览使用示例数据, 采样与导出仅在桌面应用中使用",
+  );
+  await expect(records).toContainText("GE-Proton11-5");
+  await expect(records.locator("img")).toBeVisible();
+  await page.screenshot({ path: "test-results/performance-records.png" });
   await page.setViewportSize({ width: 900, height: 600 });
-  expect(
-    await comparison.evaluate((el) => el.scrollWidth <= el.clientWidth),
-  ).toBe(true);
-  await comparison
+  expect(await records.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
+    true,
+  );
+  await records
     .getByRole("button", { name: "管理运行环境", exact: true })
     .click();
   await expect(page.locator("#page-settings")).toBeVisible();

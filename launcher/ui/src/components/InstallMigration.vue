@@ -10,6 +10,7 @@ import {
   controlSpring,
 } from "../composables/useControlMotion";
 import { gameSettings } from "../core/game";
+import { channelLabel } from "../host/facts";
 import {
   state,
   migration,
@@ -25,7 +26,7 @@ import {
 } from "../core/controller";
 
 const props = defineProps<{
-  distribution: "cn" | "global";
+  distribution: string;
   disabled?: boolean;
 }>();
 
@@ -43,16 +44,23 @@ const installed = computed(
       (entry) => entry.distribution === props.distribution,
     )?.installed ?? false,
 );
+const channel = computed(() =>
+  state.bootstrap?.channels.find((entry) => entry.id === props.distribution),
+);
 const configured = computed(() => {
   const saved = gameSettings(state.bootstrap?.settings);
-  return props.distribution === "cn"
-    ? saved.installRoot
-    : saved.globalInstallRoot;
+  const key = channel.value?.installRootKey;
+  return key ? saved.installRoots?.[key] : undefined;
 });
 const available = computed(() => installed.value || Boolean(configured.value));
-const label = computed(() =>
-  props.distribution === "cn" ? "迁移国服" : "迁移国际服",
+const channelName = computed(
+  () =>
+    channelLabel(
+      { channels: state.bootstrap?.channels ?? [] },
+      props.distribution,
+    ) || props.distribution,
 );
+const label = computed(() => `迁移${channelName.value}`);
 const status = computed(() => migration.status);
 const plan = computed(() => migration.plan);
 const locked = computed(
@@ -287,7 +295,7 @@ async function finish() {
         <DirectoryField
           id="set-migration-target"
           v-model="target"
-          :label="distribution === 'cn' ? '国服目标目录' : '国际服目标目录'"
+          :label="`${channelName}目标目录`"
           placeholder="/path/to/game"
           @change="localError = ''"
         />

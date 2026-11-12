@@ -303,17 +303,32 @@ const hints = computed<GamepadHint[]>(() => {
       { id: "back", buttons: ["back"], label: "结束浏览" },
     ];
   if (gamepadActions.keyboard && gamepad.editing && !gamepad.notification) {
-    return keyboardNumeric.value
-      ? [
-          { id: "start", buttons: ["start"], label: "保存" },
-          { id: "west", buttons: ["west"], label: "退格" },
-          { id: "clear", buttons: ["l3", "r3"], label: "清空" },
-        ]
-      : [
-          { id: "select", buttons: ["select"], label: "切换布局" },
-          { id: "start", buttons: ["start"], label: "保存" },
-          { id: "west", buttons: ["west"], label: "退格" },
-        ];
+    if (keyboardNumeric.value)
+      return [
+        { id: "start", buttons: ["start"], label: "保存" },
+        { id: "north", buttons: ["north"], label: "退格" },
+        { id: "clear", buttons: ["l3", "r3"], label: "清空" },
+      ];
+    // 提示栏只展示三项, 拼音模式优先候选操作.
+    if (gamepadActions.keyboard.pinyin)
+      return [
+        {
+          id: "candidate",
+          buttons: ["lb", "rb"],
+          label: "切换候选",
+        },
+        {
+          id: "page",
+          buttons: ["lt", "rt"],
+          label: "候选翻页",
+        },
+        { id: "north", buttons: ["north"], label: "退格" },
+      ];
+    return [
+      { id: "select", buttons: ["select"], label: "切换布局" },
+      { id: "start", buttons: ["start"], label: "保存" },
+      { id: "north", buttons: ["north"], label: "退格" },
+    ];
   }
   if (gamepadActions.picker && pickerTop.value) {
     const request = fileRequest.value;
@@ -333,7 +348,7 @@ const hints = computed<GamepadHint[]>(() => {
       ? "关闭"
       : gamepad.navigation
         ? "返回"
-        : ["settings", "bulletin", "game-mode"].includes(state.page)
+        : ["settings", "nte-bulletin", "game-mode"].includes(state.page)
           ? "返回分类"
           : "返回",
   };

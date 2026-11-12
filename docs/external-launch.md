@@ -20,7 +20,7 @@ oddity --launch --help
 | --- | --- |
 | `--launch` | 启动游戏, 必填. |
 | `--game nte\|hsr` | 指定游戏. 省略时使用 `nte`. 当前只有《异环》支持启动, 其他游戏会提示尚未支持. |
-| `--region cn\|global` | 指定国服或国际服. 省略时使用该游戏当前设置中的地区. |
+| `--region <渠道 id>` | 指定游戏声明的发行渠道; 异环为 `cn` 或 `global`. 省略时使用该游戏当前设置中的渠道. |
 | `--launch-mode official\|background\|direct` | 指定本次启动方式. 省略时固定使用 `background`. |
 | `--environment <名称或 ID>` | 指定运行环境. 同时省略 `--region` 时沿用该游戏当前环境, 环境不可用时启动报错; 只指定 `--region` 时自动选择该地区可用的环境. |
 
@@ -29,11 +29,11 @@ oddity --launch --help
 - 启动目标解析成功后, `--game`, `--region` 和 `--environment` 会写回设置, 下次打开 Oddity 时仍是该游戏、地区和运行环境; 未支持启动的游戏不会写回.
 - 不带 `--game` 的旧命令保持兼容, 默认按《异环》处理.
 - 同时省略 `--region` 和 `--environment` 时沿用该游戏当前环境; 当前环境未设置或与启动条件不匹配时会报错, 不会自动切换环境.
-- `--region` 必须是 `--game` 指定游戏支持的地区.
+- `--region` 必须是 `--game` 指定游戏声明的渠道.
 - `--environment` 必须属于 `--game` 指定的游戏, 不能跨游戏组合.
 - `--launch-mode` 只对本次启动生效, 不修改设置中的启动方式.
 - 只给 `--region` 时, 优先使用当前环境; 其次使用稳定环境; 再次使用该地区唯一的匹配环境. 有多个候选时会报错并提示使用 `--environment`.
-- 同时给出 `--region` 和 `--environment` 时, 两者必须属于同一地区.
+- 同时给出 `--region` 和 `--environment` 时, 两者必须属于同一渠道.
 - 参数错误会在启动 Oddity 主程序前结束, 退出码为 2.
 
 ## 应用菜单

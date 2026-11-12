@@ -8,24 +8,29 @@ import { APP_VERSION } from "../../src/core/version";
 import { bootstrap, check, session, settings, withGame } from "./fixtures";
 import { gameSettings } from "../../src/core/game";
 
-/** save_settings 里当前游戏字段的匹配器. */
-const savedGame = (overrides: Record<string, unknown>) =>
-  expect.objectContaining({
-    games: expect.objectContaining({
-      nte: expect.objectContaining(overrides),
+/** update_settings_section 的 game owner 补丁匹配器. */
+const gamePatch = (overrides: Record<string, unknown>) => {
+  const { installRoot, globalInstallRoot, ...rest } = overrides;
+  const roots = {
+    ...(installRoot !== undefined ? { cn: installRoot } : {}),
+    ...(globalInstallRoot !== undefined ? { global: globalInstallRoot } : {}),
+  };
+  return {
+    owner: "game:nte",
+    patch: expect.objectContaining({
+      ...rest,
+      ...(Object.keys(roots).length
+        ? { installRoots: expect.objectContaining(roots) }
+        : {}),
     }),
-  });
+  };
+};
 
-const savedSettings = (
-  game: Record<string, unknown>,
-  rest: Record<string, unknown> = {},
-) =>
-  expect.objectContaining({
-    ...rest,
-    games: expect.objectContaining({
-      nte: expect.objectContaining(game),
-    }),
-  });
+/** update_settings_section 的 host owner 补丁匹配器. */
+const hostPatch = (overrides: Record<string, unknown>) => ({
+  owner: "host",
+  patch: expect.objectContaining(overrides),
+});
 import type {
   Bootstrap,
   CheckResult,
@@ -35,6 +40,8 @@ import type {
   LauncherBackgroundMedia,
   PlaytimeHistory,
   Settings,
+  GameSettings,
+  SettingsSection,
   IntegrityStatus,
   MigrationStatus,
 } from "../../src/types/launcher";
@@ -273,12 +280,14 @@ beforeEach(() => {
           throw new Error("请先配置启动环境");
         case "bootstrap":
           return structuredClone(backend.data);
+        case "fetch_bulletins":
+          return { items: [], errors: [] };
         case "check_update":
           return structuredClone(backend.result);
         case "game_status":
           return structuredClone(backend.status);
         case "performance_overview":
-          return { active: null, recording: null, comparisons: [] };
+          return { recordingEnabled: false, records: [], recording: null };
         case "playtime_history":
           return structuredClone(backend.playtimeHistory);
         case "game_download_status":
@@ -293,12 +302,13 @@ beforeEach(() => {
             ...backend.downloadStatus,
             mode: args!.mode,
             phase: "checking",
-            distribution: gameSettings(backend.data.settings).distribution,
+            distribution:
+              gameSettings(backend.data.settings).distribution ?? "cn",
             installRoot:
               gameSettings(backend.data.settings).distribution === "global"
-                ? gameSettings(backend.data.settings).globalInstallRoot ||
+                ? gameSettings(backend.data.settings).installRoots.global ||
                   backend.data.installRoot
-                : gameSettings(backend.data.settings).installRoot ||
+                : gameSettings(backend.data.settings).installRoots.cn ||
                   backend.data.installRoot,
           };
           return structuredClone(backend.downloadStatus);
@@ -353,14 +363,32 @@ beforeEach(() => {
           };
           return structuredClone(backend.downloadStatus);
         }
-        case "save_settings":
-          backend.data.settings = { ...args!.settings };
+        case "update_settings_section": {
+          const { owner, patch } = args as unknown as {
+            owner: string;
+            patch: Record<string, unknown>;
+          };
+          if (owner === "host") {
+            backend.data.settings = { ...backend.data.settings, ...patch };
+            const fields: Record<string, unknown> = {
+              ...backend.data.settings,
+            };
+            delete fields.games;
+            return structuredClone({ owner, fields });
+          }
+          const gameId = owner.slice("game:".length) as "nte" | "hsr";
+          const games = backend.data.settings.games as Record<
+            string,
+            GameSettings
+          >;
+          games[gameId] = { ...games[gameId], ...patch };
           backend.data.installRoot =
-            gameSettings(args!.settings).distribution === "global"
-              ? gameSettings(args!.settings).globalInstallRoot ||
+            gameSettings(backend.data.settings).distribution === "global"
+              ? gameSettings(backend.data.settings).installRoots.global ||
                 "/games/global"
-              : gameSettings(args!.settings).installRoot || "/game";
-          return structuredClone(backend.data);
+              : gameSettings(backend.data.settings).installRoots.cn || "/game";
+          return structuredClone({ owner, fields: games[gameId] });
+        }
         case "launch_official":
           backend.status = session({ running: true, pid: 123 });
           return { pid: 123 };
@@ -420,6 +448,7 @@ const noticeMessage = () =>
 const button = (id: string) => document.getElementById(id) as HTMLButtonElement;
 const primary = () => wrapper!.find("#game-download-primary");
 const primaryText = () => primary().text();
+// 文件里第一个用例要承担 App 模块图的首次编译和挂载, CI 并行时这段冷启动会超过默认 5s.
 it("环境操作先保存修改, 处理期间拒绝重入并同步新登记", async () => {
   const c = await boot();
   const base = backend.invoke.getMockImplementation()!;
@@ -430,7 +459,7 @@ it("环境操作先保存修改, 处理期间拒绝重入并同步新登记", as
   });
   backend.invoke.mockClear();
   backend.invoke.mockImplementation((command: string, args: never) =>
-    command === "save_settings"
+    command === "update_settings_section"
       ? saving.then(() => base(command, args))
       : command === "environment_create"
         ? new Promise<Bootstrap>((resolve) => {
@@ -439,7 +468,9 @@ it("环境操作先保存修改, 处理期间拒绝重入并同步新登记", as
         : base(command, args),
   );
   c.form.theme = "dark";
-  c.form.globalInstallRoot = "/new-install";
+  c.form.installRoots.global = "/new-install";
+  c.queueSettingsSave("game", 500);
+  c.queueSettingsSave("host", 500);
   const task = c.createRuntimeEnvironment(
     "测试环境",
     "/new-proton",
@@ -451,11 +482,12 @@ it("环境操作先保存修改, 处理期间拒绝重入并同步新登记", as
   await c.checkUpdate();
   await c.startGameDownload("check");
   expect(backend.invoke.mock.calls.map(([command]) => command)).toEqual([
-    "save_settings",
+    "update_settings_section",
   ]);
-  expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-    settings: savedGame({ globalInstallRoot: "/new-install" }),
-  });
+  expect(backend.invoke).toHaveBeenCalledWith(
+    "update_settings_section",
+    gamePatch({ globalInstallRoot: "/new-install" }),
+  );
   releaseSave();
   await flushPromises();
   expect(backend.invoke).toHaveBeenCalledWith("environment_create", {
@@ -485,14 +517,16 @@ it("环境操作先保存修改, 处理期间拒绝重入并同步新登记", as
       ],
     },
   });
+  backend.data = next;
   finish(next);
   expect(await task).toBe(true);
   expect(c.runtimeEnvironmentBusy.value).toBe(false);
   expect(c.state.bootstrap?.settings.runtimeEnvironments).toHaveLength(1);
   c.form.reduceMotion = false;
+  c.queueSettingsSave("host", 500);
   await c.saveSettings();
   expect(backend.data.settings.runtimeEnvironments[0].name).toBe("测试环境");
-});
+}, 15_000);
 
 it("环境操作失败时保留原选择并释放等待状态", async () => {
   const c = await boot();
@@ -521,7 +555,7 @@ describe("启动与设置", () => {
     await nextTick();
     expect(c.attendance.loaded).toBe(true);
     expect(c.attendance.loading).toBe(false);
-    expect(c.form.installRoot).toBe("/game");
+    expect(c.form.installRoots.cn).toBe("/game");
     expect(wrapper!.findAll(".check-row")).toHaveLength(2);
     expect(wrapper!.findAll(".check-row")[0].text()).toContain(
       "Oddity 安全性验证",
@@ -538,7 +572,7 @@ describe("启动与设置", () => {
     const c = await boot();
     expect(document.querySelector("#set-install")).toBeNull();
     expect(document.querySelector("#set-theme")).toBeNull();
-    c.openSettings("game");
+    c.openSettings("nte-game");
     await nextTick();
     expect(document.querySelector("#set-install")).not.toBeNull();
     c.openSettings("appearance");
@@ -631,15 +665,16 @@ describe("启动与设置", () => {
 
   it("重新检测前保存失败时保留表单并停止刷新", async () => {
     const c = await boot();
-    c.form.globalInstallRoot = "/draft-prefix";
+    c.form.installRoots.global = "/draft-prefix";
+    c.queueSettingsSave("game", 500);
     backend.invoke.mockClear();
     backend.invoke.mockRejectedValueOnce(new Error("disk full"));
     await c.redetect();
     expect(noticeMessage()).toBe("disk full");
-    expect(c.form.globalInstallRoot).toBe("/draft-prefix");
+    expect(c.form.installRoots.global).toBe("/draft-prefix");
     expect(c.ui.saveState).toBe("error");
     expect(backend.invoke.mock.calls.map(([command]) => command)).toEqual([
-      "save_settings",
+      "update_settings_section",
     ]);
     expect(button("settings-redetect").disabled).toBe(false);
   });
@@ -664,35 +699,33 @@ describe("启动与设置", () => {
   it("保存时清理路径, 持久化外观, 失败后保留错误状态", async () => {
     const c = await boot();
     Object.assign(c.form, {
-      installRoot: " /new ",
+      installRoots: { cn: " /new " },
       launchMode: "",
       theme: "dark",
       reduceMotion: false,
       heroMedia: "photo",
       pauseHeroOnBlur: true,
     });
+    c.queueSettingsSave("game", 500);
+    c.queueSettingsSave("host", 500);
     await c.saveSettings();
-    expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: {
-        ...withGame({
-          installRoot: "/new",
-          globalInstallRoot: null,
-          launchMode: "background",
-        }),
-        language: "zh-CN",
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      gamePatch({ installRoot: "/new" }),
+    );
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      hostPatch({
         theme: "dark",
         reduceMotion: false,
-        heroMedia: "photo",
-        pauseHeroOnBlur: true,
-        minimizeToTrayOnClose: true,
-        showLauncherAfterGameExit: true,
-      },
-    });
+      }),
+    );
     expect(c.ui.saveState).toBe("saved");
     vi.advanceTimersByTime(2000);
     await flushPromises();
     expect(c.ui.saveState).toBe("idle");
-    Object.assign(c.form, { installRoot: "", globalInstallRoot: "" });
+    c.form.installRoots = {};
+    c.queueSettingsSave("game", 500);
     backend.invoke.mockRejectedValueOnce(new Error("disk full"));
     await c.saveSettings();
     expect(noticeMessage()).toBe("disk full");
@@ -702,9 +735,185 @@ describe("启动与设置", () => {
     expect(document.querySelector(".notification-stack")).toBeNull();
   });
 
+  it("游戏启动方式只通过所属 owner 提交", async () => {
+    const c = await boot();
+    c.openSettings("nte-game");
+    await nextTick();
+    backend.invoke.mockClear();
+
+    const select = document.querySelector<HTMLSelectElement>("#set-mode")!;
+    select.value = "official";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await flushPromises();
+
+    expect(backend.invoke).toHaveBeenCalledWith("update_settings_section", {
+      owner: "game:nte",
+      patch: { launchMode: "official" },
+    });
+    expect(
+      backend.invoke.mock.calls.filter(
+        ([command]) => command === "update_settings_section",
+      ),
+    ).toHaveLength(1);
+    expect(gameSettings(c.state.bootstrap?.settings).launchMode).toBe(
+      "official",
+    );
+    expect(c.ui.saveState).toBe("saved");
+  });
+
+  it("宿主与游戏字段分别提交各自的 owner 补丁", async () => {
+    const c = await boot();
+    c.form.theme = "dark";
+    c.queueSettingsSave("host", 0);
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      hostPatch({ theme: "dark" }),
+    );
+    expect(
+      backend.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === "update_settings_section" &&
+          (args as { owner: string }).owner.startsWith("game:"),
+      ),
+    ).toHaveLength(0);
+    expect(c.state.bootstrap?.settings.theme).toBe("dark");
+    expect(gameSettings(c.state.bootstrap?.settings).launchMode).toBe(
+      "background",
+    );
+
+    backend.invoke.mockClear();
+    c.form.launchMode = "official";
+    c.queueSettingsSave("game", 0);
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      gamePatch({ launchMode: "official" }),
+    );
+    expect(
+      backend.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === "update_settings_section" &&
+          (args as { owner: string }).owner === "host",
+      ),
+    ).toHaveLength(0);
+    expect(c.state.bootstrap?.settings.theme).toBe("dark");
+    expect(gameSettings(c.state.bootstrap?.settings).launchMode).toBe(
+      "official",
+    );
+  });
+
+  it("包声明的设置 section 以完整 owner 提交字段补丁", async () => {
+    const c = await boot();
+    const schema = {
+      owner: "game:fixture",
+      version: 2,
+      fields: [
+        {
+          key: "nickname",
+          label: "测试昵称",
+          description: "",
+          order: 1,
+          type: "text" as const,
+          default: "旅行者",
+          maxChars: 24,
+          value: "旅行者",
+        },
+        {
+          key: "showGreeting",
+          label: "显示问候",
+          description: "",
+          order: 2,
+          type: "boolean" as const,
+          default: true,
+          value: true,
+        },
+      ],
+    };
+    c.state.bootstrap!.settingsSchemas = [schema];
+    c.declaredSettings["game:fixture"] = {
+      nickname: "新昵称",
+      showGreeting: true,
+    };
+    backend.invoke.mockClear();
+
+    c.queueSettingsSave("game:fixture", 0);
+    await flushPromises();
+
+    expect(backend.invoke).toHaveBeenCalledWith("update_settings_section", {
+      owner: "game:fixture",
+      patch: { nickname: "新昵称" },
+    });
+    expect(c.declaredSettings["game:fixture"].nickname).toBe("新昵称");
+    expect(schema.fields[0].value).toBe("新昵称");
+  });
+
+  it("owner 补丁失败后保留待提交状态并在下次保存重试", async () => {
+    const c = await boot();
+    c.form.launchMode = "official";
+    backend.invoke.mockRejectedValueOnce(new Error("disk full"));
+    c.queueSettingsSave("game", 0);
+    await flushPromises();
+    expect(c.ui.saveState).toBe("error");
+    expect(backend.invoke).toHaveBeenCalledWith("update_settings_section", {
+      owner: "game:nte",
+      patch: { launchMode: "official" },
+    });
+
+    // 下次保存重新提交同一 owner 补丁.
+    backend.invoke.mockClear();
+    expect(await c.saveSettings()).toBe(true);
+    expect(backend.invoke).toHaveBeenCalledWith("update_settings_section", {
+      owner: "game:nte",
+      patch: { launchMode: "official" },
+    });
+    expect(gameSettings(c.state.bootstrap?.settings).launchMode).toBe(
+      "official",
+    );
+  });
+
+  it("owner 请求期间的新改动保留到下一次提交", async () => {
+    const c = await boot();
+    let release!: (section: {
+      owner: string;
+      fields: Record<string, unknown>;
+    }) => void;
+    backend.invoke.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    c.form.launchMode = "official";
+    c.queueSettingsSave("game", 0);
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("update_settings_section", {
+      owner: "game:nte",
+      patch: { launchMode: "official" },
+    });
+
+    // 第一个请求还没返回, 用户又改了一次.
+    c.form.launchMode = "direct";
+    c.queueSettingsSave("game", 0);
+    release({
+      owner: "game:nte",
+      fields: {
+        ...gameSettings(c.state.bootstrap?.settings),
+        launchMode: "official",
+      },
+    });
+    await flushPromises();
+
+    expect(backend.invoke).toHaveBeenCalledWith("update_settings_section", {
+      owner: "game:nte",
+      patch: { launchMode: "direct" },
+    });
+    expect(gameSettings(c.state.bootstrap?.settings).launchMode).toBe("direct");
+  });
+
   it("下载限速支持自由填写并保留小数", async () => {
     const c = await boot();
-    c.openSettings("game");
+    c.openSettings("nte-game");
     await nextTick();
     backend.invoke.mockClear();
 
@@ -717,12 +926,12 @@ describe("启动与设置", () => {
     await vi.advanceTimersByTimeAsync(100);
     await flushPromises();
     const saved = backend.invoke.mock.calls
-      .filter(([command]) => command === "save_settings")
+      .filter(([command]) => command === "update_settings_section")
       .at(-1);
     expect(saved).toBeDefined();
     expect(
-      gameSettings((saved![1] as { settings: Settings }).settings).updates
-        .limitBytesPerSecond,
+      (saved![1] as { patch: { updates: { limitBytesPerSecond: number } } })
+        .patch.updates.limitBytesPerSecond,
     ).toBe(13107200);
 
     input.value = "0";
@@ -731,17 +940,17 @@ describe("启动与设置", () => {
     await vi.advanceTimersByTimeAsync(100);
     await flushPromises();
     const cleared = backend.invoke.mock.calls
-      .filter(([command]) => command === "save_settings")
+      .filter(([command]) => command === "update_settings_section")
       .at(-1);
     expect(
-      gameSettings((cleared![1] as { settings: Settings }).settings).updates
-        .limitBytesPerSecond,
+      (cleared![1] as { patch: { updates: { limitBytesPerSecond: number } } })
+        .patch.updates.limitBytesPerSecond,
     ).toBe(0);
   });
 
   it("文本输入防抖自动保存, 保存状态随后回到空闲", async () => {
     const c = await boot();
-    c.openSettings("game");
+    c.openSettings("nte-game");
     await nextTick();
     backend.invoke.mockClear();
     const input = document.querySelector<HTMLInputElement>("#set-install")!;
@@ -750,14 +959,15 @@ describe("启动与设置", () => {
     expect(c.ui.saveState).toBe("idle");
     await vi.advanceTimersByTimeAsync(499);
     expect(backend.invoke).not.toHaveBeenCalledWith(
-      "save_settings",
+      "update_settings_section",
       expect.anything(),
     );
     await vi.advanceTimersByTimeAsync(1);
     await flushPromises();
-    expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: savedGame({ installRoot: "/auto-game" }),
-    });
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      gamePatch({ installRoot: "/auto-game" }),
+    );
     expect(c.ui.saveState).toBe("saved");
     await vi.advanceTimersByTimeAsync(2000);
     expect(c.ui.saveState).toBe("idle");
@@ -765,7 +975,7 @@ describe("启动与设置", () => {
 
   it("修改安装目录后统一刷新启动器与游戏资源", async () => {
     const c = await boot();
-    c.openSettings("game");
+    c.openSettings("nte-game");
     await nextTick();
     backend.invoke.mockClear();
     const input = document.querySelector<HTMLInputElement>("#set-install")!;
@@ -773,9 +983,10 @@ describe("启动与设置", () => {
     input.dispatchEvent(new Event("input", { bubbles: true }));
     await vi.advanceTimersByTimeAsync(500);
     await flushPromises();
-    expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: savedGame({ installRoot: "/new-game" }),
-    });
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      gamePatch({ installRoot: "/new-game" }),
+    );
     expect(backend.invoke).toHaveBeenCalledWith("check_update", {
       full: false,
     });
@@ -787,7 +998,7 @@ describe("启动与设置", () => {
 
   it("更新页修改安装目录也会统一刷新", async () => {
     const c = await boot();
-    c.showPage("update");
+    c.showPage("nte-update");
     await nextTick();
     backend.invoke.mockClear();
     const input = document.querySelector<HTMLInputElement>(
@@ -797,9 +1008,10 @@ describe("启动与设置", () => {
     input.dispatchEvent(new Event("input", { bubbles: true }));
     await vi.advanceTimersByTimeAsync(500);
     await flushPromises();
-    expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: savedGame({ installRoot: "/update-game" }),
-    });
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      gamePatch({ installRoot: "/update-game" }),
+    );
     expect(backend.invoke).toHaveBeenCalledWith("check_update", {
       full: false,
     });
@@ -812,7 +1024,7 @@ describe("启动与设置", () => {
   it("切换到没有启动器的目录时两张状态卡同时显示未安装", async () => {
     backend.data = bootstrap({ launcherRoot: "", launcherVersion: "" });
     const c = await boot();
-    c.openSettings("game");
+    c.openSettings("nte-game");
     await nextTick();
     backend.invoke.mockClear();
     const input = document.querySelector<HTMLInputElement>("#set-install")!;
@@ -822,7 +1034,7 @@ describe("启动与设置", () => {
     await flushPromises();
 
     expect(c.updateView.value.title).toBe("尚未安装");
-    await c.showPage("update");
+    await c.showPage("nte-update");
     await nextTick();
     expect(text("game-download-state-title")).toBe("需要安装启动器文件");
     expect(primaryText()).toBe("安装游戏");
@@ -846,9 +1058,15 @@ describe("启动与设置", () => {
     checkbox.checked = false;
     checkbox.dispatchEvent(new Event("change", { bubbles: true }));
     await flushPromises();
-    expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({ minimizeToTrayOnClose: false }),
-    });
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      hostPatch({ minimizeToTrayOnClose: false }),
+    );
+    expect(
+      backend.invoke.mock.calls.filter(
+        ([command]) => command === "update_settings_section",
+      ),
+    ).toHaveLength(1);
     expect(c.ui.saveState).toBe("saved");
   });
 
@@ -861,10 +1079,11 @@ describe("启动与设置", () => {
       overlay: true,
       gamescope: { ...defaultGamescope },
     });
-    c.queueSettingsSave(0);
+    c.queueSettingsSave("game", 0);
     await flushPromises();
-    expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: savedGame({
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      gamePatch({
         gameMode: {
           performance: true,
           inhibit: true,
@@ -873,7 +1092,7 @@ describe("启动与设置", () => {
           gamescope: { ...defaultGamescope },
         },
       }),
-    });
+    );
     expect(c.ui.saveState).toBe("saved");
     await c.redetect();
     expect(c.form.gameMode).toEqual({
@@ -887,7 +1106,7 @@ describe("启动与设置", () => {
 
   it("下载写入期间锁住地区和安装目录, 其他设置仍可修改", async () => {
     const c = await boot();
-    c.openSettings("game");
+    c.openSettings("nte-game");
     await nextTick();
     backend.downloadHandler({
       ...backend.downloadStatus,
@@ -922,14 +1141,12 @@ describe("启动与设置", () => {
     );
     backend.invoke.mockClear();
     c.applyTheme("dark");
-    c.queueSettingsSave(0);
+    c.queueSettingsSave("host", 0);
     await flushPromises();
-    expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: savedSettings(
-        { installRoot: null, globalInstallRoot: null },
-        { theme: "dark" },
-      ),
-    });
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      hostPatch({ theme: "dark" }),
+    );
     expect(c.ui.saveState).toBe("saved");
     backend.downloadHandler({
       ...backend.downloadStatus,
@@ -979,27 +1196,36 @@ describe("启动与设置", () => {
 
   it("保存中的连续修改串行提交最新快照", async () => {
     const c = await boot();
-    let finish!: (data: Bootstrap) => void;
+    let finish!: (section: SettingsSection) => void;
     backend.invoke.mockImplementationOnce(
       () =>
-        new Promise<Bootstrap>((resolve) => {
+        new Promise<SettingsSection>((resolve) => {
           finish = resolve;
         }),
     );
-    c.form.globalInstallRoot = "/first";
-    c.queueSettingsSave(0);
+    c.form.installRoots.global = "/first";
+    c.queueSettingsSave("game", 0);
     await flushPromises();
-    c.form.globalInstallRoot = "/second";
-    c.queueSettingsSave(0);
+    c.form.installRoots.global = "/second";
+    c.queueSettingsSave("game", 0);
     await flushPromises();
-    finish(bootstrap());
+    finish({
+      owner: "game:nte",
+      fields: {
+        ...gameSettings(c.state.bootstrap?.settings),
+        installRoots: { global: "/first" },
+      },
+    });
     await flushPromises();
     const saves = backend.invoke.mock.calls.filter(
-      ([command]) => command === "save_settings",
+      ([command]) => command === "update_settings_section",
     );
     expect(saves).toHaveLength(2);
     expect(saves[1][1]).toMatchObject({
-      settings: { games: { nte: { globalInstallRoot: "/second" } } },
+      owner: "game:nte",
+      patch: {
+        installRoots: expect.objectContaining({ global: "/second" }),
+      },
     });
     expect(c.ui.saveState).toBe("saved");
   });
@@ -1007,20 +1233,18 @@ describe("启动与设置", () => {
   it("自动保存失败后在下一次修改时重试", async () => {
     const c = await boot();
     backend.invoke.mockRejectedValueOnce(new Error("disk full"));
-    c.form.globalInstallRoot = "/blocked";
-    c.queueSettingsSave(0);
+    c.form.installRoots.global = "/blocked";
+    c.queueSettingsSave("game", 0);
     await flushPromises();
     expect(noticeMessage()).toBe("disk full");
     expect(c.ui.saveState).toBe("error");
-    c.form.globalInstallRoot = "/retry";
-    c.queueSettingsSave(0);
+    c.form.installRoots.global = "/retry";
+    c.queueSettingsSave("game", 0);
     await flushPromises();
     expect(c.ui.saveState).toBe("saved");
-    expect(backend.invoke).toHaveBeenLastCalledWith(
-      "save_settings",
-      expect.objectContaining({
-        settings: savedGame({ globalInstallRoot: "/retry" }),
-      }),
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      gamePatch({ globalInstallRoot: "/retry" }),
     );
   });
 
@@ -1034,12 +1258,12 @@ describe("启动与设置", () => {
     )!;
     expect(checkbox.checked).toBe(true);
     c.form.minimizeToTrayOnClose = false;
+    c.queueSettingsSave("host", 500);
     await c.saveSettings();
-    expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({
-        minimizeToTrayOnClose: false,
-      }),
-    });
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      hostPatch({ minimizeToTrayOnClose: false }),
+    );
   });
 
   it("游戏退出后打开启动器配置支持切换与自动保存", async () => {
@@ -1054,11 +1278,12 @@ describe("启动与设置", () => {
     checkbox.checked = false;
     checkbox.dispatchEvent(new Event("change", { bubbles: true }));
     await flushPromises();
-    expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      hostPatch({
         showLauncherAfterGameExit: false,
       }),
-    });
+    );
     expect(c.ui.saveState).toBe("saved");
   });
 });
@@ -1075,7 +1300,7 @@ describe("下载大小显示", () => {
 
   it("检查后展示空间需求并标出缺口", async () => {
     const c = await boot();
-    await c.showPage("update");
+    await c.showPage("nte-update");
     backend.downloadHandler({
       ...backend.downloadStatus,
       phase: "needs-update",
@@ -1100,7 +1325,7 @@ describe("下载大小显示", () => {
 
   it("空间充足时按占用比例展示且不提示缺口", async () => {
     const c = await boot();
-    await c.showPage("update");
+    await c.showPage("nte-update");
     backend.downloadHandler({
       ...backend.downloadStatus,
       phase: "needs-update",
@@ -1122,7 +1347,7 @@ describe("下载大小显示", () => {
 
   it("空间读取失败或没有待处理资源时不展示预算", async () => {
     const c = await boot();
-    await c.showPage("update");
+    await c.showPage("nte-update");
     backend.downloadHandler({
       ...backend.downloadStatus,
       phase: "needs-update",
@@ -1162,14 +1387,14 @@ describe("下载大小显示", () => {
 describe("更新检查", () => {
   it("启动检查不持久化探测路径或尚未保存的表单", async () => {
     const c = await boot((controller) => {
-      expect(controller.form.globalInstallRoot).toBe("");
-      controller.form.globalInstallRoot = "/draft-prefix";
+      expect(controller.form.installRoots.global).toBeUndefined();
+      controller.form.installRoots.global = "/draft-prefix";
     });
     expect(backend.invoke).not.toHaveBeenCalledWith(
-      "save_settings",
+      "update_settings_section",
       expect.anything(),
     );
-    expect(c.form.globalInstallRoot).toBe("/draft-prefix");
+    expect(c.form.installRoots.global).toBe("/draft-prefix");
   });
 
   it.each(["failed", "cancelled", "ready"] as const)(
@@ -1243,14 +1468,14 @@ describe("更新检查", () => {
         }),
     );
     backend.downloadHandler({ ...backend.downloadStatus, phase: "ready" });
-    c.form.installRoot = "/unsaved/game";
-    c.form.globalInstallRoot = "/unsaved/prefix";
+    c.form.installRoots.cn = "/unsaved/game";
+    c.form.installRoots.global = "/unsaved/prefix";
     c.applyTheme("dark");
     resolve(bootstrap({ gameVersion: "2.0" }));
     await flushPromises();
     expect(c.state.bootstrap?.gameVersion).toBe("2.0");
-    expect(c.form.installRoot).toBe("/unsaved/game");
-    expect(c.form.globalInstallRoot).toBe("/unsaved/prefix");
+    expect(c.form.installRoots.cn).toBe("/unsaved/game");
+    expect(c.form.installRoots.global).toBe("/unsaved/prefix");
     expect(c.form.theme).toBe("dark");
     expect(primaryText()).toBe("检查资源");
   });
@@ -1266,6 +1491,7 @@ describe("更新检查", () => {
     );
     backend.downloadHandler({ ...backend.downloadStatus, phase: "ready" });
     c.form.distribution = "global";
+    c.queueSettingsSave("game", 500);
     await c.saveSettings();
     resolve(bootstrap());
     await flushPromises();
@@ -1377,7 +1603,7 @@ describe("更新检查", () => {
   it("更新页按语种下载和更新, 下载期间仍可提交另一语种", async () => {
     backend.catalog.resources[0].needsUpdate = true;
     const c = await boot();
-    c.showPage("update");
+    c.showPage("nte-update");
     await nextTick();
     await flushPromises();
     await wrapper!.get(".resource-options__toggle").trigger("click");
@@ -1423,7 +1649,7 @@ describe("更新检查", () => {
   it("语音管理确认卸载并重新检查资源, 可再次下载", async () => {
     const c = await boot();
     backend.startStatus = { ...backend.downloadStatus, phase: "ready" };
-    c.showPage("update");
+    c.showPage("nte-update");
     await nextTick();
     await flushPromises();
     await wrapper!.get(".resource-options__toggle").trigger("click");
@@ -1465,7 +1691,7 @@ describe("更新检查", () => {
     backend.catalog.preloadCached = true;
     backend.catalog.preloadCompleted = true;
     const c = await boot();
-    c.showPage("update");
+    c.showPage("nte-update");
     await nextTick();
     await flushPromises();
     await wrapper!.get(".resource-options__toggle").trigger("click");
@@ -1509,7 +1735,7 @@ describe("更新检查", () => {
     backend.catalog.preloadCached = true;
     backend.catalog.preloadCachedBytes = 2048;
     const c = await boot();
-    c.showPage("update");
+    c.showPage("nte-update");
     await nextTick();
     await flushPromises();
     expect(wrapper!.get("#game-preload").text()).toBe("校验预下载");
@@ -1533,7 +1759,7 @@ describe("更新检查", () => {
     backend.catalog.preloadCachedVersion = "1.5.0";
     backend.catalog.preloadCachedBytes = 2048;
     const c = await boot();
-    c.showPage("update");
+    c.showPage("nte-update");
     await nextTick();
     await flushPromises();
     expect(wrapper!.find("#game-preload").exists()).toBe(false);
@@ -1569,14 +1795,16 @@ describe("更新检查", () => {
   it("为国际服保存独立目录并展示可暂停的下载任务", async () => {
     const c = await boot();
     c.form.distribution = "global";
-    c.form.globalInstallRoot = "/games/global";
+    c.form.installRoots.global = "/games/global";
+    c.queueSettingsSave("game", 500);
     await c.startGameDownload("apply", true);
-    expect(backend.invoke).toHaveBeenCalledWith("save_settings", {
-      settings: savedGame({
+    expect(backend.invoke).toHaveBeenCalledWith(
+      "update_settings_section",
+      gamePatch({
         distribution: "global",
         globalInstallRoot: "/games/global",
       }),
-    });
+    );
     expect(backend.invoke).toHaveBeenCalledWith("game_download_start", {
       mode: "apply",
       full: true,
@@ -1683,7 +1911,8 @@ describe("更新检查", () => {
     expect(document.body.textContent).not.toContain("暂停下载");
 
     // 安装目录改变后，旧结果不再适用。
-    c.form.installRoot = "/other";
+    c.form.installRoots.cn = "/other";
+    c.queueSettingsSave("game", 500);
     await flushPromises();
     expect(primaryText()).toBe("检查资源");
 
@@ -1755,7 +1984,7 @@ describe("更新检查", () => {
   it("完整校验发现损坏后，主按钮继续提交完整校验", async () => {
     const c = await boot();
     await wrapper!
-      .findAll("#page-update button")
+      .findAll("#page-nte-update button")
       .find((item) => item.text() === "完整校验")!
       .trigger("click");
     await flushPromises();
@@ -1793,7 +2022,7 @@ describe("更新检查", () => {
     expect(c.downloadView.value.detail).toContain("2 个文件尚未验证");
     expect(c.launchView.value.label).toBe("更新游戏");
     c.handleLaunchAction();
-    expect(c.state.page).toBe("update");
+    expect(c.state.page).toBe("nte-update");
     expect(backend.invoke).not.toHaveBeenCalledWith("launch_official");
   });
 
@@ -1861,7 +2090,7 @@ describe("更新检查", () => {
       totalFiles: 0,
     });
     await nextTick();
-    expect(wrapper!.findAll("#page-update progress")).toHaveLength(0);
+    expect(wrapper!.findAll("#page-nte-update progress")).toHaveLength(0);
     backend.downloadHandler({
       ...backend.downloadStatus,
       mode: "check",
@@ -1888,7 +2117,7 @@ describe("更新检查", () => {
       totalFiles: 5,
     });
     await nextTick();
-    expect(wrapper!.findAll("#page-update progress")).toHaveLength(0);
+    expect(wrapper!.findAll("#page-nte-update progress")).toHaveLength(0);
   });
 
   it("暂停后仍按已下载体积显示进度", async () => {
@@ -1968,7 +2197,7 @@ describe("更新检查", () => {
     await c.checkUpdate(true);
     await nextTick();
     const entry = wrapper!
-      .findAll("#page-update button")
+      .findAll("#page-nte-update button")
       .find((item) => item.text() === "更新启动器文件");
     expect(entry).toBeTruthy();
     c.state.game = "running";
@@ -2002,7 +2231,7 @@ describe("更新检查", () => {
     expect(text("update-state-title")).toBe("已是最新");
     expect(
       wrapper!
-        .findAll("#page-update button")
+        .findAll("#page-nte-update button")
         .some((item) => item.text() === "更新启动器文件"),
     ).toBe(false);
 
@@ -2047,7 +2276,7 @@ describe("更新检查", () => {
     await c.checkUpdate(true);
     await nextTick();
     expect(c.updateView.value.title).toBe("已是最新");
-    c.form.installRoot = "/other";
+    c.form.installRoots.cn = "/other";
     await nextTick();
     expect(c.updateView.value.title).toBe("尚未检查");
   });
@@ -2702,21 +2931,21 @@ describe("导航和窗口交互", () => {
     key("s", { ctrlKey: true });
     await flushPromises();
     expect(backend.invoke).not.toHaveBeenCalledWith(
-      "save_settings",
+      "update_settings_section",
       expect.anything(),
     );
-    history.replaceState(null, "", "/#bulletin");
+    history.replaceState(null, "", "/#nte-bulletin");
     window.dispatchEvent(new Event("hashchange"));
-    expect(c.state.page).toBe("bulletin");
+    expect(c.state.page).toBe("nte-bulletin");
     vi.spyOn(history, "replaceState").mockImplementation(() => {
       throw new Error("unsupported protocol");
     });
-    expect(() => c.showPage("update")).not.toThrow();
+    expect(() => c.showPage("nte-update")).not.toThrow();
   });
 
   it("保留文本输入行为并阻止页面拖拽和上下文菜单", async () => {
     const c = await boot();
-    c.openSettings("game");
+    c.openSettings("nte-game");
     await nextTick();
     for (const type of [
       "dragstart",
@@ -3406,11 +3635,11 @@ it("切换地区后重新读取背景素材", async () => {
   backend.background = { video: global, image: null };
   backend.data.launcherRoot = "/games/global/launcher";
   backend.data.settings = withGame(
-    { distribution: "global", globalInstallRoot: "/games/global" },
+    { distribution: "global", installRoots: { global: "/games/global" } },
     backend.data.settings,
   );
   c.form.distribution = "global";
-  c.form.globalInstallRoot = "/games/global";
+  c.form.installRoots.global = "/games/global";
   await c.redetect();
   await flushPromises();
 
@@ -3449,11 +3678,11 @@ it("切换地区时不复用旧地区的在途视频请求", async () => {
 
   backend.data.launcherRoot = "/games/global/launcher";
   backend.data.settings = withGame(
-    { distribution: "global", globalInstallRoot: "/games/global" },
+    { distribution: "global", installRoots: { global: "/games/global" } },
     backend.data.settings,
   );
   c.form.distribution = "global";
-  c.form.globalInstallRoot = "/games/global";
+  c.form.installRoots.global = "/games/global";
   await c.redetect();
   await flushPromises();
 
@@ -3477,7 +3706,7 @@ it("在二级界面切换地区时保留旧背景直到新素材就绪", async (
   const c = await boot();
   expect(c.media.image).toBe(cn);
 
-  c.showPage("update");
+  c.showPage("nte-update");
   const base = backend.invoke.getMockImplementation()!;
   let finish!: (source: LauncherBackgroundMedia) => void;
   backend.invoke.mockImplementation((command: string, args: never) =>
@@ -3489,11 +3718,11 @@ it("在二级界面切换地区时保留旧背景直到新素材就绪", async (
   );
   backend.data.launcherRoot = "/games/global/launcher";
   backend.data.settings = withGame(
-    { distribution: "global", globalInstallRoot: "/games/global" },
+    { distribution: "global", installRoots: { global: "/games/global" } },
     backend.data.settings,
   );
   c.form.distribution = "global";
-  c.form.globalInstallRoot = "/games/global";
+  c.form.installRoots.global = "/games/global";
   const switching = c.redetect();
   await flushPromises();
   expect(finish).toBeTypeOf("function");
@@ -3516,7 +3745,7 @@ it("背景读取失败时保留当前背景", async () => {
     heroMedia: "photo",
   };
   const c = await boot();
-  c.showPage("update");
+  c.showPage("nte-update");
   const base = backend.invoke.getMockImplementation()!;
   backend.invoke.mockImplementation((command: string, args: never) =>
     command === "launcher_background"
@@ -3525,11 +3754,11 @@ it("背景读取失败时保留当前背景", async () => {
   );
   backend.data.launcherRoot = "/games/global/launcher";
   backend.data.settings = withGame(
-    { distribution: "global", globalInstallRoot: "/games/global" },
+    { distribution: "global", installRoots: { global: "/games/global" } },
     backend.data.settings,
   );
   c.form.distribution = "global";
-  c.form.globalInstallRoot = "/games/global";
+  c.form.installRoots.global = "/games/global";
   await c.redetect();
   await flushPromises();
 
@@ -3603,7 +3832,7 @@ it("在视频结尾切换到预载的备播元素", async () => {
 
 it("放弃修复后同步安装目录表单", async () => {
   const controller = await boot();
-  backend.data.settings.games.nte!.installRoot = "/moved-game";
+  backend.data.settings.games.nte!.installRoots.cn = "/moved-game";
   backend.invoke.mockImplementation(async (command: string) => {
     if (command === "migration_abandon")
       return { phase: "idle", canCancel: false } as never;
@@ -3611,14 +3840,14 @@ it("放弃修复后同步安装目录表单", async () => {
     return null as never;
   });
   expect(await controller.abandonInstallMigration()).toBe(true);
-  expect(controller.form.installRoot).toBe("/moved-game");
+  expect(controller.form.installRoots.cn).toBe("/moved-game");
 });
 
 it("组件事件和双向绑定将用户操作传给控制器", async () => {
   const c = await boot();
   await wrapper!.find('[data-page="settings"]').trigger("click");
   expect(c.state.page).toBe("settings");
-  await wrapper!.find('[data-category="game"]').trigger("click");
+  await wrapper!.find('[data-category="nte-game"]').trigger("click");
   await nextTick();
   await wrapper!.find("#set-install").setValue(" /component-game ");
   await wrapper!.find("#set-install").trigger("change");
@@ -3629,7 +3858,7 @@ it("组件事件和双向绑定将用户操作传给控制器", async () => {
   await wrapper!.find("#set-hero-media").setValue("photo");
   await wrapper!.find("#set-motion").setValue(false);
   await flushPromises();
-  expect(gameSettings(backend.data.settings).installRoot).toBe(
+  expect(gameSettings(backend.data.settings).installRoots.cn).toBe(
     "/component-game",
   );
   expect(backend.data.settings.theme).toBe("dark");
@@ -3657,21 +3886,21 @@ it("组件事件和双向绑定将用户操作传给控制器", async () => {
   await wrapper!.find("#setup-chip").trigger("click");
   expect(c.state.page).toBe("settings");
   await wrapper!.find("#home-status").trigger("click");
-  expect(c.state.page).toBe("update");
+  expect(c.state.page).toBe("nte-update");
   await wrapper!.find("#update-quick").trigger("click");
   await flushPromises();
   await wrapper!.find("#update-full").trigger("click");
   await flushPromises();
   expect(backend.invoke).toHaveBeenCalledWith("check_update", { full: true });
-  await wrapper!.find('[data-page="bulletin"]').trigger("click");
-  expect(c.state.page).toBe("bulletin");
+  await wrapper!.find('[data-page="nte-bulletin"]').trigger("click");
+  expect(c.state.page).toBe("nte-bulletin");
   await wrapper!.find('[data-page="home"]').trigger("click");
-  await wrapper!.find('[data-page="update"]').trigger("click");
+  await wrapper!.find('[data-page="nte-update"]').trigger("click");
   await flushPromises();
-  expect(c.state.page).toBe("update");
+  expect(c.state.page).toBe("nte-update");
   backend.downloadHandler({ ...backend.downloadStatus, phase: "ready" });
   await flushPromises();
-  await wrapper!.find('[data-page="update"]').trigger("click");
+  await wrapper!.find('[data-page="nte-update"]').trigger("click");
   await wrapper!.find("#launch-btn").trigger("click");
   await vi.advanceTimersByTimeAsync(900);
   expect(c.state.game).toBe("running");
@@ -3746,14 +3975,14 @@ it("组件卸载时释放原生订阅、视频状态、定时器和全局事件"
 it("卸载时取消尚未触发的自动保存", async () => {
   const c = await boot();
   backend.invoke.mockClear();
-  c.form.globalInstallRoot = "/pending";
-  c.queueSettingsSave();
+  c.form.installRoots.global = "/pending";
+  c.queueSettingsSave("game", 500);
   wrapper!.unmount();
   wrapper = undefined;
   await vi.advanceTimersByTimeAsync(1000);
   await flushPromises();
   expect(backend.invoke).not.toHaveBeenCalledWith(
-    "save_settings",
+    "update_settings_section",
     expect.anything(),
   );
   expect(c.ui.saveState).toBe("idle");
@@ -3781,7 +4010,7 @@ it("卸载后返回的初始化快照不会重新触发界面或入场", async (
   expect(vi.getTimerCount()).toBe(0);
 });
 
-it.each(["check_update", "save_settings", "bootstrap"] as const)(
+it.each(["check_update", "update_settings_section", "bootstrap"] as const)(
   "卸载后忽略延迟的 %s 结果",
   async (command) => {
     const c = await boot();
@@ -3791,11 +4020,14 @@ it.each(["check_update", "save_settings", "bootstrap"] as const)(
         resolve = done;
       }),
     );
-    if (command === "save_settings") c.form.globalInstallRoot = "/late";
+    if (command === "update_settings_section") {
+      c.form.installRoots.global = "/late";
+      c.queueSettingsSave("game", 500);
+    }
     const pending =
       command === "check_update"
         ? c.checkUpdate(true)
-        : command === "save_settings"
+        : command === "update_settings_section"
           ? c.saveSettings()
           : c.redetect();
     await flushPromises();
@@ -3888,7 +4120,8 @@ it("保存先提交通用设置, 再提交已加载的签到偏好", async () =>
   c.attendanceForm.enabled = true;
   c.attendanceForm.trigger = "daily";
   c.attendanceForm.time = "20:30";
-  c.form.globalInstallRoot = "/changed";
+  c.form.installRoots.global = "/changed";
+  c.queueSettingsSave("game", 500);
   const original = backend.invoke.getMockImplementation()!;
   backend.invoke.mockImplementation(async (command, args) =>
     command === "attendance_configure"
@@ -3905,7 +4138,7 @@ it("保存先提交通用设置, 再提交已加载的签到偏好", async () =>
   backend.invoke.mockClear();
   await c.saveSettings();
   expect(backend.invoke.mock.calls.map(([command]) => command)).toEqual([
-    "save_settings",
+    "update_settings_section",
     "attendance_configure",
   ]);
   expect(backend.invoke).toHaveBeenLastCalledWith("attendance_configure", {
@@ -3922,11 +4155,12 @@ it("签到未加载时保存不提交签到偏好", async () => {
   const c = await boot();
   c.attendance.loaded = false;
   c.attendanceForm.enabled = true;
-  c.form.globalInstallRoot = "/changed";
+  c.form.installRoots.global = "/changed";
+  c.queueSettingsSave("game", 500);
   backend.invoke.mockClear();
   await c.saveSettings();
   expect(backend.invoke.mock.calls.map(([command]) => command)).toEqual([
-    "save_settings",
+    "update_settings_section",
   ]);
 });
 
@@ -3942,7 +4176,8 @@ it("签到保存失败明确提示并保留错误状态", async () => {
   });
   c.attendance.loaded = true;
   c.attendanceForm.enabled = true;
-  c.form.globalInstallRoot = "/changed";
+  c.form.installRoots.global = "/changed";
+  c.queueSettingsSave("game", 500);
   const original = backend.invoke.getMockImplementation()!;
   backend.invoke.mockImplementation(async (command, args) => {
     if (command === "attendance_configure")
@@ -3962,7 +4197,7 @@ it("外部启动切换地区后刷新设置表单", async () => {
   const c = await boot();
   const data = structuredClone(backend.data);
   data.settings = withGame(
-    { distribution: "global", globalInstallRoot: "/games/global" },
+    { distribution: "global", installRoots: { global: "/games/global" } },
     data.settings,
   );
   data.installRoot = "/games/global";
@@ -4040,60 +4275,6 @@ it("短信控制器保留未保存偏好, 发送失败复位并阻止并发", as
   ).rejects.toEqual({ message: "验证码错误" });
   expect(c.attendance.error).toBe("验证码错误");
   expect(c.attendance.busy).toBe(false);
-});
-
-it("区服切换后隔离公告缓存并丢弃旧请求", async () => {
-  const c = await boot();
-  localStorage.removeItem("nte.bulletins.v3.cn");
-  const original = backend.invoke.getMockImplementation()!;
-  let finishCn!: (feed: { items: []; errors: string[] }) => void;
-  const globalFeed = { items: [], errors: ["global feed"] };
-  backend.invoke.mockImplementation((command: string, args?: unknown) => {
-    if (command === "fetch_bulletins") {
-      if ((args as { distribution: string }).distribution === "cn")
-        return new Promise((resolve) => {
-          finishCn = resolve;
-        });
-      return Promise.resolve(globalFeed);
-    }
-    return original(command, args as Parameters<typeof original>[1]);
-  });
-  const pending = c.fetchBulletins(true, true);
-  c.form.distribution = "global";
-  c.form.globalInstallRoot = "/games/global";
-  await c.saveSettings();
-  await flushPromises();
-  expect(gameSettings(backend.data.settings).launchMode).toBe("background");
-  expect(c.state.bulletins).toEqual(globalFeed);
-  finishCn({ items: [], errors: ["old cn feed"] });
-  await pending;
-  expect(c.state.bulletins).toEqual(globalFeed);
-  expect(localStorage.getItem("nte.bulletins.v3.global")).toBeNull();
-  expect(localStorage.getItem("nte.bulletins.v3.cn")).toBeNull();
-  expect(wrapper!.findComponent({ name: "HomeGameRecords" }).exists()).toBe(
-    true,
-  );
-});
-
-it("公告来源失败不缓存, 下次读取会重新请求", async () => {
-  const c = await boot();
-  localStorage.removeItem("nte.bulletins.v3.cn");
-  backend.invoke.mockResolvedValueOnce({
-    items: [],
-    errors: ["B站动态: 暂时不可用"],
-  });
-  await c.fetchBulletins(true, true);
-  expect(c.state.bulletins?.errors).toHaveLength(1);
-  expect(localStorage.getItem("nte.bulletins.v3.cn")).toBeNull();
-  backend.invoke.mockResolvedValueOnce({ items: [], errors: [] });
-  await c.fetchBulletins();
-  expect(c.state.bulletins?.errors).toEqual([]);
-  expect(localStorage.getItem("nte.bulletins.v3.cn")).toContain('"errors":[]');
-  backend.invoke.mockResolvedValueOnce({ items: [], errors: ["临时失败"] });
-  await c.fetchBulletins(true, true);
-  backend.invoke.mockResolvedValueOnce({ items: [], errors: [] });
-  await c.fetchBulletins();
-  expect(c.state.bulletins?.errors).toEqual([]);
 });
 
 it("在运行诊断中只读显示安全验证状态", async () => {

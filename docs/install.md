@@ -315,7 +315,7 @@ git clone https://git.miprota.cc/Oddity/Oddity.git
 cd Oddity/launcher
 pnpm --dir ui install --frozen-lockfile
 pnpm --dir ui run build
-cargo build --release --locked -p nte-service -p nte-cli -p nte-recovery
+cargo build --release --locked -p oddity-backend -p oddity-cli -p oddity-recovery
 pnpm --dir ui exec install-electron
 pnpm --dir ui run desktop:package
 ./scripts/install-desktop.sh ../dist/electron/linux-unpacked/oddity

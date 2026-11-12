@@ -67,7 +67,7 @@ function bounds(element: HTMLElement) {
   );
 }
 function layout(content: string, navigation = "") {
-  document.body.innerHTML = `<nav class="rail__nav"><button data-page="home">首页</button><button data-page="settings">设置</button><button data-page="update">更新</button></nav><div class="win-controls"><button id="minimize">最小化</button></div><section class="page is-active">${navigation}${content}</section>`;
+  document.body.innerHTML = `<nav class="rail__nav"><button data-page="home">首页</button><button data-page="settings">设置</button><button data-page="nte-update">更新</button></nav><div class="win-controls"><button id="minimize">最小化</button></div><section class="page is-active">${navigation}${content}</section>`;
   nav = pad.createGamepadNavigation();
   pad.gamepad.active = true;
   nav.refresh();
@@ -238,7 +238,7 @@ it("分类确认进入内容, 返回分类后恢复焦点, 快捷键处理主操
   expect(applied).toHaveBeenCalledOnce();
   const pageClick = vi.fn();
   document
-    .querySelector('[data-page="update"]')!
+    .querySelector('[data-page="nte-update"]')!
     .addEventListener("click", pageClick);
   await n.press(10);
   expect(pageClick).toHaveBeenCalledOnce();
@@ -253,7 +253,7 @@ it("分类确认进入内容, 返回分类后恢复焦点, 快捷键处理主操
   expect(pad.gamepad.navigation).toBe(true);
   await n.press(1);
   expect(mock.show).toHaveBeenCalledWith("home");
-  controller.state.page = "update";
+  controller.state.page = "nte-update";
   controller.state.download!.phase = "game";
   await (await import("vue")).nextTick();
   expect(pad.gamepadTarget.value).not.toBeNull();
@@ -273,12 +273,12 @@ it("主页快捷启动和玩家面板, 下拉框事件及焦点转移", async ()
   expect(player.playerExpanded.value).toBe(false);
   controller.state.game = "launching";
   n.reset();
-  controller.state.page = "update";
+  controller.state.page = "nte-update";
   controller.state.page = "home";
   await (await import("vue")).nextTick();
   n.refresh();
   expect(target()).toBe("launch-region");
-  controller.state.page = "update";
+  controller.state.page = "nte-update";
   await (await import("vue")).nextTick();
   document.querySelector(".page")!.innerHTML =
     `<button id="select" role="combobox" aria-expanded="true">选择</button><button id="focus" data-y="100">下一项</button>`;
@@ -337,12 +337,18 @@ it("文本编辑和文件选择快捷操作只作用于当前弹层", async () =
     commit: vi.fn(),
     backspace: vi.fn(),
     clear: vi.fn(),
+    page: vi.fn(() => true),
   };
-  for (const button of [4, 6, 2, 7, 8]) await n.press(button);
+  for (const button of [4, 6, 3, 7, 8]) await n.press(button);
   expect(actions.gamepadActions.keyboard.cycle).toHaveBeenCalledOnce();
   expect(actions.gamepadActions.keyboard.commit).toHaveBeenCalledOnce();
   expect(actions.gamepadActions.keyboard.backspace).toHaveBeenCalledOnce();
   expect(actions.gamepadActions.keyboard.clear).toHaveBeenCalledTimes(2);
+  await n.press(2);
+  expect(actions.gamepadActions.keyboard.backspace).toHaveBeenCalledOnce();
+  for (const button of [100, 101]) await n.press(button);
+  expect(actions.gamepadActions.keyboard.page).toHaveBeenNthCalledWith(1, -1);
+  expect(actions.gamepadActions.keyboard.page).toHaveBeenNthCalledWith(2, 1);
   await n.press(1);
   expect(pad.gamepad.editing).toBeNull();
   await n.press(12);
@@ -378,6 +384,38 @@ it("文本编辑和文件选择快捷操作只作用于当前弹层", async () =
   expect(pad.gamepad.editing).toBeNull();
   await n.press(1);
   expect(mock.show).not.toHaveBeenCalled();
+});
+it("拼音候选用肩键切换, X 上屏, 扳机翻页", async () => {
+  const n = layout(
+    `<input id="text"><button id="c1" class="pad-keyboard__candidate" data-x="10" data-y="120">你</button><button id="c2" class="pad-keyboard__candidate" data-x="120" data-y="120">你好</button>`,
+  );
+  await n.press(0);
+  expect(pad.gamepad.editing?.id).toBe("text");
+  actions.gamepadActions.keyboard = {
+    cycle: vi.fn(),
+    commit: vi.fn(),
+    backspace: vi.fn(),
+    clear: vi.fn(),
+    page: vi.fn(() => true),
+    pinyin: true,
+  };
+  n.refresh();
+  await n.press(9);
+  expect(target()).toBe("c1");
+  await n.press(10);
+  expect(target()).toBe("c2");
+  await n.press(10);
+  expect(target()).toBe("c2");
+  const clicked = vi.fn();
+  document.getElementById("c2")!.addEventListener("click", clicked);
+  await n.press(2);
+  expect(clicked).toHaveBeenCalledOnce();
+  await n.press(3);
+  expect(actions.gamepadActions.keyboard.backspace).toHaveBeenCalledOnce();
+  await n.press(100);
+  await n.press(101);
+  expect(actions.gamepadActions.keyboard.page).toHaveBeenNthCalledWith(1, -1);
+  expect(actions.gamepadActions.keyboard.page).toHaveBeenNthCalledWith(2, 1);
 });
 it("通知层和操作按钮替换保留交互范围, 通知消失后恢复页面", async () => {
   const n = layout(

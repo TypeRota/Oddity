@@ -112,9 +112,9 @@ beforeEach(() => {
 });
 afterEach(() => wrapper?.unmount());
 
-async function render() {
+async function render(posterPrefix = "游玩记录") {
   wrapper = mount(PlaytimePoster, {
-    props: { open: true, stats, reduceMotion: true },
+    props: { open: true, stats, reduceMotion: true, posterPrefix },
     global: {
       stubs: {
         BaseModal: {
@@ -131,8 +131,8 @@ async function render() {
   await vi.advanceTimersByTimeAsync(50);
   await flushPromises();
 }
-async function generate() {
-  await render();
+async function generate(posterPrefix?: string) {
+  await render(posterPrefix);
   images[0].onload?.();
   await flushPromises();
 }
@@ -218,7 +218,7 @@ it("保存时只发送 PNG 的 base64 数据并显示实际保存路径", async 
   await flushPromises();
   expect(backend.save).toHaveBeenCalledExactlyOnceWith({
     title: "保存游玩记录海报",
-    defaultPath: "异环游玩记录-2026-10-28.png",
+    defaultPath: "游玩记录-2026-10-28.png",
     filters: [{ name: "PNG 图片", extensions: ["png"] }],
   });
   expect(backend.invoke).toHaveBeenCalledWith("playtime_export_poster", {
@@ -230,6 +230,17 @@ it("保存时只发送 PNG 的 base64 数据并显示实际保存路径", async 
   );
   expect(backend.notify).toHaveBeenCalledWith("海报已保存.", "ok", 3400, {
     key: "playtime-poster",
+  });
+});
+
+it("文件名使用调用方给出的前缀", async () => {
+  await generate("异环游玩记录");
+  await saveButton().trigger("click");
+  await flushPromises();
+  expect(backend.save).toHaveBeenCalledExactlyOnceWith({
+    title: "保存游玩记录海报",
+    defaultPath: "异环游玩记录-2026-10-28.png",
+    filters: [{ name: "PNG 图片", extensions: ["png"] }],
   });
 });
 
@@ -303,7 +314,7 @@ it("浏览器预览通过下载链接保存并清理链接", async () => {
   const click = vi
     .spyOn(HTMLAnchorElement.prototype, "click")
     .mockImplementation(function (this: HTMLAnchorElement) {
-      expect(this.download).toBe("异环游玩记录-2026-10-28.png");
+      expect(this.download).toBe("游玩记录-2026-10-28.png");
       expect(this.href).toBe(blobUrl);
       expect(this.isConnected).toBe(true);
     });

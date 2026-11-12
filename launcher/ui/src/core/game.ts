@@ -3,9 +3,8 @@ import { defaultGamescope } from "./gameMode";
 
 const DEFAULT_GAME_SETTINGS: GameSettings = {
   audio: { device: null, volume: 100 },
-  distribution: "cn",
-  installRoot: null,
-  globalInstallRoot: null,
+  distribution: null,
+  installRoots: {},
   preloadRoot: null,
   launchMode: "background",
   gameAccountId: null,
@@ -26,7 +25,7 @@ const DEFAULT_GAME_SETTINGS: GameSettings = {
   stableEnvironment: null,
 };
 
-/** 后端当前展示的游戏; 旧数据缺字段时按《异环》处理. */
+/** 后端当前展示的游戏; 旧数据缺字段时沿用默认游戏 id. */
 export function activeGame(settings: Settings | null | undefined): GameId {
   return settings?.activeGame ?? "nte";
 }

@@ -13,8 +13,7 @@ export const defaultGame = (
 ): GameSettings => ({
   audio: { device: null, volume: 100 },
   distribution: "cn",
-  installRoot: null,
-  globalInstallRoot: null,
+  installRoots: {},
   preloadRoot: null,
   launchMode: "background",
   gameAccountId: null,
@@ -68,6 +67,29 @@ export const settings: Settings = {
   showLauncherAfterGameExit: true,
   snapshotSuccessMinutes: 1,
 };
+export const capabilities: Bootstrap["capabilities"] = [
+  {
+    id: "oddity.account.game",
+    revision: 1,
+    state: "available",
+    code: null,
+    message: null,
+  },
+  {
+    id: "oddity.profile.player",
+    revision: 1,
+    state: "available",
+    code: null,
+    message: null,
+  },
+  {
+    id: "oddity.fixture.settings",
+    revision: 1,
+    state: "available",
+    code: null,
+    message: null,
+  },
+];
 export const bootstrap = (overrides: Partial<Bootstrap> = {}): Bootstrap => ({
   ok: true,
   error: null,
@@ -84,12 +106,30 @@ export const bootstrap = (overrides: Partial<Bootstrap> = {}): Bootstrap => ({
   gameExe: "/game/game.exe",
   gameExists: true,
   sdkPath: "/game/sdk.dll",
+  capabilities,
+  channels: [
+    {
+      id: "cn",
+      label: "国服",
+      default: true,
+      active: true,
+      installRootKey: "cn",
+    },
+    {
+      id: "global",
+      label: "国际服",
+      default: false,
+      active: false,
+      installRootKey: "global",
+    },
+  ],
   checks: [{ label: "Proton", ok: true, detail: "/proton" }],
   runtimeInstallations: [
     { distribution: "cn", installRoot: "/game", installed: true },
     { distribution: "global", installRoot: "/global-game", installed: false },
   ],
   settings: structuredClone(settings),
+  settingsSchemas: [],
   integrity: {
     state: "verified",
     source: "online",

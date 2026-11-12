@@ -1,0 +1,12 @@
+[package]
+name = "ui-registry-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Generate the host UI registry from launcher/packages/*/ui"
+
+[[bin]]
+name = "ui-registry-gen"
+path = "src/main.rs"
+
+[dependencies]

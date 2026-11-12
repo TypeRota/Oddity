@@ -29,7 +29,7 @@ done
 
 install -Dm644 "$root/ui/public/assets/app-icon.svg" "$icons/scalable/apps/oddity.svg"
 for size in 16 22 24 32 48 64 128 256 512; do
-  install -Dm644 "$root/crates/nte-service/icons/${size}x${size}.png" \
+  install -Dm644 "$root/host/icons/${size}x${size}.png" \
     "$icons/${size}x${size}/apps/oddity.png"
 done
 
@@ -48,7 +48,7 @@ if [[ -x "$recovery" ]]; then
     "$root/packaging/oddity-recovery.desktop" >"$tmp"
   install -Dm644 "$tmp" "$apps/oddity-recovery.desktop"
 else
-  echo "warning: build nte-recovery to enable emergency recovery" >&2
+  echo "warning: build oddity-recovery to enable emergency recovery" >&2
 fi
 
 if command -v update-desktop-database >/dev/null 2>&1; then

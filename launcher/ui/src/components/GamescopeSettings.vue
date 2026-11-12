@@ -37,13 +37,13 @@ function number(
     return;
   }
   options.value[field] = value;
-  queueSettingsSave(0);
+  queueSettingsSave("game", 0);
 }
 function select(field: "windowMode" | "scaling", value: string) {
   if (field === "windowMode")
     options.value.windowMode = value as GamescopeOptions["windowMode"];
   else options.value.scaling = value as GamescopeOptions["scaling"];
-  queueSettingsSave(0);
+  queueSettingsSave("game", 0);
 }
 </script>
 
@@ -65,7 +65,7 @@ function select(field: "windowMode" | "scaling", value: string) {
           v-model="options.enabled"
           :describedby="describedby"
           :disabled="!state.bootstrap || (!options.enabled && !available)"
-          @change="queueSettingsSave(0)"
+          @change="queueSettingsSave('game', 0)"
       /></template>
     </SettingRow>
     <div

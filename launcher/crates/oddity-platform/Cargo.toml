@@ -1,0 +1,24 @@
+[package]
+name = "oddity-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Platform primitives shared by the Oddity launcher and game packages"
+
+[dependencies]
+libc = "0.2"
+anyhow.workspace = true
+base64 = "0.23"
+serde.workspace = true
+libpulse-binding = "2.30"
+flate2.workspace = true
+md-5.workspace = true
+sha2.workspace = true
+tar = "0.4"
+ureq.workspace = true
+zbus = { version = "5.19", features = ["blocking-api"] }
+secret-service = { version = "5.2", features = ["rt-async-io-crypto-rust"] }
+hdiffpatch-rs = { git = "https://github.com/TwintailTeam/hdiffpatch-rs", rev = "d58f4553b7d45acccd0b8e3b57badc26b9b04b6e" }
+
+[dev-dependencies]
+tempfile = "3"

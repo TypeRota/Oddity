@@ -35,6 +35,12 @@ jobs:
           pnpm -v
           cd checkout/launcher/ui
           pnpm install --frozen-lockfile
+      - name: 检查契约与注册表生成物
+        run: |
+          export PATH="/opt/rust/bin:$HOME/.cargo/bin:$PATH"
+          cd checkout/launcher
+          cargo run --locked -p contract-gen -- --check
+          cargo run --locked -p ui-registry-gen -- --check
       - name: 格式检查
         run: |
           export PATH=/data/workspace/node24/bin:$PATH
@@ -45,6 +51,11 @@ jobs:
           export PATH=/data/workspace/node24/bin:$PATH
           cd checkout/launcher/ui
           pnpm run lint:css
+      - name: 包 UI 边界检查
+        run: |
+          export PATH=/data/workspace/node24/bin:$PATH
+          cd checkout/launcher/ui
+          node ../../scripts/check-ui-boundaries.mjs
       - name: 构建
         run: |
           export PATH=/data/workspace/node24/bin:$PATH

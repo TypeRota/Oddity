@@ -42,11 +42,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
   };
   cargoBuildFlags = [
     "-p"
-    "nte-service"
+    "oddity-backend"
     "-p"
-    "nte-cli"
+    "oddity-cli"
     "-p"
-    "nte-recovery"
+    "oddity-recovery"
   ];
   pnpmRoot = "launcher/ui";
   pnpmDeps = fetchPnpmDeps {
@@ -116,10 +116,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
       ln -s "$out/lib/oddity/resources/bin/$binary" "$out/bin/$binary"
     done
     for size in 16 22 24 32 48 64 128 256 512; do
-      install -Dm644 "launcher/crates/nte-service/icons/''${size}x''${size}.png" \
+      install -Dm644 "launcher/host/icons/''${size}x''${size}.png" \
         "$out/share/icons/hicolor/''${size}x''${size}/apps/oddity.png"
     done
-    cp -r launcher/crates/nte-service/icons "$out/lib/oddity/resources/icons"
+    cp -r launcher/host/icons "$out/lib/oddity/resources/icons"
     install -Dm644 launcher/packaging/oddity.desktop "$out/share/applications/oddity.desktop"
     install -Dm644 launcher/packaging/oddity-recovery.desktop "$out/share/applications/oddity-recovery.desktop"
     install -Dm644 LICENSE "$out/share/licenses/oddity/LICENSE"

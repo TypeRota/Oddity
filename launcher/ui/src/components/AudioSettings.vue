@@ -102,7 +102,7 @@ const redirected = computed(() =>
         label="游戏输出设备"
         :options="options"
         :disabled="!status || !!error"
-        @change="queueSettingsSave(0)"
+        @change="queueSettingsSave('game', 0)"
       />
     </SettingRow>
     <SettingRow
@@ -120,8 +120,8 @@ const redirected = computed(() =>
           min="0"
           max="150"
           step="1"
-          @input="queueSettingsSave()"
-          @change="queueSettingsSave(0)"
+          @input="queueSettingsSave('game')"
+          @change="queueSettingsSave('game', 0)"
         />
         <output for="set-audio-volume">{{ form.audio.volume }}%</output>
       </div>
@@ -131,7 +131,7 @@ const redirected = computed(() =>
         :disabled="form.audio.volume === 100"
         @click="
           form.audio.volume = 100;
-          queueSettingsSave(0);
+          queueSettingsSave('game', 0);
         "
         >恢复为 100%</BaseButton
       ></SettingRow

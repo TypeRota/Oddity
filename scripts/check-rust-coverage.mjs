@@ -26,7 +26,7 @@ function parseLcov(content) {
       if (sfPath.startsWith(rootNormalized)) {
         sfPath = sfPath.slice(rootNormalized.length).replace(/^\/+/, "");
       }
-      if (sfPath.startsWith("crates/")) {
+      if (sfPath.startsWith("crates/") || sfPath.startsWith("packages/")) {
         sfPath = "launcher/" + sfPath;
       }
       currentFile = sfPath;
@@ -125,11 +125,17 @@ function resolveBaseCommit() {
 
 function isProductionRustFile(filePath) {
   if (!filePath.endsWith(".rs")) return false;
-  if (!filePath.startsWith("launcher/crates/")) return false;
+  const inProductionRoots =
+    filePath.startsWith("launcher/crates/") ||
+    (filePath.startsWith("launcher/packages/") &&
+      filePath.includes("/backend/"));
+  if (!inProductionRoots) return false;
+  // 测试支撑代码 (临时目录/环境变量/重试助手) 只服务测试, 不计入产品覆盖率.
   if (
     filePath.includes("/tests/") ||
     filePath.endsWith("_tests.rs") ||
     filePath.endsWith("/tests.rs") ||
+    filePath.endsWith("/testing.rs") ||
     filePath.endsWith("/build.rs")
   ) {
     return false;
@@ -166,7 +172,7 @@ if (base) {
   let diffText = "";
   try {
     diffText = execSync(
-      `git diff -U0 "${base.commit}"...HEAD -- launcher/crates/`,
+      `git diff -U0 "${base.commit}"...HEAD -- launcher/crates/ launcher/packages/`,
       { cwd: root, encoding: "utf8" },
     );
   } catch (error) {
@@ -175,6 +181,7 @@ if (base) {
 
   const diffData = parseDiff(diffText);
   const fileResults = [];
+  const skippedFiles = [];
   let diffExecutableTotal = 0;
   let diffCoveredTotal = 0;
 
@@ -198,17 +205,23 @@ if (base) {
         }
       }
     } else {
+      // LLVM 只为含可插桩代码的文件生成 SF 记录. 文件缺席说明变更行里没有可执行代码,
+      // 典型是只做模块声明/重导出/类型定义的 lib.rs. 把这些行计入分母会让每新增一个
+      // 纯声明 crate 都被判 0%, 因此跳过并在报告里列出. 但缺席文件里若出现函数或宏
+      // 定义, 说明插桩异常, 仍按未覆盖处理.
       const sourceLines = readFileSync(join(root, filePath), "utf8").split(
         "\n",
       );
-      // 外部模块声明没有可执行代码, LLVM 不会为仅含声明的 lib.rs 生成记录.
-      const moduleDeclaration =
-        /^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:r#)?[A-Za-z_]\w*\s*;\s*(?:\/\/.*)?$/;
-      for (const line of changedLines) {
-        if (!moduleDeclaration.test(sourceLines[line - 1] ?? "")) {
-          executable += 1;
-          missed.push(line);
-        }
+      const definition =
+        /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+[A-Za-z_]\w*|^\s*impl\b|^\s*macro_rules!|^\s*#\[test\]/;
+      const hasDefinition = [...changedLines].some((line) =>
+        definition.test(sourceLines[line - 1] ?? ""),
+      );
+      if (hasDefinition) {
+        executable += changedLines.length;
+        missed.push(...changedLines);
+      } else {
+        skippedFiles.push(filePath);
       }
     }
 
@@ -243,6 +256,7 @@ if (base) {
     covered: diffCoveredTotal,
     pct: diffPct,
     files: fileResults,
+    skipped: skippedFiles,
   };
 }
 
@@ -280,6 +294,12 @@ if (diffSummary) {
     for (const f of diffSummary.files) {
       reportLines.push(
         `| \`${f.filePath}\` | ${f.executable} | ${f.covered} | ${f.pct.toFixed(2)}% | ${f.missed.length > 0 ? f.missed.join(", ") : "无"} |`,
+      );
+    }
+    if (diffSummary.skipped.length > 0) {
+      reportLines.push(
+        "",
+        `未计入增量覆盖率（无可执行代码）：${diffSummary.skipped.map((f) => `\`${f}\``).join(", ")}`,
       );
     }
   }

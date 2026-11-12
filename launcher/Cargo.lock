@@ -434,6 +434,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "contract-gen"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "oddity-contract",
+]
+
+[[package]]
 name = "core_detect"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1343,72 +1350,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nte-cli"
-version = "0.2.0-alpha.1"
-dependencies = [
- "anyhow",
- "nte-core",
- "serde_json",
- "zip",
-]
-
-[[package]]
-name = "nte-core"
-version = "0.2.0-alpha.1"
-dependencies = [
- "aes",
- "anyhow",
- "base64",
- "cbc",
- "cipher",
- "csv",
- "encoding_rs_io",
- "flate2",
- "hdiffpatch-rs",
- "libc",
- "libpulse-binding",
- "md-5",
- "quick-xml",
- "regex",
- "resvg",
- "secret-service",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tempfile",
- "ureq",
- "zbus",
- "zeroize",
- "zip",
-]
-
-[[package]]
-name = "nte-recovery"
-version = "0.2.0-alpha.1"
-dependencies = [
- "anyhow",
- "gtk",
- "nte-core",
-]
-
-[[package]]
-name = "nte-service"
-version = "0.2.0-alpha.1"
-dependencies = [
- "base64",
- "libc",
- "nte-core",
- "sdl3",
- "sdl3-sys",
- "serde",
- "serde_json",
- "tokio",
- "zeroize",
- "zip",
-]
-
-[[package]]
 name = "num"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1495,6 +1436,138 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "oddity-backend"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "oddity-contract",
+ "oddity-game-fixture",
+ "oddity-game-nte",
+ "oddity-host",
+ "oddity-platform",
+ "oddity-runtime",
+ "serde_json",
+]
+
+[[package]]
+name = "oddity-cli"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "anyhow",
+ "oddity-backend",
+ "oddity-host",
+ "oddity-runtime",
+]
+
+[[package]]
+name = "oddity-contract"
+version = "0.2.0-alpha.2"
+
+[[package]]
+name = "oddity-game-fixture"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "oddity-contract",
+ "oddity-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "oddity-game-nte"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "aes",
+ "anyhow",
+ "base64",
+ "cbc",
+ "cipher",
+ "flate2",
+ "libc",
+ "md-5",
+ "oddity-contract",
+ "oddity-platform",
+ "oddity-runtime",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "ureq",
+ "zeroize",
+ "zip",
+]
+
+[[package]]
+name = "oddity-host"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "anyhow",
+ "base64",
+ "csv",
+ "encoding_rs_io",
+ "flate2",
+ "libc",
+ "md-5",
+ "oddity-contract",
+ "oddity-platform",
+ "oddity-runtime",
+ "quick-xml",
+ "regex",
+ "resvg",
+ "sdl3",
+ "sdl3-sys",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "tokio",
+ "ureq",
+ "zbus",
+ "zip",
+]
+
+[[package]]
+name = "oddity-platform"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "anyhow",
+ "base64",
+ "flate2",
+ "hdiffpatch-rs",
+ "libc",
+ "libpulse-binding",
+ "md-5",
+ "secret-service",
+ "serde",
+ "sha2",
+ "tar",
+ "tempfile",
+ "ureq",
+ "zbus",
+]
+
+[[package]]
+name = "oddity-recovery"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "anyhow",
+ "gtk",
+ "oddity-host",
+]
+
+[[package]]
+name = "oddity-runtime"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "oddity-contract",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2497,6 +2570,10 @@ dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "ui-registry-gen"
+version = "0.2.0-alpha.2"
 
 [[package]]
 name = "unicode-bidi"

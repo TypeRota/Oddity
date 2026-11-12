@@ -5,10 +5,10 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 async function addAccount(page: Page, phone: string, first = false) {
-  await settingsCategory(page, "account");
+  await settingsCategory(page, "nte-account");
   if (first) await page.locator("#attendance-action").click();
   else {
-    await settingsCategory(page, "account");
+    await settingsCategory(page, "nte-account");
     await page.locator("#attendance-manage").click();
     await page.getByRole("button", { name: "添加账号", exact: true }).click();
   }
@@ -177,7 +177,7 @@ test("胶囊开合、账号切换、双向无滚动和移除同步", async ({ pa
   await page.locator("#home-title").click();
   await expect(panel).toHaveCount(0);
   await page.locator('[data-page="settings"]').click();
-  await settingsCategory(page, "account");
+  await settingsCategory(page, "nte-account");
   await page.locator("#attendance-manage").click();
   await page.getByRole("button", { name: "移除", exact: true }).first().click();
   await page.getByRole("button", { name: "确认移除", exact: true }).click();

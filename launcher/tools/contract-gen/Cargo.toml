@@ -1,0 +1,13 @@
+[package]
+name = "contract-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Generate UI command tables and the contract catalog from oddity-contract"
+
+[[bin]]
+name = "contract-gen"
+path = "src/main.rs"
+
+[dependencies]
+oddity-contract = { path = "../../crates/oddity-contract" }

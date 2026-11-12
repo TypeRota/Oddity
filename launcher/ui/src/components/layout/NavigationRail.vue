@@ -2,21 +2,18 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { motion } from "motion-v";
 import { state, showPage } from "../../core/controller";
+import { navigationItems } from "../../host/pages";
+import { factsFrom } from "../../host/facts";
 import { navigationScrubbing } from "../../composables/navigationGesture";
 import { useScrubNavigation } from "../../composables/useScrubNavigation";
 
-const items = [
-  { page: "home", label: "启动", icon: "play" },
-  { page: "update", label: "更新", icon: "download-simple" },
-  { page: "game-mode", label: "游戏模式", icon: "game-controller" },
-  { page: "bulletin", label: "公告", icon: "newspaper-clipping" },
-  { page: "records", label: "记录", icon: "clock" },
-  { page: "settings", label: "设置", icon: "gear-six" },
-] as const;
+// 导航项随当前游戏变化: 不可见的页面不进入主导航.
+const facts = computed(() => factsFrom(state.bootstrap));
+const items = computed(() => navigationItems(facts.value));
 const itemWidth = 40;
 const itemGap = 8;
 const activeIndex = computed(() =>
-  items.findIndex((item) => item.page === state.page),
+  items.value.findIndex((item) => item.id === state.page),
 );
 const hoveredPage = ref<string | null>(null);
 const pressedPage = ref<string | null>(null);
@@ -47,21 +44,22 @@ function key(event: KeyboardEvent) {
   const current = buttons().findIndex(
     (button) => button === document.activeElement,
   );
+  const list = items.value;
   const index =
     event.key === "ArrowRight"
-      ? (current + 1) % items.length
+      ? (current + 1) % list.length
       : event.key === "ArrowLeft"
-        ? (current - 1 + items.length) % items.length
+        ? (current - 1 + list.length) % list.length
         : event.key === "Home"
           ? 0
           : event.key === "End"
-            ? items.length - 1
+            ? list.length - 1
             : -1;
   if (index < 0) return;
   event.preventDefault();
   cancel();
   navigationScrubbing.value = true;
-  showPage(items[index].page);
+  showPage(list[index].id);
   void nextTick(() => {
     navigationScrubbing.value = false;
     buttons()[index]?.focus({ preventScroll: true });
@@ -112,38 +110,38 @@ onBeforeUnmount(() => {
       />
       <motion.button
         v-for="item in items"
-        :key="item.page"
-        v-memo="[state.page === item.page, navigationScrubbing]"
+        :key="item.id"
+        v-memo="[state.page === item.id, navigationScrubbing]"
         type="button"
         :while-hover="{ y: -2 }"
         :while-press="{ scale: 0.88 }"
         :animate="{
-          scale: navigationScrubbing && state.page === item.page ? 1.09 : 1,
+          scale: navigationScrubbing && state.page === item.id ? 1.09 : 1,
         }"
         :transition="{ type: 'spring', stiffness: 460, damping: 25 }"
         class="rail-item"
-        :data-page="item.page"
+        :data-page="item.id"
         :aria-label="item.label"
         :title="navigationScrubbing ? undefined : item.label"
-        :class="{ 'is-active': state.page === item.page }"
-        :aria-current="state.page === item.page ? 'page' : undefined"
-        @click="click($event, item.page)"
+        :class="{ 'is-active': state.page === item.id }"
+        :aria-current="state.page === item.id ? 'page' : undefined"
+        @click="click($event, item.id)"
         @pointerenter="
           (event) => {
-            if (event.pointerType === 'mouse') hoveredPage = item.page;
+            if (event.pointerType === 'mouse') hoveredPage = item.id;
           }
         "
         @pointerleave="
           hoveredPage = null;
           pressedPage = null;
         "
-        @pointerdown="pressedPage = item.page"
+        @pointerdown="pressedPage = item.id"
         @pointerup="pressedPage = null"
         @pointercancel="pressedPage = null"
         @keydown="
           (event) => {
             if (event.key === 'Enter' || event.key === ' ')
-              pressedPage = item.page;
+              pressedPage = item.id;
           }
         "
         @keyup="pressedPage = null"

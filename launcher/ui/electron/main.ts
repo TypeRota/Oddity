@@ -15,18 +15,16 @@ import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Backend } from "./backend";
 import { commands } from "./commands";
+import { isLaunchRequest, secondInstanceArgs } from "./launch-args";
 import type { DialogOptions } from "../src/core/desktop";
-import type { Bootstrap, LauncherBackgroundMedia } from "../src/types/launcher";
+import type {
+  Bootstrap,
+  GameSettings,
+  LauncherBackgroundMedia,
+  SettingsSection,
+} from "../src/types/launcher";
 
 const args = process.argv.slice(app.isPackaged ? 1 : 2);
-// 这些参数只能配合 --launch 使用; 只要出现就交给后台校验组合是否合法.
-// --launch 只有独立形式有效, 其他参数也接受 --name=value.
-const launchOptions = ["--game", "--region", "--launch-mode", "--environment"];
-const isLaunchRequest = (argv: string[]) =>
-  argv.includes("--launch") ||
-  argv.some((arg) =>
-    launchOptions.some((name) => arg === name || arg.startsWith(`${name}=`)),
-  );
 const compatible = args.includes("--recovery-compatible");
 const hiddenLaunch = isLaunchRequest(args);
 const root = resolve(__dirname, "..");
@@ -84,6 +82,22 @@ let mediaRevision = 0;
 const mediaByRevision = new Map<number, LauncherBackgroundMedia>();
 const knownCommands = new Set<string>(Object.keys(commands));
 
+/// 按 owner 合并设置视图, 保持主进程缓存的设置与界面一致.
+function applySettingsSection(section: SettingsSection) {
+  if (!settings) return;
+  if (section.owner === "host") {
+    Object.assign(settings, section.fields);
+    return;
+  }
+  const prefix = "game:";
+  if (!section.owner.startsWith(prefix)) return;
+  const game = section.owner.slice(
+    prefix.length,
+  ) as keyof typeof settings.games;
+  if (!game) return;
+  settings.games[game] = section.fields as unknown as GameSettings;
+}
+
 /// 界面请求带上当前游戏, 后台据此校验请求与当前安装一致.
 function backendCall(command: string, args?: unknown) {
   return backend.call(command, args, settings?.activeGame ?? "nte");
@@ -131,7 +145,7 @@ async function showMain() {
       backgroundColor: compatible ? "#101820" : "#00000000",
       icon: join(
         resourceRoot,
-        bundled ? "icons/256x256.png" : "crates/nte-service/icons/256x256.png",
+        bundled ? "icons/256x256.png" : "host/icons/256x256.png",
       ),
       webPreferences: {
         preload: join(__dirname, "preload.cjs"),
@@ -347,9 +361,10 @@ async function start() {
       return null;
     }
     const result = await backendCall(command, input);
+    if (command === "update_settings_section")
+      applySettingsSection(result as SettingsSection);
     if (
       command === "bootstrap" ||
-      command === "save_settings" ||
       command === "runtime_setup_environment" ||
       command === "environment_create" ||
       command === "environment_action"
@@ -438,7 +453,7 @@ async function start() {
   });
   const icon = join(
     resourceRoot,
-    bundled ? "icons/tray-64.png" : "crates/nte-service/icons/tray-64.png",
+    bundled ? "icons/tray-64.png" : "host/icons/tray-64.png",
   );
   tray = new Tray(icon);
   tray.setToolTip("Oddity");
@@ -478,35 +493,42 @@ app.on("before-quit", () => {
   backend?.close();
   tray?.destroy();
 });
-if (!app.requestSingleInstanceLock()) app.quit();
+if (!app.requestSingleInstanceLock({ argv: args })) app.quit();
 else {
   const ready = app.whenReady().then(start);
-  app.on("second-instance", (_event, argv) => {
-    const forwarded = argv.slice(app.isPackaged ? 1 : 2);
-    if (forwarded.includes("--xwayland") && process.env.WAYLAND_DISPLAY) {
-      dialog.showErrorBox(
-        "无法切换显示模式",
-        "请先从托盘完全退出 Oddity, 再选择 XWayland 模式.",
+  app.on(
+    "second-instance",
+    (_event, argv, _workingDirectory, additionalData) => {
+      const forwarded = secondInstanceArgs(
+        additionalData,
+        argv,
+        app.isPackaged,
       );
-      return;
-    }
-    void ready
-      .then(() =>
-        isLaunchRequest(forwarded)
-          ? backendCall("external_launch", {
-              argv: forwarded,
-              cold: false,
-            }).catch((error) => {
-              // 转发请求的参数错误不能带走已经运行的主实例.
-              dialog.showErrorBox(
-                "外部启动参数错误",
-                error instanceof Error ? error.message : String(error),
-              );
-              return showMain();
-            })
-          : showMain(),
-      )
-      .catch(fatal);
-  });
+      if (forwarded.includes("--xwayland") && process.env.WAYLAND_DISPLAY) {
+        dialog.showErrorBox(
+          "无法切换显示模式",
+          "请先从托盘完全退出 Oddity, 再选择 XWayland 模式.",
+        );
+        return;
+      }
+      void ready
+        .then(() =>
+          isLaunchRequest(forwarded)
+            ? backendCall("external_launch", {
+                argv: forwarded,
+                cold: false,
+              }).catch((error) => {
+                // 转发失败不能带走已经运行的主实例, 同时打印错误.
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                console.error(`外部启动失败: ${message}`);
+                dialog.showErrorBox("外部启动失败", message);
+                return showMain();
+              })
+            : showMain(),
+        )
+        .catch(fatal);
+    },
+  );
   void ready.catch(fatal);
 }

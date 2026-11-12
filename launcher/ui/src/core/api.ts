@@ -1,14 +1,15 @@
 import { defaultGamepadOptions } from "../types/gamepad";
 import { defaultGamescope } from "./gameMode";
-import { defaultAttendanceTasks } from "./attendanceTasks";
 import { distributions } from "./distribution";
+import { factsFrom } from "../host/facts";
+import { gameInstallRootHint } from "../host/pages";
+import { previewHandler, type HostPreviewCommand } from "../host/preview";
 import { APP_VERSION } from "./version";
 import { nativeInvoke, isDesktop, listen } from "./desktop";
 import { applyDemoPreview, isDemo } from "./demo";
 import type {
   Bootstrap,
   CheckResult,
-  Settings,
   GameStatus,
   LaunchProgress,
   LaunchStage,
@@ -19,23 +20,24 @@ import type {
   ResourceTask,
   Commands,
   CommandArgs,
+  PerformanceOverview,
+  PerformanceRecord,
   PreviewPaths,
-  BulletinFeed,
   PlaytimeHistory,
   PlaytimeSession,
-  AttendanceStatus,
-  AttendancePreferences,
   SnapshotComparison,
   SnapshotDiffRow,
   SnapshotOverview,
   SnapshotReference,
   SnapshotSummary,
   IntegrityStatus,
+  GameId,
   GameSettings,
   RuntimeSetupPlan,
   RuntimeSetupStatus,
 } from "../types/launcher";
 import { activeGame, gameSettings } from "./game";
+import type { UiCommand } from "./generated/command-ids";
 export { isDesktop };
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
@@ -96,13 +98,23 @@ const joinPath = (...parts: string[]) =>
     )
     .join("/");
 
+const previewFacts = factsFrom(null);
+
+// 默认安装路径取游戏包声明; 未声明的游戏退回通用目录, 宿主不猜游戏名.
+function previewInstallRoot(distribution: "cn" | "global", home = "~"): string {
+  const hint = gameInstallRootHint({ ...previewFacts, distribution });
+  if (!hint) return joinPath(home, "Games");
+  return home === "~" || !hint.startsWith("~")
+    ? hint
+    : joinPath(home, hint.replace(/^~\/?/, ""));
+}
+
 function previewPaths() {
   const overrides = previewOverrides();
   const home = overrides.home || "~";
   const dataHome = overrides.dataHome || joinPath(home, ".local/share");
   const steamRoot = overrides.steamRoot || joinPath(dataHome, "Steam");
-  const installRoot =
-    overrides.installRoot || joinPath(home, "Games/Neverness To Everness");
+  const installRoot = overrides.installRoot || previewInstallRoot("cn", home);
   const protonName = overrides.protonName || "GE-Proton11-5-x86_64";
   return {
     dataHome,
@@ -145,6 +157,24 @@ function previewOs() {
 
 const preview = previewPaths();
 
+// 浏览器预览固定为异环国服, 能力事实与后端返回同形.
+const previewCapabilities: Bootstrap["capabilities"] = [
+  {
+    id: "oddity.account.game",
+    revision: 1,
+    state: "available",
+    code: null,
+    message: null,
+  },
+  {
+    id: "oddity.profile.player",
+    revision: 1,
+    state: "available",
+    code: null,
+    message: null,
+  },
+];
+
 const mock: Bootstrap = {
   ok: false,
   error: "请先在设置中创建并选择 Proton 运行环境",
@@ -161,6 +191,7 @@ const mock: Bootstrap = {
   gameExe: preview.gameExe,
   gameExists: true,
   sdkPath: preview.sdkPath,
+  capabilities: previewCapabilities,
   checks: [
     { label: "启动器配置", ok: true, detail: preview.launcherRoot },
     { label: "游戏可执行文件", ok: true, detail: preview.gameExe },
@@ -173,11 +204,27 @@ const mock: Bootstrap = {
       detail: joinPath(preview.launcherRoot, distributions.cn.clientExe),
     },
   ],
+  channels: [
+    {
+      id: "cn",
+      label: "国服",
+      default: true,
+      active: true,
+      installRootKey: "cn",
+    },
+    {
+      id: "global",
+      label: "国际服",
+      default: false,
+      active: false,
+      installRootKey: "global",
+    },
+  ],
   runtimeInstallations: [
     { distribution: "cn", installRoot: preview.installRoot, installed: true },
     {
       distribution: "global",
-      installRoot: "~/Games/Neverness To Everness Global",
+      installRoot: previewInstallRoot("global"),
       installed: false,
     },
   ],
@@ -187,8 +234,7 @@ const mock: Bootstrap = {
       nte: {
         audio: { device: null, volume: 100 },
         distribution: "cn",
-        installRoot: null,
-        globalInstallRoot: null,
+        installRoots: {},
         preloadRoot: null,
         launchMode: "background",
         gameAccountId: null,
@@ -310,8 +356,8 @@ function previewSnapshotComparison(
       key: "launcher.version",
       section: "启动器",
       label: "Oddity 版本",
-      baseline: "0.2.0-alpha.1",
-      current: "0.2.0-alpha.1",
+      baseline: "0.2.0-alpha.2",
+      current: "0.2.0-alpha.2",
       status: "same",
     },
     {
@@ -395,16 +441,17 @@ function previewSnapshotComparison(
 
 function previewSnapshotSaveReference(label: string | null): SnapshotReference {
   const now = Date.now();
-  previewSnapshotReference = {
+  const reference: SnapshotReference = {
     label: label?.trim() || "参考快照",
     savedAt: now,
     capturedAt: now,
     environment: previewSnapshotEnvironment(),
     proton: previewSnapshotProton(),
-    distribution: gameSettings(mock.settings).distribution,
+    distribution: gameSettings(mock.settings).distribution ?? "cn",
     mode: gameSettings(mock.settings).launchMode,
   };
-  return previewSnapshotReference;
+  previewSnapshotReference = reference;
+  return reference;
 }
 
 function updateGameSettings(patch: Partial<GameSettings>) {
@@ -412,17 +459,32 @@ function updateGameSettings(patch: Partial<GameSettings>) {
   mock.settings.games[game] = { ...gameSettings(mock.settings), ...patch };
 }
 
+/** 演示数据按安装根键取目录; 未知键回落到当前安装. */
+function demoInstallRoot(
+  game: GameSettings,
+  distribution: string | null = game.distribution,
+): string | null {
+  const key =
+    distribution === "global" ? "global" : distribution === "cn" ? "cn" : null;
+  return key ? (game.installRoots?.[key] ?? null) : null;
+}
+
 function applyPreviewDistribution() {
-  if (gameSettings(mock.settings).distribution === "global")
+  const state =
+    gameSettings(mock.settings).distribution === "cn"
+      ? "available"
+      : "unsupported";
+  mock.capabilities = previewCapabilities.map((fact) => ({ ...fact, state }));
+  const game = gameSettings(mock.settings);
+  if (game.distribution === "global")
     mock.installRoot =
-      gameSettings(mock.settings).globalInstallRoot ||
-      "~/Games/Neverness To Everness Global";
-  else
-    mock.installRoot =
-      gameSettings(mock.settings).installRoot || preview.installRoot;
+      demoInstallRoot(game, "global") || previewInstallRoot("global");
+  else mock.installRoot = demoInstallRoot(game, "cn") || preview.installRoot;
   mock.launcherRoot = joinPath(
     mock.installRoot,
-    distributions[gameSettings(mock.settings).distribution].launcherDir,
+    game.distribution === "global"
+      ? distributions.global.launcherDir
+      : distributions.cn.launcherDir,
   );
   mock.sdkPath = joinPath(mock.launcherRoot, "WPGameClientSDK_64.dll");
   mock.gameExe = joinPath(
@@ -438,11 +500,13 @@ function applyPreviewDistribution() {
     ) {
       item.detail = joinPath(
         mock.launcherRoot,
-        distributions[gameSettings(mock.settings).distribution].clientExe,
+        gameSettings(mock.settings).distribution === "global"
+          ? distributions.global.clientExe
+          : distributions.cn.clientExe,
       );
     }
   }
-  mockCheck.distribution = gameSettings(mock.settings).distribution;
+  mockCheck.distribution = gameSettings(mock.settings).distribution ?? "cn";
   mockCheck.installRoot = mock.installRoot;
 }
 
@@ -482,39 +546,6 @@ const mockCheck: CheckResult = {
   durationMs: 342,
   missingPreview: [],
   changedPreview: [],
-};
-
-const mockBulletins: BulletinFeed = {
-  items: [
-    {
-      kind: "bilibili",
-      title: "《异环》官方动态示例",
-      summary: "浏览器预览使用本地示例数据，原生启动器会自动读取官方动态。",
-      url: "https://space.bilibili.com/3546636978489848/dynamic",
-      imageUrl: null,
-      publishedAt: "刚刚",
-      source: "B站官方动态",
-    },
-    {
-      kind: "preview",
-      title: "《异环》版本前瞻特别节目 | 情报回顾",
-      summary: "版本前瞻回顾",
-      url: distributions.cn.official,
-      imageUrl: new URL("assets/hero-keyart.jpg", document.baseURI).href,
-      publishedAt: "",
-      source: "版本前瞻",
-    },
-    {
-      kind: "maintenance",
-      title: "《异环》不停服更新公告",
-      summary: "服务器维护时间以官方公告为准。",
-      url: "https://yh.wanmei.com/news/gamebroad/index.html",
-      imageUrl: null,
-      publishedAt: "最新",
-      source: "官方公告",
-    },
-  ],
-  errors: [],
 };
 
 // 浏览器预览模拟会话, 原生窗口的状态由 Rust 维护。
@@ -621,14 +652,124 @@ function previewHistory(): PlaytimeHistory {
   };
 }
 
-const previewAttendance: AttendanceStatus = {
-  accounts: [],
-  preferences: {
-    trigger: "off",
-    time: "08:00",
-    tasks: { ...defaultAttendanceTasks },
-  },
+// 浏览器预览固定的三条记录, 开关、固定和删除只改内存里的这份数据.
+function previewPerformanceRecord(
+  id: string,
+  startedAt: number,
+  environment: { name: string; proton: string },
+  metrics: { fps: number; low1: number; p99: number; vramMeanMib: number },
+  pinned: boolean,
+): PerformanceRecord {
+  const durationSeconds = 1920;
+  return {
+    id,
+    startedAt,
+    durationSeconds,
+    frames: Math.round(metrics.fps * durationSeconds),
+    metrics: {
+      fps: metrics.fps,
+      low1: metrics.low1,
+      p95: metrics.p99 - 1.4,
+      p99: metrics.p99,
+      stallPercent: 0.8,
+      vramMeanMib: metrics.vramMeanMib,
+      rssMeanMib: 5240,
+      gpuLoadMean: 73,
+      powerMeanW: 179,
+    },
+    facts: {
+      gameExecutable: "HTGame",
+      gameVersion: "1.4.17",
+      launchMode: "background",
+      displayBackend: "Wayland",
+      gameMode: {
+        performance: false,
+        inhibit: false,
+        notifications: false,
+        overlay: false,
+        gamescope: { ...defaultGamescope },
+      },
+      vkd3dConfig: null,
+      protonIdentity: environment.proton,
+      kernel: "6.12.9",
+      cpu: "AMD Ryzen 7 7800X3D 8-Core Processor",
+      gpu: {
+        uuid: "GPU-demo",
+        name: "NVIDIA GeForce RTX 4070",
+        driver: "565.77",
+      },
+    },
+    environment: {
+      id: `${id}-environment`,
+      name: environment.name,
+      proton: environment.proton,
+    },
+    warnings: [],
+    pinned,
+  };
+}
+
+const previewPerformance: PerformanceOverview = {
+  recordingEnabled: true,
+  recording: null,
+  records: [
+    previewPerformanceRecord(
+      "preview-record-3",
+      Date.now() - 40 * 60_000,
+      { name: "GE-Proton11-5", proton: "GE-Proton11-5" },
+      { fps: 61.8, low1: 48.3, p99: 21.9, vramMeanMib: 6380 },
+      true,
+    ),
+    previewPerformanceRecord(
+      "preview-record-2",
+      Date.now() - 26 * 60 * 60_000,
+      { name: "Proton Experimental", proton: "Proton-Experimental" },
+      { fps: 59.2, low1: 43.6, p99: 24.2, vramMeanMib: 6420 },
+      false,
+    ),
+    previewPerformanceRecord(
+      "preview-record-1",
+      Date.now() - 50 * 60 * 60_000,
+      { name: "GE-Proton11-5", proton: "GE-Proton11-5" },
+      { fps: 60.4, low1: 46.1, p99: 23.5, vramMeanMib: 6410 },
+      false,
+    ),
+  ],
 };
+
+// 浏览器演示用的示意图表, 与 Rust 侧的真实报告渲染不共享实现.
+function previewPerformanceReport(a: string, b: string): string {
+  const base = previewPerformance.records.find((record) => record.id === a);
+  const target = previewPerformance.records.find((record) => record.id === b);
+  if (!base || !target) return "";
+  const scale = (value: number) => Math.round(value * 5);
+  const rows = [
+    { label: "平均 FPS", left: base.metrics.fps, right: target.metrics.fps },
+    { label: "1% Low", left: base.metrics.low1, right: target.metrics.low1 },
+  ];
+  const bars = rows
+    .flatMap((row, index) => {
+      const top = 180 + index * 140;
+      return [
+        `<text x="64" y="${top}" font-size="24" fill="#edf2f8">${row.label}</text>`,
+        `<rect x="64" y="${top + 20}" width="${scale(row.left)}" height="34" rx="8" fill="#6b7a8c" />`,
+        `<text x="${72 + scale(row.left)}" y="${top + 44}" font-size="20" fill="#aebccc">${row.left.toFixed(1)}</text>`,
+        `<rect x="64" y="${top + 62}" width="${scale(row.right)}" height="34" rx="8" fill="#d5e0ec" />`,
+        `<text x="${72 + scale(row.right)}" y="${top + 86}" font-size="20" fill="#aebccc">${row.right.toFixed(1)}</text>`,
+      ];
+    })
+    .join("");
+  return [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="960" height="480" viewBox="0 0 960 480">',
+    '<rect width="960" height="480" fill="#172434" />',
+    '<text x="64" y="72" font-size="30" fill="#edf2f8">性能记录对比</text>',
+    `<text x="64" y="112" font-size="20" fill="#aebccc">A ${base.environment.name} · B ${target.environment.name}</text>`,
+    '<text x="64" y="150" font-size="18" fill="#aebccc">灰色为 A, 浅色为 B</text>',
+    bars,
+    "</svg>",
+  ].join("");
+}
+
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function listenGameState(handler: (status: GameStatus) => void) {
@@ -817,12 +958,15 @@ let previewPreloadResourceBytes: Record<string, number> = {};
 
 function previewCatalog(): ResourceCatalog {
   return clone({
-    distribution: gameSettings(mock.settings).distribution,
+    distribution: gameSettings(mock.settings).distribution ?? "cn",
     installRoot:
-      gameSettings(mock.settings).distribution === "global"
-        ? gameSettings(mock.settings).globalInstallRoot ||
-          "~/Games/Neverness To Everness Global"
-        : gameSettings(mock.settings).installRoot || preview.installRoot,
+      demoInstallRoot(
+        gameSettings(mock.settings),
+        gameSettings(mock.settings).distribution,
+      ) ||
+      (gameSettings(mock.settings).distribution === "global"
+        ? previewInstallRoot("global")
+        : preview.installRoot),
     version: "1.4.16",
     preloadVersion: "1.5.0",
     preloadAvailable: true,
@@ -887,9 +1031,19 @@ let previewSetupCreate = false;
 let previewSystemUmu = false;
 
 async function previewInvoke(
-  command: keyof Commands,
-  args?: CommandArgs[keyof CommandArgs],
-): Promise<Commands[keyof Commands]> {
+  command: UiCommand,
+  args?: CommandArgs[UiCommand],
+): Promise<Commands[UiCommand]> {
+  // 包声明自己负责的命令, 先按当前游戏命名空间查包预览; 其余命令走宿主默认演示.
+  const handler = previewHandler(command, activeGame(mock.settings));
+  if (handler) return handler(args);
+  return hostPreviewInvoke(command as HostPreviewCommand, args);
+}
+
+async function hostPreviewInvoke(
+  command: HostPreviewCommand,
+  args?: CommandArgs[UiCommand],
+): Promise<Commands[UiCommand]> {
   switch (command) {
     case "runtime_setup_info":
       return {
@@ -976,7 +1130,7 @@ async function previewInvoke(
             : "默认运行环境",
           protonPath: previewSetupProton,
           sourceId: null,
-          distribution: gameSettings(mock.settings).distribution,
+          distribution: gameSettings(mock.settings).distribution ?? "cn",
         });
       }
       const created = mock.settings.runtimeEnvironments.at(-1);
@@ -1001,155 +1155,6 @@ async function previewInvoke(
       throw new Error("游戏账号登录需要在桌面启动器中操作.");
     case "game_account_remove":
       return null;
-    case "attendance_status":
-      return clone(previewAttendance);
-    case "attendance_refresh_game_records":
-      previewAttendance.accounts.forEach((account, index) => {
-        account.gameRecord = {
-          roleId: String(100000001 + index),
-          roleName: index ? `预览角色 ${index + 1}` : "海特洛调查员",
-          serverName: "预览服务器",
-          stamina: index ? 240 : 168,
-          staminaMax: 240,
-          cityStamina: index ? 180 : 420,
-          cityStaminaMax: 700,
-          activity: index ? 100 : 60,
-          weeklyRemaining: index ? 0 : 2,
-          updatedAt: Math.floor(Date.now() / 1000),
-        };
-        account.gameRecordError = null;
-      });
-      return clone(previewAttendance);
-    case "attendance_keyring_check":
-      return undefined;
-    case "attendance_send_code": {
-      const { phone } = args as CommandArgs["attendance_send_code"];
-      if (!/^[0-9]{11}$/.test(phone)) throw new Error("请输入有效的手机号码");
-      return "preview-device-" + phone;
-    }
-    case "attendance_login_sms": {
-      const { phone, code, deviceId } =
-        args as CommandArgs["attendance_login_sms"];
-      if (!/^[0-9]{11}$/.test(phone)) throw new Error("请输入有效的手机号码");
-      if (!/^[0-9]{4,8}$/.test(code))
-        throw new Error("请输入 4-8 位短信验证码");
-      if (deviceId !== "preview-device-" + phone)
-        throw new Error("请先为当前手机号获取验证码.");
-      return previewInvoke("attendance_login", {
-        phone,
-        password: "preview",
-        rememberPassword: false,
-      });
-    }
-    case "attendance_login": {
-      const login = args as CommandArgs["attendance_login"];
-      if (!/^[0-9]{11}$/.test(login.phone) || !login.password)
-        throw new Error("请输入手机号码和密码");
-      let hash = 2166136261;
-      for (const char of login.phone)
-        hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
-      const account = {
-        id: (hash >>> 0).toString(16),
-        maskedPhone: login.phone.slice(0, 3) + "****" + login.phone.slice(7),
-        rememberPassword: login.rememberPassword,
-        signedToday: false,
-        failedToday: false,
-        lastReport: null,
-        attention: null,
-      };
-      const index = previewAttendance.accounts.findIndex(
-        (item) => item.id === account.id,
-      );
-      if (index < 0) previewAttendance.accounts.push(account);
-      else previewAttendance.accounts[index] = account;
-      return clone(previewAttendance);
-    }
-    case "attendance_configure": {
-      const preferences = (args as { preferences: AttendancePreferences })
-        .preferences;
-      if (preferences.trigger !== "off" && !previewAttendance.accounts.length)
-        throw new Error("请先登录塔吉多账号");
-      previewAttendance.preferences = clone(preferences);
-      return clone(previewAttendance);
-    }
-    case "attendance_run":
-      if (!previewAttendance.accounts.length)
-        throw new Error("请先登录塔吉多账号");
-      if (!Object.values(previewAttendance.preferences.tasks).some(Boolean))
-        return clone(previewAttendance);
-      for (const account of previewAttendance.accounts) {
-        if (["auth", "verification"].includes(account.attention?.kind ?? ""))
-          continue;
-        account.signedToday = true;
-        account.failedToday = false;
-        account.lastReport = {
-          at: Math.floor(Date.now() / 1000),
-          ok: true,
-          steps: [
-            {
-              label: "社区签到",
-              ok: true,
-              message: "模拟签到完成, 未发送真实请求",
-              kind: null,
-            },
-            ...[
-              "角色 预览角色",
-              "BBS 金币签到",
-              "浏览帖子",
-              "点赞帖子",
-              "分享帖子",
-            ].map((label) => ({
-              label,
-              ok: true,
-              message: "模拟任务完成, 未发送真实请求",
-              kind: null,
-              optional: label !== "角色 预览角色",
-            })),
-            {
-              label: "今日金币",
-              ok: true,
-              message: "模拟今日金币 110/150, 未发送真实请求",
-              kind: null,
-              optional: true,
-            },
-            {
-              label: "云异环时长",
-              ok: true,
-              message: "模拟本次赠送 15 分钟, 剩余 120 分钟, 未发送真实请求",
-              kind: null,
-              optional: true,
-            },
-          ].filter((step) => {
-            const tasks = previewAttendance.preferences.tasks;
-            if (step.label === "社区签到" || step.label === "BBS 金币签到")
-              return tasks.communitySign;
-            if (step.label.startsWith("角色 ")) return tasks.roleSign;
-            if (step.label === "浏览帖子") return tasks.browsePosts;
-            if (step.label === "点赞帖子") return tasks.likePosts;
-            if (step.label === "分享帖子") return tasks.sharePosts;
-            if (step.label === "云异环时长") return tasks.cloudDuration;
-            return (
-              tasks.communitySign ||
-              tasks.browsePosts ||
-              tasks.likePosts ||
-              tasks.sharePosts
-            );
-          }),
-        };
-      }
-      return clone(previewAttendance);
-    case "attendance_logout":
-      previewAttendance.accounts = previewAttendance.accounts.filter(
-        (account) =>
-          account.id !== (args as CommandArgs["attendance_logout"]).accountId,
-      );
-      if (!previewAttendance.accounts.length)
-        previewAttendance.preferences = {
-          trigger: "off",
-          time: "08:00",
-          tasks: { ...defaultAttendanceTasks },
-        };
-      return clone(previewAttendance);
     case "launcher_background":
       return { video: null, image: null };
     case "bootstrap":
@@ -1222,45 +1227,75 @@ async function previewInvoke(
     case "check_update":
       await new Promise((resolve) => setTimeout(resolve, 620));
       return clone(mockCheck);
-    case "fetch_bulletins":
-      await new Promise((resolve) => setTimeout(resolve, 260));
-      if ((args as CommandArgs["fetch_bulletins"]).distribution === "global") {
-        return {
-          items: [
-            {
-              kind: "preview",
-              title: "国际服官方新闻",
-              summary: "浏览器预览数据",
-              url: distributions.global.official,
-              imageUrl: null,
-              publishedAt: "",
-              source: "国际服官网",
-            },
-          ],
-          errors: [],
-        };
+    case "update_settings_section": {
+      const { owner, patch } = args as CommandArgs["update_settings_section"];
+      const fields = { ...patch };
+      if (owner === "host") {
+        const allowed = [
+          "activeGame",
+          "runtimeEnvironments",
+          "gamepad",
+          "language",
+          "reduceMotion",
+          "stackBulletins",
+          "theme",
+          "heroMedia",
+          "pauseHeroOnBlur",
+          "adaptiveTheme",
+          "relativeHeatmap",
+          "minimizeToTrayOnClose",
+          "showLauncherAfterGameExit",
+          "snapshotSuccessMinutes",
+        ];
+        for (const key of Object.keys(fields)) {
+          if (!allowed.includes(key))
+            throw new Error(`设置 owner ${owner} 不能修改字段: ${key}`);
+        }
+        Object.assign(mock.settings, fields);
+        const view: Record<string, unknown> = { ...mock.settings };
+        delete view.games;
+        return clone({ owner, fields: view });
       }
-      return clone(mockBulletins);
-    case "save_settings": {
-      const settings = (args as { settings: Settings }).settings;
-      mock.settings = { ...mock.settings, ...settings };
+      if (!owner.startsWith("game:")) {
+        throw new Error(`无法识别的设置 owner: ${owner}`);
+      }
+      const gameId = owner.slice("game:".length) as GameId;
+      const game = mock.settings.games[gameId];
+      if (!game) throw new Error(`设置 owner 不存在: ${owner}`);
+      const allowed = [
+        "audio",
+        "distribution",
+        "installRoots",
+        "preloadRoot",
+        "launchMode",
+        "gameAccountId",
+        "gameMode",
+        "updates",
+        "activeEnvironment",
+        "stableEnvironment",
+      ];
+      for (const key of Object.keys(fields)) {
+        if (!allowed.includes(key))
+          throw new Error(`设置 owner ${owner} 不能修改字段: ${key}`);
+      }
+      Object.assign(game, fields);
+      const roots = gameSettings(mock.settings);
       mock.runtimeInstallations = [
         {
           distribution: "cn",
-          installRoot:
-            gameSettings(mock.settings).installRoot || preview.installRoot,
+          installRoot: demoInstallRoot(roots, "cn") || preview.installRoot,
           installed: true,
         },
         {
           distribution: "global",
           installRoot:
-            gameSettings(mock.settings).globalInstallRoot ||
-            "~/Games/Neverness To Everness Global",
-          installed: Boolean(gameSettings(mock.settings).globalInstallRoot),
+            demoInstallRoot(roots, "global") || previewInstallRoot("global"),
+          installed: Boolean(demoInstallRoot(roots, "global")),
         },
       ];
       applyPreviewDistribution();
-      return clone(mock);
+      const view: Record<string, unknown> = { ...game };
+      return clone({ owner, fields: view });
     }
     case "gamepad_poll":
       return {
@@ -1369,10 +1404,7 @@ async function previewInvoke(
     case "migration_plan": {
       const { distribution, target } = args as CommandArgs["migration_plan"];
       const game = gameSettings(mock.settings);
-      const source =
-        distribution === "global"
-          ? game.globalInstallRoot || mock.installRoot
-          : game.installRoot || mock.installRoot;
+      const source = demoInstallRoot(game, distribution) || mock.installRoot;
       return {
         distribution,
         mode: "copy",
@@ -1406,10 +1438,7 @@ async function previewInvoke(
         phase: "done",
         distribution,
         mode: "copy",
-        source:
-          distribution === "global"
-            ? game.globalInstallRoot || mock.installRoot
-            : game.installRoot || mock.installRoot,
+        source: demoInstallRoot(game, distribution) || mock.installRoot,
         target,
       };
       return clone(previewMigration);
@@ -1632,12 +1661,31 @@ async function previewInvoke(
     case "take_launch_error":
       return null;
     case "performance_overview":
-      return { active: null, recording: null, comparisons: [] };
-    case "performance_create":
-    case "performance_activate":
-    case "performance_report":
+      return clone(previewPerformance);
+    case "performance_recording": {
+      const { enabled } = args as CommandArgs["performance_recording"];
+      previewPerformance.recordingEnabled = enabled;
+      return null;
+    }
+    case "performance_pin": {
+      const { id, pinned } = args as CommandArgs["performance_pin"];
+      const record = previewPerformance.records.find((item) => item.id === id);
+      if (record) record.pinned = pinned;
+      return null;
+    }
+    case "performance_delete": {
+      const { id } = args as CommandArgs["performance_delete"];
+      previewPerformance.records = previewPerformance.records.filter(
+        (item) => item.id !== id,
+      );
+      return null;
+    }
+    case "performance_report": {
+      const { a, b } = args as CommandArgs["performance_report"];
+      return previewPerformanceReport(a, b);
+    }
     case "performance_export":
-      throw new Error("性能采样需要在桌面应用中使用");
+      throw new Error("请在原生启动器中导出性能对比图");
     case "playtime_history":
       return previewHistory();
     case "playtime_export_poster": {
@@ -1666,7 +1714,10 @@ async function previewInvoke(
     case "win_close":
     case "win_hide":
       return null;
-    default:
-      throw new Error("unknown command: " + command);
+    default: {
+      // 新命令既没进包预览表也没补宿主分支时这里会编译失败.
+      const unhandled: never = command;
+      throw new Error("浏览器演示未实现该命令: " + String(unhandled));
+    }
   }
 }

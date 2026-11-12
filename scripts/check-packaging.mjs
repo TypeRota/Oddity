@@ -119,12 +119,12 @@ for (const [key, expected] of [
 
 const iconSizes = [16, 22, 24, 32, 48, 64, 128, 256, 512];
 for (const size of iconSizes) {
-  requireFile(`launcher/crates/nte-service/icons/${size}x${size}.png`);
+  requireFile(`launcher/host/icons/${size}x${size}.png`);
 }
 for (const icon of [
-  "launcher/crates/nte-service/icons/icon.png",
-  "launcher/crates/nte-service/icons/tray-32.png",
-  "launcher/crates/nte-service/icons/tray-64.png",
+  "launcher/host/icons/icon.png",
+  "launcher/host/icons/tray-32.png",
+  "launcher/host/icons/tray-64.png",
   "launcher/ui/public/assets/app-icon.svg",
   "launcher/ui/public/assets/tray-icon.svg",
 ]) {
@@ -182,30 +182,13 @@ for (const file of [
   "scripts/write-checksums.mjs",
   "scripts/check-release-assets.mjs",
   "scripts/build-arch-package.sh",
-  ".github/workflows/aur.yml",
   "flake.nix",
   "nix/package.nix",
-  ".github/workflows/nix.yml",
-  ".github/workflows/gentoo.yml",
   "packaging/gentoo/oddity-bin.ebuild.in",
   "packaging/gentoo/metadata.xml",
   "scripts/render-ebuild.mjs",
 ]) {
   requireFile(file);
-}
-
-const aurWorkflow = read(".github/workflows/aur.yml");
-for (const needle of [
-  "oddity-bin",
-  "github-actions-deploy-aur@v4.1.1",
-  "updpkgsums",
-  "AUR_SSH_PRIVATE_KEY",
-  "render-pkgbuild.mjs",
-  "published",
-]) {
-  if (!aurWorkflow.includes(needle)) {
-    fail(`AUR workflow 里没有引用 ${needle}`);
-  }
 }
 
 const archTemplate = read("packaging/arch/PKGBUILD.in");
@@ -240,19 +223,6 @@ for (const [file, needles] of [
       "@URL@",
     ],
   ],
-  [
-    ".github/workflows/nix.yml",
-    ["nix flake check", "cachix/cachix-action", "oddity"],
-  ],
-  [
-    ".github/workflows/gentoo.yml",
-    [
-      "oddity-overlay",
-      "render-ebuild.mjs",
-      "GENTOO_OVERLAY_DEPLOY_KEY",
-      "Manifest",
-    ],
-  ],
 ]) {
   const text = read(file);
   for (const needle of needles) {
@@ -267,7 +237,7 @@ for (const needle of [
   "oddity.desktop",
   "--launch",
   "app-icon.svg",
-  "crates/nte-service/icons",
+  "host/icons",
 ]) {
   if (!installer.includes(needle)) {
     fail(`install-desktop.sh 里没有引用 ${needle}`);

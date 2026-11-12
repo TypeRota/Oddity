@@ -8,7 +8,7 @@ import type { GameModeOptions, GameModeStatus } from "../types/launcher";
 import { useControlMotion } from "../composables/useControlMotion";
 import { useScrubNavigation } from "../composables/useScrubNavigation";
 import GamescopeSettings from "../components/GamescopeSettings.vue";
-import PerformanceComparison from "../components/PerformanceComparison.vue";
+import PerformanceRecords from "../components/PerformanceRecords.vue";
 import CpuSettings from "../components/CpuSettings.vue";
 import GpuSettings from "../components/GpuSettings.vue";
 import BaseInput from "../components/BaseInput.vue";
@@ -75,7 +75,7 @@ const categories = [
   { id: "general", label: "常规", icon: "i-game-controller" },
   { id: "cpu", label: "CPU 与优先级", icon: "i-cpu" },
   { id: "gpu", label: "GPU 超频", icon: "i-graphics-card" },
-  { id: "comparison", label: "性能比较", icon: "i-monitor" },
+  { id: "records", label: "性能记录", icon: "i-monitor" },
   { id: "gamescope", label: "Gamescope", icon: "i-monitor" },
 ] as const;
 type Category = (typeof categories)[number]["id"];
@@ -140,11 +140,11 @@ const entries: {
   },
 ];
 entries.push({
-  id: "comparison",
-  category: "comparison",
-  label: "性能比较",
-  description: "自动记录 Proton A/B 性能并生成图表.",
-  keywords: "FPS 帧时间 显存 内存 采样 报告 PNG 测试",
+  id: "records",
+  category: "records",
+  label: "性能记录",
+  description: "记录每次启动的性能, 可挑选任意两条对比.",
+  keywords: "FPS 帧时间 显存 内存 采样 报告 PNG 测试 记录",
 });
 const results = computed(() => {
   const words = query.value.trim().toLocaleLowerCase().split(/\s+/);
@@ -362,7 +362,7 @@ const isActive = computed(() => state.page === "game-mode");
           <BaseButton
             v-if="ui.saveState === 'error'"
             variant="ghost"
-            @click="queueSettingsSave(0)"
+            @click="queueSettingsSave('game', 0)"
             >重试</BaseButton
           >
           <BaseButton
@@ -512,7 +512,7 @@ const isActive = computed(() => state.page === "game-mode");
                         !state.bootstrap ||
                         (!form.gameMode[option.id] && !available(option.id))
                       "
-                      @change="queueSettingsSave(0)"
+                      @change="queueSettingsSave('game', 0)"
                     />
                   </template>
                 </SettingRow>
@@ -536,9 +536,9 @@ const isActive = computed(() => state.page === "game-mode");
               "
               :available="available('performance')"
             />
-            <PerformanceComparison
-              v-else-if="item.id === 'comparison'"
-              data-game-setting="comparison"
+            <PerformanceRecords
+              v-else-if="item.id === 'records'"
+              data-game-setting="records"
             />
             <GamescopeSettings v-else :available="available('gamescope')" />
           </motion.div>

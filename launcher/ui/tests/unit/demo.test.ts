@@ -66,6 +66,35 @@ describe("浏览器演示初始化", () => {
     expect(isDemo).toBe(false);
   });
 
+  it("演示构建返回可对比的性能记录", async () => {
+    vi.stubEnv("VITE_DEMO", "1");
+    vi.resetModules();
+    const { invoke } = await import("../../src/core/api");
+    const overview = await invoke("performance_overview");
+    expect(overview.recordingEnabled).toBe(true);
+    expect(overview.recording).toBeNull();
+    expect(overview.records).toHaveLength(3);
+    expect(overview.records.filter((record) => record.pinned)).toHaveLength(1);
+    const [newest, middle] = overview.records;
+    expect(newest.startedAt).toBeGreaterThan(middle.startedAt);
+
+    await invoke("performance_pin", { id: newest.id, pinned: false });
+    await invoke("performance_recording", { enabled: false });
+    const svg = await invoke("performance_report", {
+      a: middle.id,
+      b: newest.id,
+    });
+    expect(svg).toContain("<svg");
+    expect(svg).toContain("性能记录对比");
+    await invoke("performance_delete", { id: middle.id });
+
+    const next = await invoke("performance_overview");
+    expect(next.recordingEnabled).toBe(false);
+    expect(next.records).toHaveLength(2);
+    expect(next.records.every((record) => !record.pinned)).toBe(true);
+    expect(next.records.map((record) => record.id)).not.toContain(middle.id);
+  });
+
   it("演示构建下 bootstrap 返回就绪状态", async () => {
     vi.stubEnv("VITE_DEMO", "1");
     vi.resetModules();
@@ -76,5 +105,14 @@ describe("浏览器演示初始化", () => {
     expect(data.settings.runtimeEnvironments).toHaveLength(1);
     expect(gameSettings(data.settings).activeEnvironment).not.toBeNull();
     expect(data.prefixExists).toBe(true);
+    expect(data.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "oddity.profile.player",
+          revision: 1,
+          state: "available",
+        }),
+      ]),
+    );
   });
 });

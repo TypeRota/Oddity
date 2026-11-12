@@ -11,8 +11,20 @@
     "types": ["vite/client", "node", "web-bluetooth"],
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    // 包 UI 在 launcher/ui 之外, 自身目录没有 node_modules,
+    // 它用到的宿主依赖要在这里登记 (通配符会改写 Playwright 等工具的路径映射).
+    "paths": {
+      "@packages/*": ["../packages/*"],
+      "@host/*": ["./src/host-api/*"],
+      "vue": ["./node_modules/vue"]
+    }
   },
-  "include": ["**/*.ts", "**/*.vue"],
+  "include": [
+    "**/*.ts",
+    "**/*.vue",
+    "../packages/**/*.ts",
+    "../packages/**/*.vue"
+  ],
   "exclude": ["node_modules", "dist"]
 }

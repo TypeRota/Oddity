@@ -10,6 +10,8 @@ import SettingRow from "./settings/SettingRow.vue";
 import SnapshotDiffList from "./SnapshotDiffList.vue";
 import { invoke } from "../core/api";
 import { notify } from "../core/notifications";
+import { state } from "../core/controller";
+import { channelLabel } from "../host/facts";
 import type {
   SnapshotComparison,
   SnapshotDiffRow,
@@ -308,8 +310,11 @@ function formatTime(value: number | null | undefined) {
   }).format(new Date(value));
 }
 
-function distributionLabel(distribution: "cn" | "global") {
-  return distribution === "global" ? "国际服" : "国服";
+function distributionLabel(distribution: string) {
+  return (
+    channelLabel({ channels: state.bootstrap?.channels ?? [] }, distribution) ||
+    distribution
+  );
 }
 
 function summaryText(summary: SnapshotSummary | SnapshotReference) {

@@ -1,0 +1,15 @@
+[package]
+name = "oddity-game-fixture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "测试用游戏包: 装配、契约与模板校验"
+
+[dependencies]
+oddity-contract = { path = "../../../crates/oddity-contract" }
+oddity-runtime = { path = "../../../crates/oddity-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt"] }

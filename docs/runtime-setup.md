@@ -51,7 +51,7 @@ umu、Proton、运行时使用独立的准备界面, 核心安装进度携带组
 
 ```bash
 ODDITY_TEST_UMU=/usr/bin/umu-run ODDITY_TEST_PROTON=/path/to/Proton \
-  cargo test --manifest-path launcher/Cargo.toml -p nte-core --test runtime_setup \
+  cargo test --manifest-path launcher/Cargo.toml -p oddity-host --test runtime_setup \
   real_runtime_initializes_an_isolated_prefix -- --ignored
 ```
 

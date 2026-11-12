@@ -17,7 +17,7 @@ export function applyDemoPreview(
     proton: { path: preview.protonPath, identity: "browser-preview" },
     installRoot: data.installRoot,
     game: activeGame(data.settings),
-    distribution: gameSettings(data.settings).distribution,
+    distribution: gameSettings(data.settings).distribution ?? "cn",
     createdAt: Math.floor(Date.now() / 1000),
   };
   data.ok = true;

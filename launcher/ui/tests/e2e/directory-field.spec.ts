@@ -18,7 +18,7 @@ test("设置页安装目录均可选择、取消并自动保存", async ({ page 
   await page.goto("/");
   await page.locator('[data-page="settings"]').click();
   await expect(page.locator("#page-settings")).toBeVisible();
-  await settingsCategory(page, "game");
+  await settingsCategory(page, "nte-game");
   for (const [id, label] of [
     ["set-install", "国服安装目录"],
     ["set-global-install", "国际服安装目录"],
@@ -63,7 +63,7 @@ test("更新页目录选择按地区保存并与设置页同步", async ({ page 
     });
   });
   await page.goto("/");
-  await page.locator('[data-page="update"]').click();
+  await page.locator('[data-page="nte-update"]').click();
   const input = page.locator("#download-install-root");
   const browse = page.getByRole("button", {
     name: "浏览安装目录",
@@ -85,7 +85,7 @@ test("更新页目录选择按地区保存并与设置页同步", async ({ page 
     "data-save-state",
     "saved",
   );
-  await settingsCategory(page, "game");
+  await settingsCategory(page, "nte-game");
   await expect(page.locator("#set-install")).toHaveValue("/tmp/国服 Test");
   await expect(page.locator("#set-global-install")).toHaveValue(
     "/tmp/国际服 Test",

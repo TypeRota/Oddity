@@ -1,15 +1,17 @@
 import { reactive } from "vue";
+import type { SettingsSectionId } from "../host/settings";
 
+// 宿主通用分区; 游戏相关分区由游戏包声明, 在 host/settings.ts 合并.
 export const settingsCategories = [
-  { id: "appearance", label: "外观与交互", icon: "i-monitor" },
-  { id: "audio", label: "音频", icon: "i-speaker-high" },
-  { id: "gamepad", label: "手柄", icon: "i-game-controller" },
-  { id: "game", label: "游戏与启动", icon: "i-game-controller" },
-  { id: "runtime", label: "运行环境", icon: "i-hard-drives" },
-  { id: "account", label: "账号与签到", icon: "i-users" },
-  { id: "maintenance", label: "诊断与维护", icon: "i-shield-check" },
+  { id: "appearance", label: "外观与交互", icon: "i-monitor", order: 1 },
+  { id: "audio", label: "音频", icon: "i-speaker-high", order: 2 },
+  { id: "gamepad", label: "手柄", icon: "i-game-controller", order: 3 },
+  { id: "runtime", label: "运行环境", icon: "i-hard-drives", order: 5 },
+  { id: "maintenance", label: "诊断与维护", icon: "i-shield-check", order: 7 },
 ] as const;
-export type SettingsCategory = (typeof settingsCategories)[number]["id"];
+export type HostSettingsCategory = (typeof settingsCategories)[number]["id"];
+/** 设置页分区 id: 宿主分区与当前分区贡献共用同一命名空间. */
+export type SettingsCategory = SettingsSectionId;
 export const settingsNavigation = reactive<{
   category: SettingsCategory;
   query: string;
@@ -101,74 +103,11 @@ export const settingsEntries = [
     keywords: "窗口 返回 退出 启动器",
   },
   {
-    id: "distribution",
-    category: "game",
-    label: "游戏地区",
-    description: "选择国服或国际服.",
-    keywords: "区服 国际服 国服 NTE 异环",
-  },
-  {
-    id: "install",
-    category: "game",
-    label: "国服安装目录",
-    description: "指定国服游戏的安装位置.",
-    keywords: "路径 文件夹 磁盘 位置",
-  },
-  {
-    id: "global-install",
-    category: "game",
-    label: "国际服安装目录",
-    description: "指定国际服游戏的安装位置.",
-    keywords: "路径 文件夹 磁盘 位置 NTE",
-  },
-  {
-    id: "migration",
-    category: "game",
-    label: "迁移安装目录",
-    description: "把当前安装移动到其他位置, 保留运行环境和预下载资源.",
-    keywords: "迁移 移动 安装目录 路径 磁盘 空间",
-  },
-  {
-    id: "launch",
-    category: "game",
-    label: "启动方式",
-    description: "选择后台启动、前台启动或直接启动.",
-    keywords: "官方 登录 后台 前台 直接",
-  },
-  {
-    id: "game-account",
-    category: "game",
-    label: "游戏账号",
-    description: "选择直接启动使用的游戏账号.",
-    keywords: "登录 手机号 验证码 密码 账号切换 记住账号",
-  },
-  {
-    id: "preload-dir",
-    category: "game",
-    label: "预下载资源目录",
-    description: "指定预下载缓存的存放位置, 留空使用安装目录内的默认位置.",
-    keywords: "预下载 缓存 目录 磁盘 位置",
-  },
-  {
-    id: "updates",
-    category: "game",
-    label: "资源自动下载",
-    description: "发现更新后自动下载, 并设置限速、计费网络与时段.",
-    keywords: "自动 更新 下载 限速 带宽 计费 流量 时段 后台",
-  },
-  {
     id: "runtime",
     category: "runtime",
     label: "Proton 运行环境",
     description: "创建、切换、复制或删除独立的运行环境.",
     keywords: "Proton Wine prefix 副本 稳定 环境名称",
-  },
-  {
-    id: "account",
-    category: "account",
-    label: "塔吉多签到",
-    description: "管理账号、自动签到、签到时机与每日时间.",
-    keywords: "账号 登录 密码 验证码 签到 账号管理 社区",
   },
   {
     id: "snapshots",
@@ -200,7 +139,7 @@ export const settingsEntries = [
   },
 ] as const satisfies readonly {
   id: string;
-  category: SettingsCategory;
+  category: HostSettingsCategory;
   label: string;
   description: string;
   keywords: string;

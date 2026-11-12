@@ -3,8 +3,8 @@ import { test, expect } from "@playwright/test";
 
 test("公告加载骨架与刷新保留内容", async ({ page }) => {
   await pauseClock(page);
-  await page.goto("/#bulletin");
-  const panel = page.locator("#page-bulletin");
+  await page.goto("/#nte-bulletin");
+  const panel = page.locator("#page-nte-bulletin");
   await expect(panel.locator(".bulletin-skeleton")).toBeAttached();
   await expect(panel.locator(".bulletin-entry")).toHaveCount(0);
   await page.clock.runFor(1500);
@@ -28,8 +28,8 @@ test("配图保留比例, 分类与窄面板保持完整布局", async ({ page }
       body: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="400"><rect width="200" height="400" fill="#8f9caa"/></svg>',
     }),
   );
-  await page.goto("/#bulletin");
-  const panel = page.locator("#page-bulletin");
+  await page.goto("/#nte-bulletin");
+  const panel = page.locator("#page-nte-bulletin");
   await expect(panel.locator(".bulletin-entry")).toHaveCount(3);
   const image = panel.locator(".bulletin-media img");
   await expect(image).toHaveCSS("opacity", "1");
@@ -85,7 +85,7 @@ test("配图保留比例, 分类与窄面板保持完整布局", async ({ page }
 
 test("图片加载失败后仍可阅读文字公告", async ({ page }) => {
   await page.route("**/assets/hero-keyart.jpg", (route) => route.abort());
-  await page.goto("/#bulletin");
+  await page.goto("/#nte-bulletin");
   const entry = page.locator(".bulletin-entry").filter({ hasText: "情报回顾" });
   await expect(entry).toHaveCount(1);
   await expect(entry.locator("img")).toHaveCount(0);
@@ -132,8 +132,8 @@ test("同来源公告按需堆叠, 展开与收回保持连续布局", async ({ 
       }),
     );
   });
-  await page.goto("/#bulletin");
-  const panel = page.locator("#page-bulletin");
+  await page.goto("/#nte-bulletin");
+  const panel = page.locator("#page-nte-bulletin");
   await expect(panel.locator(".bulletin-entry")).toHaveCount(5);
   await expect(panel.locator(".bulletin-group")).toHaveCount(0);
   await expect(
@@ -147,7 +147,7 @@ test("同来源公告按需堆叠, 展开与收回保持连续布局", async ({ 
     "data-save-state",
     "saved",
   );
-  await page.locator('[data-page="bulletin"]').click();
+  await page.locator('[data-page="nte-bulletin"]').click();
   const group = panel.locator(
     ".view-stack__page:not([aria-hidden]) .bulletin-group",
   );

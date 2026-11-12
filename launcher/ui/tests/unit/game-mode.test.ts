@@ -9,8 +9,8 @@ const { invoke, notify } = vi.hoisted(() => ({
   invoke: vi.fn(),
   notify: vi.fn(),
 }));
-vi.mock("../../src/components/PerformanceComparison.vue", () => ({
-  default: { template: '<div data-game-setting="comparison" />' },
+vi.mock("../../src/components/PerformanceRecords.vue", () => ({
+  default: { template: '<div data-game-setting="records" />' },
 }));
 vi.mock("../../src/core/notifications", () => ({ notify }));
 vi.mock("../../src/core/api", () => ({ invoke, isDesktop: () => true }));
@@ -93,7 +93,7 @@ it("独立保存游戏模式选项", async () => {
   await flushPromises();
   await wrapper.get("#game-mode-performance").setValue(true);
   expect(form.gameMode.performance).toBe(true);
-  expect(queueSettingsSave).toHaveBeenCalledExactlyOnceWith(0);
+  expect(queueSettingsSave).toHaveBeenCalledExactlyOnceWith("game", 0);
   ui.saveState = "saved";
   await flushPromises();
   expect(wrapper.get('[role="status"]').text()).toBe("已保存");

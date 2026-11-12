@@ -22,6 +22,11 @@ import type {
 } from "../types/gamepad";
 import { notifications, pauseNotifications } from "./notifications";
 
+// 扳机是模拟轴, 没有独立按键号; 这里用 100/101 作为内部按键, 避开 SDL 的按键号.
+const LEFT_TRIGGER = 100;
+const RIGHT_TRIGGER = 101;
+const TRIGGER_THRESHOLD = 0.5;
+
 export const gamepad = reactive({
   device: null as GamepadDevice | null,
   devices: [] as GamepadDevice[],
@@ -412,11 +417,46 @@ export function createGamepadNavigation() {
       ),
     );
   }
+  function keyboardCandidates() {
+    return [
+      ...document.querySelectorAll<HTMLElement>(".pad-keyboard__candidate"),
+    ].filter(visible);
+  }
+  function candidateTarget() {
+    const target = gamepadTarget.value;
+    return target?.matches(".pad-keyboard__candidate") ? target : null;
+  }
+  function selectCandidate(delta: number): boolean {
+    const candidates = keyboardCandidates();
+    if (!candidates.length) return false;
+    const current = candidates.indexOf(gamepadTarget.value as HTMLElement);
+    const next =
+      current < 0
+        ? 0
+        : Math.min(candidates.length - 1, Math.max(0, current + delta));
+    if (next === current) return false;
+    point(candidates[next]!);
+    return true;
+  }
   async function press(button: number) {
     refresh();
     if (!gamepad.notification && !gamepad.windowControls) {
       const keyboard = gamepadActions.keyboard;
       if (keyboard && gamepad.editing) {
+        if (button === LEFT_TRIGGER || button === RIGHT_TRIGGER) {
+          if (keyboard.page?.(button === LEFT_TRIGGER ? -1 : 1)) {
+            await nextTick();
+            refresh();
+            return;
+          }
+        }
+        if (button === 9 || button === 10) {
+          if (selectCandidate(button === 9 ? -1 : 1)) {
+            await nextTick();
+            refresh();
+            return;
+          }
+        }
         if (button === 4) {
           keyboard.cycle();
           await nextTick();
@@ -429,8 +469,17 @@ export function createGamepadNavigation() {
           refresh();
           return;
         }
-        if (button === 2) {
+        if (button === 3) {
           keyboard.backspace();
+          return;
+        }
+        if (button === 2) {
+          const candidate = candidateTarget();
+          if (candidate) {
+            candidate.click();
+            await nextTick();
+            refresh();
+          }
           return;
         }
         if (button === 7 || button === 8) {
@@ -703,7 +752,7 @@ export function createGamepadNavigation() {
     () => {
       if (!gamepad.active) return;
       if (page !== state.page) {
-        gamepad.navigation = ["settings", "bulletin", "game-mode"].includes(
+        gamepad.navigation = ["settings", "nte-bulletin", "game-mode"].includes(
           state.page,
         );
         first = true;
@@ -823,8 +872,11 @@ export function startGamepad() {
     gamepad.device = snapshot.device;
     gamepad.deviceError = snapshot.error ?? "";
     const held = new Set(snapshot.buttons);
-    const [x, y, , scroll] = snapshot.axes;
+    const [x, y, , scroll, leftTrigger = 0, rightTrigger = 0] = snapshot.axes;
     const dead = form.gamepad.deadZone;
+    // 扳机过阈值后当作一次按下, 用于候选翻页这类快捷操作.
+    if (leftTrigger > TRIGGER_THRESHOLD) held.add(LEFT_TRIGGER);
+    if (rightTrigger > TRIGGER_THRESHOLD) held.add(RIGHT_TRIGGER);
     if (Math.abs(x) > dead || Math.abs(y) > dead)
       held.add(Math.abs(x) > Math.abs(y) ? (x > 0 ? 14 : 13) : y > 0 ? 12 : 11);
     if (!snapshot.focused || !focused || snapshot.device?.id !== device) {

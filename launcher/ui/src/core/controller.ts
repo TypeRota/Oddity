@@ -14,11 +14,16 @@ import type {
   GameStatus,
   DownloadStatus,
   ResourceCatalog,
-  BulletinFeed,
   LauncherBackgroundMedia,
   PlaytimeHistory,
   Settings,
   GameSettings,
+  GameId,
+  ChannelView,
+  SettingsPatch,
+  SettingsSection,
+  SettingsFieldValue,
+  SettingsSchemaView,
   MeteredPolicy,
   IntegrityStatus,
   MigrationPlan,
@@ -45,13 +50,19 @@ export { notify, notifications } from "./notifications";
 import { latestSession, formatPlaytime } from "./playtime";
 import { settingsNavigation, type SettingsCategory } from "./settingsCatalog";
 import { APP_VERSION } from "./version";
+import { factsFrom } from "../host/facts";
+import {
+  DEFAULT_PAGE_ID,
+  isPageId,
+  isPageVisible,
+  navigationItems,
+  resolvePage,
+  type PageId,
+} from "../host/pages";
 
 let generation = 0;
 let windowFocusRevision = 0;
 let events = new window.AbortController();
-const BULLETIN_CACHE_KEY = "nte.bulletins.v3";
-let bulletinRequest = 0;
-const BULLETIN_CACHE_TTL_MS = 15 * 60 * 1000;
 const disposers: (() => void)[] = [];
 let downloadRevision = 0;
 // 本轮检查结束后刷新预下载目录.
@@ -96,7 +107,20 @@ let displayedIntegrityNotice: IntegrityStatus["notice"] = null;
 const handledIntegrityNotices = new Set<string>();
 let saveStatusTimer = 0;
 let saveChain: Promise<boolean> = Promise.resolve(true);
-let lastSavedSettings = "";
+// 有未提交改动的设置 owner; 每个 owner 只提交自己的字段补丁.
+const dirtySettingsOwners = new Set<string>();
+/** 设置 owner 入口; 未指定时只处理签到偏好等非设置保存. */
+type SettingsSaveOwner = string;
+const HOST_SETTINGS_OWNER = "host";
+function gameSettingsOwner(settings: Settings | null | undefined): string {
+  return `game:${activeGame(settings)}`;
+}
+/** `game` 是当前游戏的快捷入口, 其他 owner 原样交给服务端. */
+function settingsOwner(owner: string): string {
+  return owner === "game"
+    ? gameSettingsOwner(state.bootstrap?.settings)
+    : owner;
+}
 const timers = new Set<number>();
 function schedule(callback: () => void, ms: number) {
   const id = window.setTimeout(() => {
@@ -186,7 +210,7 @@ export function syncAttendance(next: AttendanceStatus, syncForm = true) {
 }
 export async function refreshGameRecords(force = false) {
   if (
-    gameSettings(state.bootstrap?.settings).distribution === "global" ||
+    form.distribution === "global" ||
     !attendance.status?.accounts.length ||
     gameRecords.loading ||
     (attendance.busy && !attendance.running) ||
@@ -445,12 +469,23 @@ async function announcePlaytimeExit(fallback: string) {
   );
 }
 
+/** 包声明设置 section 的可编辑值; 宿主不枚举具体字段. */
+export const declaredSettings = reactive<
+  Record<string, Record<string, unknown>>
+>({});
+
+/** 按 owner 查找设置 section 声明. */
+export function settingsSchema(owner: string): SettingsSchemaView | undefined {
+  return state.bootstrap?.settingsSchemas?.find(
+    (schema) => schema.owner === owner,
+  );
+}
+
 export const form = reactive({
   audio: { device: null as string | null, volume: 100 },
   gamepad: defaultGamepadOptions(),
-  installRoot: "",
-  globalInstallRoot: "",
-  distribution: "cn" as "cn" | "global",
+  installRoots: {} as Record<string, string>,
+  distribution: null as string | null,
   launchMode: "background",
   gameAccountId: "",
   gameMode: {
@@ -490,8 +525,6 @@ export const state = reactive<{
   resourcesLoading: boolean;
   resourcesSaving: boolean;
   resourcesError: string;
-  bulletins: BulletinFeed | null;
-  bulletinsLoading: boolean;
   page: string;
   checking: boolean;
   game: GamePhase;
@@ -506,8 +539,6 @@ export const state = reactive<{
   resourcesLoading: false,
   resourcesSaving: false,
   resourcesError: "",
-  bulletins: null,
-  bulletinsLoading: false,
   page: "home",
   checking: false,
   game: "idle",
@@ -845,17 +876,36 @@ function normalizedRoot(value: string) {
   return value.replace(/\/+$/, "");
 }
 
+/** 当前生效的渠道声明. */
+function activeChannel() {
+  return state.bootstrap?.channels.find((channel) => channel.active);
+}
+
+/** 当前表单渠道对应的声明. */
+function channelFor(id: string | null | undefined) {
+  return state.bootstrap?.channels.find((channel) => channel.id === id);
+}
+
+/** 表单里当前渠道的安装目录. */
+function currentRoot() {
+  const key = channelFor(form.distribution)?.installRootKey;
+  return key ? (form.installRoots[key] ?? "") : "";
+}
+
+/** 设置里某个渠道保存的安装目录. */
+function savedRoot(
+  game: GameSettings,
+  channel: ChannelView | undefined,
+): string | null {
+  return channel ? (game.installRoots?.[channel.installRootKey] ?? null) : null;
+}
+
 function currentInstallRoot() {
   const data = state.bootstrap;
   const settings = gameSettings(data?.settings);
-  const root =
-    form.distribution === "cn" ? form.installRoot : form.globalInstallRoot;
-  const saved =
-    settings.distribution === form.distribution
-      ? form.distribution === "cn"
-        ? settings.installRoot
-        : settings.globalInstallRoot
-      : null;
+  const channel = channelFor(form.distribution);
+  const root = currentRoot();
+  const saved = savedRoot(settings, channel);
   if (
     settings.distribution === form.distribution &&
     normalizedRoot(root.trim()) ===
@@ -1419,6 +1469,47 @@ export function closeDemoNotice() {
   } catch {}
 }
 
+/** 设置变化后失效的派生状态; bootstrap 与 owner 补丁共用. */
+function applySettingsEffects(
+  previous: Settings | undefined,
+  next: Settings,
+  previousResolvedRoot?: string,
+) {
+  if (!previous) return;
+  if (gameSettings(previous).distribution !== gameSettings(next).distribution) {
+    gameRecords.nextRefresh = 0;
+  }
+  if (installPathsChanged(previous, next, previousResolvedRoot)) {
+    state.check = null;
+    state.download = null;
+    state.resourceCatalog = null;
+    state.resourcesError = "";
+    ui.updateError = false;
+  }
+  if (
+    (gameSettings(previous).preloadRoot || "") !==
+    (gameSettings(next).preloadRoot || "")
+  ) {
+    state.resourceCatalog = null;
+    state.resourcesError = "";
+  }
+}
+
+function syncDeclaredSettings(
+  schemas: readonly SettingsSchemaView[] | undefined,
+): void {
+  const owners = new Set<string>();
+  for (const schema of schemas ?? []) {
+    owners.add(schema.owner);
+    const values: Record<string, unknown> = {};
+    for (const field of schema.fields) values[field.key] = field.value;
+    declaredSettings[schema.owner] = values;
+  }
+  for (const owner of Object.keys(declaredSettings)) {
+    if (!owners.has(owner)) delete declaredSettings[owner];
+  }
+}
+
 export function applyBootstrap(
   data: Bootstrap,
   announceError = true,
@@ -1428,39 +1519,13 @@ export function applyBootstrap(
   const previous = state.bootstrap?.settings;
   const previousResolvedRoot = state.bootstrap?.installRoot;
   state.bootstrap = data;
+  syncDeclaredSettings(data.settingsSchemas);
   applyIntegrityStatus(data.integrity);
-  if (
-    previous &&
-    gameSettings(previous).distribution !==
-      gameSettings(data.settings).distribution
-  ) {
-    bulletinRequest++;
-    state.bulletins = null;
-    state.bulletinsLoading = false;
-    void fetchBulletins();
-    gameRecords.nextRefresh = 0;
-  }
-
+  // 当前游戏下当前页不可见时回到第一个可见页, 与设置分区的回退一致。
+  if (!isPageVisible(state.page, factsFrom(data))) showPage(state.page);
+  applySettingsEffects(previous, data.settings, previousResolvedRoot);
   refreshLauncherBackground(data);
   const settings = data.settings || {};
-  if (
-    previous &&
-    installPathsChanged(previous, data.settings, previousResolvedRoot)
-  ) {
-    state.check = null;
-    state.download = null;
-    state.resourceCatalog = null;
-    state.resourcesError = "";
-    ui.updateError = false;
-  }
-  if (
-    previous &&
-    (gameSettings(previous).preloadRoot || "") !==
-      (gameSettings(data.settings).preloadRoot || "")
-  ) {
-    state.resourceCatalog = null;
-    state.resourcesError = "";
-  }
 
   const ready = isReady(data);
   ui.setupNeeded = !ready;
@@ -1478,15 +1543,17 @@ export function applyBootstrap(
   applyTheme(settings.theme || "light");
 
   const saved = gameSettings(settings);
-  form.installRoot =
-    saved.installRoot ||
-    (saved.distribution !== "global" ? data.installRoot : "") ||
-    "";
-  form.globalInstallRoot =
-    saved.globalInstallRoot ||
-    (saved.distribution === "global" ? data.installRoot : "") ||
-    "";
-  form.distribution = saved.distribution || "cn";
+  form.installRoots = { ...(saved.installRoots ?? {}) };
+  const savedChannel = data.channels.find(
+    (channel) => channel.id === saved.distribution,
+  );
+  const active =
+    savedChannel ?? data.channels.find((channel) => channel.active);
+  const activeKey = active?.installRootKey;
+  if (activeKey && !form.installRoots[activeKey]) {
+    form.installRoots[activeKey] = data.installRoot || "";
+  }
+  form.distribution = active?.id ?? saved.distribution ?? null;
   form.launchMode = saved.launchMode || "background";
   form.gameAccountId = saved.gameAccountId || "";
   Object.assign(
@@ -1519,8 +1586,6 @@ export function applyBootstrap(
   form.showLauncherAfterGameExit = settings.showLauncherAfterGameExit ?? true;
   form.snapshotSuccessMinutes = settings.snapshotSuccessMinutes ?? 1;
   form.preloadRoot = saved.preloadRoot || "";
-  // 记录表单当前对应的持久化状态, 自动保存时只提交真正的修改。
-  lastSavedSettings = JSON.stringify(currentSettings());
   void nextTick(syncScrollEdges);
 }
 
@@ -1570,8 +1635,7 @@ function applyDownloadStatus(status: DownloadStatus) {
   const previous = state.download?.phase;
   const previousAuto = state.download?.autoWaiting || "";
   const sameDistribution =
-    !state.bootstrap ||
-    status.distribution === gameSettings(state.bootstrap.settings).distribution;
+    !state.bootstrap || status.distribution === activeChannel()?.id;
   state.download = status;
   if (
     status.mode === "resources" &&
@@ -1595,7 +1659,7 @@ function applyDownloadStatus(status: DownloadStatus) {
         icon: "i-download-simple",
         run: () => startGameDownload("apply", false),
       },
-      secondary: { label: "查看更新", run: () => showPage("update") },
+      secondary: { label: "查看更新", run: () => showPage("nte-update") },
     });
   }
   if (
@@ -1699,10 +1763,7 @@ function formMatchesSavedSettings() {
   const data = state.bootstrap;
   const settings = gameSettings(data?.settings);
   if (!data || settings.distribution !== form.distribution) return false;
-  const saved =
-    form.distribution === "cn"
-      ? settings.installRoot
-      : settings.globalInstallRoot;
+  const saved = savedRoot(settings, channelFor(form.distribution));
   return (
     normalizedRoot(saved || data.installRoot) ===
     normalizedRoot(currentInstallRoot())
@@ -1855,7 +1916,7 @@ function maybeNotifyPreload() {
     !catalog.preloadAvailable ||
     catalog.preloadCompleted ||
     catalog.distribution !== form.distribution ||
-    state.page === "update"
+    state.page === "nte-update"
   ) {
     dismissPreloadNotice();
     return;
@@ -1876,7 +1937,7 @@ function maybeNotifyPreload() {
       primary: {
         label: "查看更新",
         icon: "i-download-simple",
-        run: () => showPage("update"),
+        run: () => showPage("nte-update"),
       },
       secondary: {
         label: "此版本不再显示",
@@ -1902,7 +1963,7 @@ function schedulePreloadRefresh() {
       if (
         isDesktop() &&
         state.bootstrap?.launcherRoot &&
-        state.page !== "update" &&
+        state.page !== "nte-update" &&
         !downloadBusy() &&
         !state.resourcesSaving
       )
@@ -2004,99 +2065,6 @@ export async function cancelGameDownload() {
   }
 }
 
-function readBulletinCache(distribution: string) {
-  try {
-    const parsed = JSON.parse(
-      window.localStorage.getItem(`${BULLETIN_CACHE_KEY}.${distribution}`) ||
-        "",
-    ) as { savedAt?: unknown; feed?: BulletinFeed };
-    if (
-      typeof parsed.savedAt !== "number" ||
-      !parsed.feed ||
-      !Array.isArray(parsed.feed.items) ||
-      !Array.isArray(parsed.feed.errors)
-    )
-      return null;
-    return { savedAt: parsed.savedAt, feed: parsed.feed };
-  } catch {
-    return null;
-  }
-}
-
-function writeBulletinCache(feed: BulletinFeed, distribution: string) {
-  try {
-    window.localStorage.setItem(
-      `${BULLETIN_CACHE_KEY}.${distribution}`,
-      JSON.stringify({ savedAt: Date.now(), feed }),
-    );
-  } catch {}
-}
-
-export async function fetchBulletins(silent = true, force = false) {
-  const epoch = generation;
-  const distribution =
-    gameSettings(state.bootstrap?.settings).distribution || "cn";
-  if (state.bulletinsLoading) return;
-  const cached = readBulletinCache(distribution);
-  if (
-    !force &&
-    cached &&
-    cached.feed.errors.length === 0 &&
-    !state.bulletins?.errors.length &&
-    Date.now() - cached.savedAt < BULLETIN_CACHE_TTL_MS
-  ) {
-    state.bulletins = cached.feed;
-    return;
-  }
-  const request = ++bulletinRequest;
-  if (!state.bulletins && cached) state.bulletins = cached.feed;
-  state.bulletinsLoading = true;
-  try {
-    const feed = await invoke("fetch_bulletins", { distribution });
-    if (epoch !== generation || request !== bulletinRequest) return;
-    state.bulletins = feed;
-    if (feed.errors.length === 0) writeBulletinCache(feed, distribution);
-    if (!silent && feed.errors.length > 0 && feed.items.length === 0) {
-      notify("公告暂时无法更新，请稍后重试。", "error", 6000, {
-        key: "bulletins",
-        primary: {
-          label: "重试",
-          icon: "i-arrows-clockwise",
-          run: () => fetchBulletins(false, true),
-        },
-        secondary: { label: "查看公告", run: () => showPage("bulletin") },
-      });
-    }
-  } catch (error) {
-    if (epoch !== generation || request !== bulletinRequest) return;
-    if (!state.bulletins) {
-      state.bulletins = {
-        items: [],
-        errors: [error instanceof Error ? error.message : String(error)],
-      };
-    }
-    if (!silent) {
-      notify(
-        error instanceof Error ? error.message : String(error),
-        "error",
-        6000,
-        {
-          key: "bulletins",
-          primary: {
-            label: "重试",
-            icon: "i-arrows-clockwise",
-            run: () => fetchBulletins(false, true),
-          },
-          secondary: { label: "查看公告", run: () => showPage("bulletin") },
-        },
-      );
-    }
-  } finally {
-    if (epoch === generation && request === bulletinRequest)
-      state.bulletinsLoading = false;
-  }
-}
-
 function setLaunchState(next: GamePhase) {
   const previous = state.game;
   state.game = next;
@@ -2177,7 +2145,7 @@ async function launchGame() {
   if (state.game !== "idle" || runtimeEnvironmentBusy.value) return;
   if (form.launchMode === "direct") {
     if (!form.gameAccountId) {
-      openSettings("game");
+      openSettings("nte-game");
       notify("请先在游戏与启动设置中选择游戏账号.", "error");
       return;
     }
@@ -2351,7 +2319,7 @@ export function handleLaunchAction() {
   else if (state.game === "launching") void pauseLaunch();
   else if (state.game === "closing") return;
   else if (!state.bootstrap?.gameExists || downloadNeedsWork())
-    showPage("update");
+    showPage("nte-update");
   else if (!downloadBlocksLaunch()) void launchGame();
 }
 
@@ -2364,24 +2332,25 @@ function installPathsChanged(
   const previousGame = gameSettings(previous);
   const nextGame = gameSettings(next);
   if (previousGame.distribution !== nextGame.distribution) return true;
-  const previousRoot =
-    previousGame.distribution === "cn"
-      ? previousGame.installRoot
-      : previousGame.globalInstallRoot;
-  const nextRoot =
-    nextGame.distribution === "cn"
-      ? nextGame.installRoot
-      : nextGame.globalInstallRoot;
-  if (normalizedRoot(previousRoot || "") === normalizedRoot(nextRoot || ""))
+  const key = activeChannel()?.installRootKey;
+  if (!key) return false;
+  const previousRoot = previousGame.installRoots?.[key];
+  const nextRoot = nextGame.installRoots?.[key];
+  if (normalizedRoot(previousRoot ?? "") === normalizedRoot(nextRoot ?? "")) {
     return false;
+  }
   // 首次自动保存会把界面上的默认探测目录写入设置, 这不算切换目录。
-  if (
+  return !(
     !previousRoot &&
     nextRoot &&
-    normalizedRoot(nextRoot) === normalizedRoot(previousResolvedRoot || "")
-  )
-    return false;
-  return true;
+    normalizedRoot(nextRoot) === normalizedRoot(previousResolvedRoot ?? "")
+  );
+}
+
+function selectedLaunchMode(): string {
+  return ["official", "background", "direct"].includes(form.launchMode)
+    ? form.launchMode
+    : "background";
 }
 
 function currentSettings(): Settings {
@@ -2389,27 +2358,32 @@ function currentSettings(): Settings {
   const persisted = installPathsBusy.value
     ? state.bootstrap?.settings
     : undefined;
-  const launchMode = ["official", "background", "direct"].includes(
-    form.launchMode,
-  )
-    ? form.launchMode
-    : "background";
   const savedGame = gameSettings(persisted ?? state.bootstrap?.settings);
   const gameId = activeGame(persisted ?? state.bootstrap?.settings);
   const games: Settings["games"] = {
     ...(state.bootstrap?.settings.games ?? {}),
   };
+  const active = activeChannel();
+  const rootKey = active?.installRootKey;
+  const installRoots = persisted
+    ? { ...(savedGame.installRoots ?? {}) }
+    : Object.fromEntries(
+        Object.entries(form.installRoots)
+          .map(([key, value]) => [key, value.trim()])
+          .filter(([, value]) => value.length > 0),
+      );
+  if (rootKey && !installRoots[rootKey]) {
+    const detectedRoot = currentRoot().trim();
+    if (detectedRoot) installRoots[rootKey] = detectedRoot;
+  }
   const game: GameSettings = {
     audio: { ...form.audio },
-    installRoot: persisted
-      ? savedGame.installRoot
-      : form.installRoot.trim() || null,
-    globalInstallRoot: persisted
-      ? savedGame.globalInstallRoot
-      : form.globalInstallRoot.trim() || null,
-    distribution: persisted ? savedGame.distribution : form.distribution,
+    installRoots,
+    distribution: persisted
+      ? savedGame.distribution
+      : (form.distribution ?? null),
     preloadRoot: form.preloadRoot.trim() || null,
-    launchMode,
+    launchMode: selectedLaunchMode(),
     gameAccountId: form.gameAccountId || null,
     gameMode: {
       ...form.gameMode,
@@ -2448,6 +2422,117 @@ function currentSettings(): Settings {
   };
 }
 
+/** 宿主 owner 的字段视图; games 属于游戏 owner. */
+function hostSettingsView(settings: Settings): Record<string, unknown> {
+  const view: Record<string, unknown> = { ...settings };
+  delete view.games;
+  delete view.sections;
+  return view;
+}
+
+/** 当前 owner 的表单视图; 与 owner 不匹配时返回 null. */
+function currentSettingsView(owner: string): Record<string, unknown> | null {
+  const settings = currentSettings();
+  if (owner === HOST_SETTINGS_OWNER) return hostSettingsView(settings);
+  if (owner !== gameSettingsOwner(settings)) return null;
+  const game = settings.games[activeGame(settings)];
+  return game ? { ...game } : null;
+}
+
+/** 首次启动时表单里展示的自动探测目录; 未保存过路径时不算用户修改. */
+function detectedInstallRoot(key: string): string | null {
+  const settings = state.bootstrap?.settings;
+  if (!settings) return null;
+  const game = gameSettings(settings);
+  if (game.installRoots?.[key]) return game.installRoots[key];
+  const activeKey = activeChannel()?.installRootKey;
+  return key === activeKey ? (state.bootstrap?.installRoot ?? null) : null;
+}
+
+/** 该 owner 需要提交的补丁; 没有实际改动时返回 null. */
+function settingsOwnerPatch(owner: string): SettingsPatch | null {
+  const saved = state.bootstrap?.settings;
+  if (!saved) return null;
+  const schema = settingsSchema(owner);
+  if (schema) {
+    const current = declaredSettings[owner] ?? {};
+    const patch: SettingsPatch = {};
+    for (const field of schema.fields) {
+      if (JSON.stringify(current[field.key]) !== JSON.stringify(field.value)) {
+        patch[field.key] = current[field.key];
+      }
+    }
+    return Object.keys(patch).length ? patch : null;
+  }
+  const current = currentSettingsView(owner);
+  if (!current) return null;
+  const previous =
+    owner === HOST_SETTINGS_OWNER
+      ? hostSettingsView(saved)
+      : { ...gameSettings(saved) };
+  const patch: SettingsPatch = {};
+  for (const [key, value] of Object.entries(current)) {
+    if (key === "installRoots" && owner !== HOST_SETTINGS_OWNER) {
+      const savedRoots = (previous[key] ?? {}) as Record<string, string>;
+      const nextRoots = { ...(value as Record<string, string>) };
+      for (const rootKey of Object.keys(nextRoots)) {
+        if (
+          !savedRoots[rootKey] &&
+          nextRoots[rootKey] === detectedInstallRoot(rootKey)
+        )
+          delete nextRoots[rootKey];
+      }
+      if (JSON.stringify(nextRoots) !== JSON.stringify(savedRoots)) {
+        patch[key] = nextRoots;
+      }
+      continue;
+    }
+    if (JSON.stringify(value) !== JSON.stringify(previous[key])) {
+      patch[key] = value;
+    }
+  }
+  return Object.keys(patch).length ? patch : null;
+}
+
+function pendingSettingsOwners(): { owner: string; patch: SettingsPatch }[] {
+  const pending: { owner: string; patch: SettingsPatch }[] = [];
+  for (const owner of [...dirtySettingsOwners]) {
+    const patch = settingsOwnerPatch(owner);
+    if (!patch) {
+      dirtySettingsOwners.delete(owner);
+      continue;
+    }
+    pending.push({ owner, patch });
+  }
+  return pending;
+}
+
+/** 只覆盖服务端返回的 owner 视图, 不触碰其他 owner 与未提交的表单. */
+function applySettingsSection(section: SettingsSection): void {
+  const settings = state.bootstrap?.settings;
+  if (!settings) return;
+  const schema = settingsSchema(section.owner);
+  if (schema) {
+    const values =
+      declaredSettings[section.owner] ?? (declaredSettings[section.owner] = {});
+    for (const field of schema.fields) {
+      if (!(field.key in section.fields)) continue;
+      field.value = section.fields[field.key] as SettingsFieldValue;
+      values[field.key] = field.value;
+    }
+    return;
+  }
+  if (section.owner === HOST_SETTINGS_OWNER) {
+    Object.assign(settings, section.fields);
+    return;
+  }
+  const prefix = "game:";
+  if (!section.owner.startsWith(prefix)) return;
+  const game = section.owner.slice(prefix.length) as GameId;
+  if (!game) return;
+  settings.games[game] = section.fields as unknown as GameSettings;
+}
+
 function clearSaveStatusTimer() {
   if (!saveStatusTimer) return;
   window.clearTimeout(saveStatusTimer);
@@ -2472,7 +2557,12 @@ function cancelAutoSaveTimer() {
 }
 
 // 表单事件只登记修改, 由统一队列合并并串行写入。
-export function queueSettingsSave(delay = AUTO_SAVE_DELAY) {
+// 指定 owner 时只提交该 owner 的字段补丁; 未指定时只保存签到偏好.
+export function queueSettingsSave(
+  owner?: SettingsSaveOwner,
+  delay = AUTO_SAVE_DELAY,
+) {
+  if (owner) dirtySettingsOwners.add(settingsOwner(owner));
   autoSaveQueued = true;
   if (ui.saveState === "saved" || ui.saveState === "error") {
     clearSaveStatusTimer();
@@ -2487,6 +2577,11 @@ export function queueSettingsSave(delay = AUTO_SAVE_DELAY) {
     autoSaveTimer = null;
     void flushAutoSave();
   }, delay);
+}
+
+/** 签到偏好不属于设置 owner; 改动后立即进入同一保存队列. */
+export function queueAttendanceSave(delay = 0) {
+  queueSettingsSave(undefined, delay);
 }
 
 async function flushAutoSave() {
@@ -2527,11 +2622,12 @@ async function persistCurrentSettings(
   refreshOnPathChange = false,
 ): Promise<boolean> {
   if (epoch !== generation) return false;
-  const previous = state.bootstrap?.settings;
+  // 保存会就地合并 owner 视图, 先留一份快照用于判断安装路径是否变化.
+  const previous = state.bootstrap?.settings
+    ? JSON.parse(JSON.stringify(state.bootstrap.settings))
+    : undefined;
   const previousResolvedRoot = state.bootstrap?.installRoot;
-  const settings = currentSettings();
-  const serialized = JSON.stringify(settings);
-  const changed = serialized !== lastSavedSettings;
+  const ownerSections = pendingSettingsOwners();
   const preferences = attendancePreferences();
   const savedPreferences = attendance.status?.preferences;
   const preferencesChanged = Boolean(
@@ -2542,23 +2638,38 @@ async function persistCurrentSettings(
       JSON.stringify(savedPreferences.tasks) !==
         JSON.stringify(preferences.tasks)),
   );
-  if (!changed && !preferencesChanged) return true;
+  if (ownerSections.length === 0 && !preferencesChanged) return true;
 
   clearSaveStatusTimer();
   ui.saveState = "saving";
   try {
-    if (changed) {
-      const data = await invoke("save_settings", { settings });
+    // 每个 owner 仅提交自己视图内的字段, 服务端按白名单校验并原子落盘.
+    for (const section of ownerSections) {
+      const updated = await invoke("update_settings_section", {
+        owner: section.owner,
+        patch: section.patch,
+      });
       if (epoch !== generation) return false;
-      lastSavedSettings = serialized;
-      // 保存响应只刷新环境状态, 不覆盖请求期间继续修改的表单。
-      applyBootstrap(data, false, false);
-      if (
-        refreshOnPathChange &&
-        installPathsChanged(previous, settings, previousResolvedRoot)
-      ) {
-        void refreshInstallationStatus();
-      }
+      applySettingsSection(updated);
+      // 请求期间可能又改回了新值: 仍有差异时保留待提交状态.
+      if (settingsOwnerPatch(updated.owner))
+        dirtySettingsOwners.add(updated.owner);
+      else dirtySettingsOwners.delete(updated.owner);
+    }
+    const next = state.bootstrap?.settings;
+    const pathsChanged = Boolean(
+      previous &&
+      next &&
+      installPathsChanged(previous, next, previousResolvedRoot),
+    );
+    if (pathsChanged && previous && next) {
+      applySettingsEffects(previous, next, previousResolvedRoot);
+      // owner 视图不含探测出的启动器目录, 路径变化后补读一次完整快照.
+      try {
+        const data = await invoke("bootstrap");
+        if (epoch !== generation) return false;
+        applyBootstrap(data, false, false);
+      } catch {}
     }
     if (preferencesChanged) {
       try {
@@ -2576,6 +2687,7 @@ async function persistCurrentSettings(
       }
     }
     if (epoch !== generation) return false;
+    if (refreshOnPathChange && pathsChanged) void refreshInstallationStatus();
     return true;
   } catch (error) {
     if (epoch !== generation) return false;
@@ -2637,7 +2749,7 @@ export function createRuntimeEnvironment(
   name: string,
   protonPath: string,
   sourceId: string | null,
-  distribution: "cn" | "global",
+  distribution: string,
 ) {
   return changeEnvironment(() =>
     invoke("environment_create", { name, protonPath, sourceId, distribution }),
@@ -2669,7 +2781,7 @@ export async function refreshMigrationStatus() {
 }
 
 export async function planInstallMigration(
-  distribution: "cn" | "global",
+  distribution: string,
   target: string,
 ) {
   migration.planning = true;
@@ -2685,7 +2797,7 @@ export async function planInstallMigration(
 }
 
 export async function startInstallMigration(
-  distribution: "cn" | "global",
+  distribution: string,
   target: string,
 ) {
   migration.error = "";
@@ -2789,19 +2901,10 @@ export async function openUrl(url: string) {
   }
 }
 
-function hashPage() {
+function hashPage(): PageId {
   const value = window.location.hash.replace(/^#/, "");
-  return [
-    "home",
-    "runtime-setup",
-    "update",
-    "game-mode",
-    "bulletin",
-    "records",
-    "settings",
-  ].includes(value)
-    ? value
-    : "home";
+  if (!isPageId(value)) return DEFAULT_PAGE_ID;
+  return resolvePage(value, factsFrom(state.bootstrap)) ?? DEFAULT_PAGE_ID;
 }
 
 export function syncScrollEdges() {
@@ -2829,29 +2932,20 @@ export function openSettings(category: SettingsCategory) {
 }
 
 export function showPage(name: string | undefined, syncHash = true) {
-  if (
-    !name ||
-    ![
-      "home",
-      "runtime-setup",
-      "update",
-      "game-mode",
-      "bulletin",
-      "records",
-      "settings",
-    ].includes(name)
-  )
-    return;
-  const changed = state.page !== name;
-  state.page = name;
-  if (name === "update") dismissPreloadNotice();
-  if (name === "records") void loadPlaytimeIfStale();
+  if (!name) return;
+  // 当前游戏下不可见的页面不挂载; 请求回退到第一个可见页, 不停在空白面板.
+  const page = resolvePage(name, factsFrom(state.bootstrap));
+  if (!page) return;
+  const changed = state.page !== page;
+  state.page = page;
+  if (page === "nte-update") dismissPreloadNotice();
+  if (page === "records") void loadPlaytimeIfStale();
   // 封面与播放起点一致, 返回主页时不恢复到缩放动画的中途。
   if (changed) applyHeroMedia(state.heroMedia);
   void nextTick(syncScrollEdges);
-  if (syncHash && window.location.hash !== "#" + name) {
+  if (syncHash && window.location.hash !== "#" + page) {
     try {
-      history.replaceState(null, "", "#" + name);
+      history.replaceState(null, "", "#" + page);
     } catch {}
   }
 }
@@ -2934,14 +3028,11 @@ function bindInteractions() {
   onDocument("keydown", (event) => {
     if (!event.ctrlKey || event.altKey || event.metaKey) return;
     const index = ["1", "2", "3", "4", "5", "6"].indexOf(event.key);
-    if (index >= 0) {
-      event.preventDefault();
-      showPage(
-        ["home", "update", "game-mode", "bulletin", "records", "settings"][
-          index
-        ],
-      );
-    }
+    // 快捷键顺序跟随当前可见的导航, 切换游戏后重新读取.
+    const target = navigationItems(factsFrom(state.bootstrap))[index];
+    if (!target) return;
+    event.preventDefault();
+    showPage(target.id);
   });
 
   onWindow("hashchange", () => showPage(hashPage(), false));
@@ -3038,6 +3129,7 @@ export async function init() {
       // 外部启动已写入新设置, 丢弃尚未提交的旧表单, 避免随后覆盖.
       cancelAutoSaveTimer();
       autoSaveQueued = false;
+      dirtySettingsOwners.clear();
       applyBootstrap(data, false);
     }),
   );
@@ -3073,7 +3165,6 @@ export async function init() {
 
   void loadDownloadStatus();
   void refreshMigrationStatus();
-  void fetchBulletins();
   whenIntroDone(() => {
     void checkPreloadAvailability();
     schedulePreloadRefresh();
@@ -3125,7 +3216,7 @@ export function dispose() {
   resourceCatalogRevision++;
   resourceDownloadsStarting.clear();
   saveStatusTimer = 0;
-  lastSavedSettings = "";
+  dirtySettingsOwners.clear();
   saveChain = Promise.resolve(true);
   events.abort();
   disposers.splice(0).forEach((stop) => stop());
@@ -3161,8 +3252,6 @@ export function dispose() {
     resourcesLoading: false,
     resourcesSaving: false,
     resourcesError: "",
-    bulletins: null,
-    bulletinsLoading: false,
     page: "home",
     checking: false,
     game: "idle",

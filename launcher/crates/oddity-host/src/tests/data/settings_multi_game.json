@@ -1,0 +1,362 @@
+{
+  "activeGame": "hsr",
+  "adaptiveTheme": true,
+  "gamepad": {
+    "deadZone": 0.2800000011920929,
+    "enabled": true,
+    "icons": "auto",
+    "profiles": {
+      "complete": {
+        "channels": [
+          {
+            "attack": 12.0,
+            "carrier": 100.0,
+            "carrier_phase": 0.0,
+            "curve": "smooth",
+            "decay": 35.0,
+            "delay": 0.0,
+            "depth": 1.0,
+            "duty": 0.5,
+            "end_frequency": 100.0,
+            "gain": 0.2,
+            "hold": 90.0,
+            "modulation": "flat",
+            "phase": 0.0,
+            "rate": 8.0,
+            "release": 180.0,
+            "sustain": 0.3,
+            "wave": "sine"
+          },
+          {
+            "attack": 12.0,
+            "carrier": 180.0,
+            "carrier_phase": 0.0,
+            "curve": "smooth",
+            "decay": 35.0,
+            "delay": 12.0,
+            "depth": 1.0,
+            "duty": 0.5,
+            "end_frequency": 180.0,
+            "gain": 0.12,
+            "hold": 25.0,
+            "modulation": "flat",
+            "phase": 0.0,
+            "rate": 8.0,
+            "release": 90.0,
+            "sustain": 0.3,
+            "wave": "sine"
+          }
+        ],
+        "gap": 120.0,
+        "mode": "rumble",
+        "name": "完成",
+        "repeat": 1,
+        "schema": "oddity.haptics.v1",
+        "trigger_ms": 0.0,
+        "triggers": [
+          {
+            "end": 5,
+            "frequency": 30,
+            "mode": "off",
+            "start": 2,
+            "strength": 2,
+            "zones": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "end": 5,
+            "frequency": 30,
+            "mode": "off",
+            "start": 2,
+            "strength": 2,
+            "zones": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      "confirm": {
+        "channels": [
+          {
+            "attack": 12.0,
+            "carrier": 100.0,
+            "carrier_phase": 0.0,
+            "curve": "smooth",
+            "decay": 35.0,
+            "delay": 0.0,
+            "depth": 1.0,
+            "duty": 0.5,
+            "end_frequency": 100.0,
+            "gain": 0.2,
+            "hold": 25.0,
+            "modulation": "flat",
+            "phase": 0.0,
+            "rate": 8.0,
+            "release": 90.0,
+            "sustain": 0.3,
+            "wave": "sine"
+          },
+          {
+            "attack": 12.0,
+            "carrier": 180.0,
+            "carrier_phase": 0.0,
+            "curve": "smooth",
+            "decay": 35.0,
+            "delay": 12.0,
+            "depth": 1.0,
+            "duty": 0.5,
+            "end_frequency": 180.0,
+            "gain": 0.12,
+            "hold": 25.0,
+            "modulation": "flat",
+            "phase": 0.0,
+            "rate": 8.0,
+            "release": 90.0,
+            "sustain": 0.3,
+            "wave": "sine"
+          }
+        ],
+        "gap": 120.0,
+        "mode": "rumble",
+        "name": "确认",
+        "repeat": 1,
+        "schema": "oddity.haptics.v1",
+        "trigger_ms": 0.0,
+        "triggers": [
+          {
+            "end": 5,
+            "frequency": 30,
+            "mode": "off",
+            "start": 2,
+            "strength": 2,
+            "zones": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "end": 5,
+            "frequency": 30,
+            "mode": "off",
+            "start": 2,
+            "strength": 2,
+            "zones": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      "error": {
+        "channels": [
+          {
+            "attack": 12.0,
+            "carrier": 100.0,
+            "carrier_phase": 0.0,
+            "curve": "smooth",
+            "decay": 35.0,
+            "delay": 0.0,
+            "depth": 1.0,
+            "duty": 0.5,
+            "end_frequency": 100.0,
+            "gain": 0.2,
+            "hold": 25.0,
+            "modulation": "flat",
+            "phase": 0.0,
+            "rate": 8.0,
+            "release": 90.0,
+            "sustain": 0.3,
+            "wave": "sine"
+          },
+          {
+            "attack": 12.0,
+            "carrier": 180.0,
+            "carrier_phase": 0.0,
+            "curve": "smooth",
+            "decay": 35.0,
+            "delay": 12.0,
+            "depth": 1.0,
+            "duty": 0.5,
+            "end_frequency": 180.0,
+            "gain": 0.12,
+            "hold": 25.0,
+            "modulation": "flat",
+            "phase": 0.0,
+            "rate": 8.0,
+            "release": 90.0,
+            "sustain": 0.3,
+            "wave": "sine"
+          }
+        ],
+        "gap": 90.0,
+        "mode": "rumble",
+        "name": "错误",
+        "repeat": 2,
+        "schema": "oddity.haptics.v1",
+        "trigger_ms": 0.0,
+        "triggers": [
+          {
+            "end": 5,
+            "frequency": 30,
+            "mode": "off",
+            "start": 2,
+            "strength": 2,
+            "zones": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "end": 5,
+            "frequency": 30,
+            "mode": "off",
+            "start": 2,
+            "strength": 2,
+            "zones": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        ]
+      }
+    },
+    "strength": 100,
+    "vibration": true
+  },
+  "games": {
+    "hsr": {
+      "activeEnvironment": null,
+      "audio": {
+        "device": null,
+        "volume": 100
+      },
+      "distribution": null,
+      "gameAccountId": null,
+      "gameMode": {
+        "gamescope": {
+          "enabled": false,
+          "fps": 0,
+          "gameHeight": 0,
+          "gameWidth": 0,
+          "outputHeight": 0,
+          "outputWidth": 0,
+          "scaling": "linear",
+          "windowMode": "fullscreen"
+        },
+        "inhibit": false,
+        "notifications": false,
+        "overlay": false,
+        "performance": false
+      },
+      "installRoots": {},
+      "launchMode": "official",
+      "preloadRoot": null,
+      "stableEnvironment": null,
+      "updates": {
+        "autoDownload": true,
+        "limitBytesPerSecond": 0,
+        "metered": "ask",
+        "window": null
+      }
+    },
+    "nte": {
+      "activeEnvironment": null,
+      "audio": {
+        "device": null,
+        "volume": 100
+      },
+      "distribution": "global",
+      "gameAccountId": null,
+      "gameMode": {
+        "gamescope": {
+          "enabled": false,
+          "fps": 0,
+          "gameHeight": 0,
+          "gameWidth": 0,
+          "outputHeight": 0,
+          "outputWidth": 0,
+          "scaling": "linear",
+          "windowMode": "fullscreen"
+        },
+        "inhibit": false,
+        "notifications": false,
+        "overlay": false,
+        "performance": false
+      },
+      "installRoots": {
+        "cn": "/games/nte"
+      },
+      "launchMode": "background",
+      "preloadRoot": null,
+      "stableEnvironment": null,
+      "updates": {
+        "autoDownload": false,
+        "limitBytesPerSecond": 0,
+        "metered": "ask",
+        "window": null
+      }
+    }
+  },
+  "heroMedia": "video",
+  "language": "zh-CN",
+  "minimizeToTrayOnClose": true,
+  "pauseHeroOnBlur": true,
+  "reduceMotion": false,
+  "relativeHeatmap": true,
+  "runtimeEnvironments": [],
+  "showLauncherAfterGameExit": true,
+  "snapshotSuccessMinutes": 1,
+  "stackBulletins": false,
+  "theme": "dark"
+}

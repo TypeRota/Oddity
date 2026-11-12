@@ -17,7 +17,7 @@ for (const width of [1180, 640]) {
     await expect(page.locator("#settings-export-logs")).toBeVisible();
     await expect(page.locator("#update-state-title")).toHaveText("已是最新");
     await expect(
-      page.locator("#page-update").getByRole("heading", {
+      page.locator("#page-nte-update").getByRole("heading", {
         name: "游戏资源已就绪",
         exact: true,
         includeHidden: true,

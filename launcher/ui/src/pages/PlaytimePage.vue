@@ -15,6 +15,8 @@ import {
   state,
 } from "../core/controller";
 import { buildPlaytimeStats, formatPlaytime } from "../core/playtime";
+import { factsFrom } from "../host/facts";
+import { playtimePosterPrefix } from "../host/pages";
 import { useControlMotion } from "../composables/useControlMotion";
 
 const { surface } = useControlMotion();
@@ -38,6 +40,10 @@ const heatmapTotal = computed(() =>
   stats.value.heatmap.weeks.flat().reduce((total, day) => total + day.ms, 0),
 );
 const hasRecords = computed(() => stats.value.sessionCount > 0);
+// 海报文件名由当前游戏的展示声明给出, 日期由海报组件追加.
+const posterPrefix = computed(() =>
+  playtimePosterPrefix(factsFrom(state.bootstrap)),
+);
 const empty = computed(
   () => playtime.loaded && !playtime.loading && !hasRecords.value,
 );
@@ -194,6 +200,7 @@ const isActive = computed(() => state.page === "records");
         v-model:open="posterOpen"
         :stats="stats"
         :theme="form.theme"
+        :poster-prefix="posterPrefix"
         :reduce-motion="form.reduceMotion"
       />
     </template>

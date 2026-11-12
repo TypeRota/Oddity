@@ -1,0 +1,21 @@
+[package]
+name = "oddity-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless CLI for Oddity launcher (check/apply/doctor)"
+
+# 二进制名保持不变: pkexec 策略, 桌面动作, nix 包装与文档都按这个名字引用.
+[[bin]]
+name = "nte-cli"
+path = "src/main.rs"
+
+[dependencies]
+oddity-backend = { path = "../oddity-backend" }
+oddity-host = { path = "../oddity-host" }
+oddity-runtime = { path = "../oddity-runtime" }
+anyhow.workspace = true
+
+[dev-dependencies]
+# 测试装配显式包含 fixture 包; 二进制仍按默认 feature 构建.
+oddity-backend = { path = "../oddity-backend", features = ["game-fixture"] }

@@ -12,6 +12,7 @@ import {
 } from "../core/controller";
 import type { RuntimeEnvironment } from "../types/launcher";
 import { activeGame, gameSettings } from "../core/game";
+import { channelLabel } from "../host/facts";
 import BaseInput from "./BaseInput.vue";
 import SettingGroup from "./settings/SettingGroup.vue";
 import BaseModal from "./BaseModal.vue";
@@ -25,7 +26,7 @@ const proton = ref("");
 const confirming = ref(false);
 const pendingRemoval = ref<RuntimeEnvironment | null>(null);
 const sourceId = ref("");
-const distribution = ref<"cn" | "global">("cn");
+const distribution = ref<string>("cn");
 const settings = computed(() => state.bootstrap?.settings);
 const profiles = computed(() =>
   (settings.value?.runtimeEnvironments ?? []).filter(
@@ -60,15 +61,18 @@ const sourceOptions = computed(() => [
 const installations = computed(
   () => state.bootstrap?.runtimeInstallations ?? [],
 );
+const channels = computed(() => state.bootstrap?.channels ?? []);
+function channelName(id: string) {
+  return channelLabel({ channels: channels.value }, id) || id;
+}
 const distributionOptions = computed(() =>
-  (["cn", "global"] as const).map((value) => {
+  channels.value.map((channel) => {
     const installed = installations.value.find(
-      (entry) => entry.distribution === value,
+      (entry) => entry.distribution === channel.id,
     )?.installed;
     return {
-      value,
-      label:
-        (value === "cn" ? "国服" : "国际服") + (installed ? "" : " (未安装)"),
+      value: channel.id,
+      label: channel.label + (installed ? "" : " (未安装)"),
       disabled: !installed,
     };
   }),
@@ -161,7 +165,7 @@ async function discard() {
         <small v-if="profile" class="field__hint">
           Proton: {{ profile.proton.path }}<br />
           绑定的游戏目录: {{ profile.installRoot }} ({{
-            profile.distribution === "cn" ? "国服" : "国际服"
+            channelName(profile.distribution)
           }})
         </small>
       </div>

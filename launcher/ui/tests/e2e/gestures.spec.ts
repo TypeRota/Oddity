@@ -70,12 +70,12 @@ test("通知短拖回弹、垂直拖动与指针取消保留通知", async ({ pa
 test("按住导航连续跨图标、缝隙与反向滑动，松手不回跳", async ({ page }) => {
   await page.goto("/");
   const home = await center(page, '.rail-item[data-page="home"]');
-  const update = await center(page, '.rail-item[data-page="update"]');
+  const update = await center(page, '.rail-item[data-page="nte-update"]');
   const settings = await center(page, '.rail-item[data-page="settings"]');
   await page.mouse.move(home.x, home.y);
   await page.mouse.down();
   await page.mouse.move(update.x, update.y, { steps: 8 });
-  await expect(page.locator('[data-page="update"]')).toHaveAttribute(
+  await expect(page.locator('[data-page="nte-update"]')).toHaveAttribute(
     "aria-current",
     "page",
   );
@@ -90,11 +90,11 @@ test("按住导航连续跨图标、缝隙与反向滑动，松手不回跳", as
   );
   await page.mouse.move(update.x, update.y, { steps: 16 });
   await page.mouse.up();
-  await expect(page.locator('[data-page="update"]')).toHaveAttribute(
+  await expect(page.locator('[data-page="nte-update"]')).toHaveAttribute(
     "aria-current",
     "page",
   );
-  await expect(page.locator('[data-page="update"]')).toBeFocused();
+  await expect(page.locator('[data-page="nte-update"]')).toBeFocused();
   await page.locator('[data-page="settings"]').click();
   await expect(page.locator('[data-page="settings"]')).toHaveAttribute(
     "aria-current",
@@ -217,7 +217,7 @@ test("导航键盘焦点连续移动，失焦会取消拖动", async ({ page }) 
   const home = page.locator('[data-page="home"]');
   await home.focus();
   await page.keyboard.press("ArrowRight");
-  await expect(page.locator('[data-page="update"]')).toBeFocused();
+  await expect(page.locator('[data-page="nte-update"]')).toBeFocused();
   await page.keyboard.press("End");
   await expect(page.locator('[data-page="settings"]')).toBeFocused();
   await page.keyboard.press("Home");
@@ -305,7 +305,11 @@ test("按住游戏模式分类条拖动切类", async ({ page }) => {
 });
 
 test("按住公告分类条拖动切换", async ({ page }) => {
-  await openDrawer(page, "bulletin", '.bulletin-filters [data-value="all"]');
+  await openDrawer(
+    page,
+    "nte-bulletin",
+    '.bulletin-filters [data-value="all"]',
+  );
   const all = await center(page, '.bulletin-filters [data-value="all"]');
   const maintenance = await center(
     page,

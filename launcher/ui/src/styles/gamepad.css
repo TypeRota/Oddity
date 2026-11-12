@@ -94,6 +94,8 @@
   display: inline-flex;
   width: 24px;
   margin-left: 8px;
+  /* 先隐藏, 由动效按选中状态淡入; 避免按钮重建时闪一下提示. */
+  opacity: 0;
 }
 .control-button--icon .gamepad-button-hint {
   position: absolute;
@@ -206,6 +208,36 @@
   max-height: 80px;
   overflow: auto;
   margin-bottom: 18px;
+}
+.pad-keyboard__composition {
+  margin-left: 2px;
+  color: var(--accent-text);
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-underline-offset: 3px;
+}
+.pad-keyboard__candidates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: -8px 0 12px;
+}
+.pad-keyboard__candidate {
+  min-width: 0;
+  font-size: var(--text-sm);
+}
+.pad-keyboard__candidate-hint {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+.pad-keyboard__candidate-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: var(--text-sm);
 }
 .pad-keyboard__row {
   display: flex;

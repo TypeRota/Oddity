@@ -12,18 +12,18 @@ import {
   handleLaunchAction,
 } from "../core/controller";
 import { playerExpanded } from "../composables/useSceneMotion";
-import HomeGameRecords from "../components/HomeGameRecords.vue";
+import { factsFrom } from "../host/facts";
+import { selectHomeCards } from "../host/home-cards";
+import { gameDisplayName } from "../host/pages";
 import { gamepad } from "../core/gamepad";
-import { gameSettings } from "../core/game";
 import GamepadGlyph from "../components/GamepadGlyph.vue";
 const isActive = computed(() => state.page === "home");
+// 卡片与标题都按当前事实取: 不可见的卡片不挂载, 展示名由游戏包声明.
+const facts = computed(() => factsFrom(state.bootstrap));
+const cards = computed(() => selectHomeCards(facts.value));
 const prefersReduced = useReducedMotion();
 const reduced = computed(() => form.reduceMotion || prefersReduced.value);
-const gameName = computed(() =>
-  gameSettings(state.bootstrap?.settings).distribution === "global"
-    ? "NTE"
-    : "异环",
-);
+const gameName = computed(() => gameDisplayName(facts.value));
 // 状态行始终占位, 避免提示显隐时把标题和启动按钮一起顶动.
 const statusVisible = computed(
   () =>
@@ -86,7 +86,7 @@ function handleLaunchRegionKey(event: KeyboardEvent) {
   >
     <div class="hero">
       <div class="hero__inner">
-        <HomeGameRecords />
+        <component :is="card.component" v-for="card in cards" :key="card.id" />
         <motion.div
           class="hero__content"
           :initial="{ opacity: 0, y: 22 }"
@@ -161,7 +161,7 @@ function handleLaunchRegionKey(event: KeyboardEvent) {
             <button
               class="hero__status"
               id="home-status"
-              @click="showPage('update')"
+              @click="showPage('nte-update')"
               type="button"
               :tabindex="statusVisible ? undefined : -1"
               :aria-hidden="!statusVisible || undefined"

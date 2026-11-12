@@ -1,0 +1,31 @@
+[package]
+name = "oddity-game-nte"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "异环游戏包: 领域实现与命令组"
+
+[dependencies]
+oddity-contract = { path = "../../../crates/oddity-contract" }
+oddity-platform = { path = "../../../crates/oddity-platform" }
+oddity-runtime = { path = "../../../crates/oddity-runtime" }
+aes.workspace = true
+anyhow.workspace = true
+libc = "0.2"
+base64 = "0.23"
+cbc.workspace = true
+cipher.workspace = true
+flate2.workspace = true
+md-5.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { version = "1", features = ["rt"] }
+ureq.workspace = true
+zip.workspace = true
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = "3"
+

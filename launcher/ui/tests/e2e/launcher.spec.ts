@@ -69,14 +69,14 @@ test("导航、更新、设置、快捷键与启动关闭流程", async ({ page 
   await page.goto("/");
   await expect(page.locator("#launch-btn")).toHaveText(/启动游戏/);
   await expect(page.locator("#app")).toHaveClass(/is-intro-done/);
-  await page.locator('[data-page="update"]').click();
-  await expect(page.locator("#page-update")).toBeVisible();
+  await page.locator('[data-page="nte-update"]').click();
+  await expect(page.locator("#page-nte-update")).toBeVisible();
   await expect(page.locator("#update-state-title")).toHaveText("已是最新");
   await page.locator("#update-full").click();
   await expect(page.locator("#update-state-title")).toHaveText("正在检查");
   await expect(page.locator("#update-state-title")).toHaveText("已是最新");
-  await page.locator('[data-page="bulletin"]').click();
-  await expect(page.locator("#page-bulletin")).toBeVisible();
+  await page.locator('[data-page="nte-bulletin"]').click();
+  await expect(page.locator("#page-nte-bulletin")).toBeVisible();
   await page.keyboard.press("Control+6");
   await expect(page.locator("#page-settings")).toBeVisible();
   await settingsCategory(page, "maintenance");
@@ -94,7 +94,7 @@ test("导航、更新、设置、快捷键与启动关闭流程", async ({ page 
   await expect(page.locator("#set-motion")).toBeChecked();
   await expect(page.locator("#set-minimize-to-tray")).toBeChecked();
   await expect(page.locator("#app")).toHaveClass(/reduce-motion/);
-  await settingsCategory(page, "game");
+  await settingsCategory(page, "nte-game");
   await page.locator("#set-install").fill("/tmp/oddity-game");
   await page.locator("#set-install").press("Tab");
   await expect(page.locator("#settings-form")).toHaveAttribute(
@@ -139,8 +139,8 @@ test("导航、更新、设置、快捷键与启动关闭流程", async ({ page 
 });
 
 test("预览模式完整校验发现资源损坏并完成修复", async ({ page }) => {
-  await page.goto("/#update");
-  const update = page.locator("#page-update");
+  await page.goto("/#nte-update");
+  const update = page.locator("#page-nte-update");
   const primary = update.locator("#game-download-primary");
   // 预览资源大小一致, 快速检查显示就绪。
   await expect(primary).toHaveText("检查通过");
@@ -300,7 +300,7 @@ test("视频双缓冲循环无黑帧, 离页暂停并保留进度", async ({ pag
 test("多账号签到、自动保存和账号管理", async ({ page }) => {
   await page.goto("/#settings");
   const panel = page.locator(".attendance");
-  await settingsCategory(page, "account");
+  await settingsCategory(page, "nte-account");
   const action = page.locator("#attendance-action");
   await expect(action).toHaveText("立即登录");
   await expect(page.locator("#attendance-enabled")).toBeDisabled();
@@ -419,7 +419,7 @@ test("多账号签到、自动保存和账号管理", async ({ page }) => {
 test("Motion 弹窗入场、快速重开与减少动态效果", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto("/#settings");
-  await settingsCategory(page, "account");
+  await settingsCategory(page, "nte-account");
   const action = page.locator("#attendance-action");
   const dialog = page.getByRole("dialog");
   await action.scrollIntoViewIfNeeded();
@@ -471,7 +471,7 @@ test("Motion 弹窗入场、快速重开与减少动态效果", async ({ page })
   await expect(page.locator(".modal")).toHaveCount(0);
   await settingsCategory(page, "appearance");
   await page.locator("#set-motion").check({ force: true });
-  await settingsCategory(page, "account");
+  await settingsCategory(page, "nte-account");
   await action.click();
   expect(
     await dialog.evaluate((element) => element.getAnimations().length),
@@ -484,7 +484,7 @@ test("Motion 弹窗入场、快速重开与减少动态效果", async ({ page })
   await dialog.press("Escape");
   await settingsCategory(page, "appearance");
   await page.locator("#set-motion").uncheck({ force: true });
-  await settingsCategory(page, "account");
+  await settingsCategory(page, "nte-account");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await action.click();
   expect(
@@ -499,7 +499,7 @@ test("Motion 弹窗入场、快速重开与减少动态效果", async ({ page })
 
 test("国际服切换同步启动方式、公告来源和专属功能", async ({ page }) => {
   await page.goto("/#settings");
-  await settingsCategory(page, "game");
+  await settingsCategory(page, "nte-game");
   await page.locator("#set-distribution-trigger").click();
   await page.getByRole("option", { name: "国际服", exact: true }).click();
   await expect(page.locator("#settings-form")).toHaveAttribute(
@@ -510,7 +510,7 @@ test("国际服切换同步启动方式、公告来源和专属功能", async ({
   await expect(page.locator("#set-mode option[value=background]")).toHaveCount(
     1,
   );
-  await page.locator('[data-page="bulletin"]').click();
+  await page.locator('[data-page="nte-bulletin"]').click();
   await expect(page.locator(".bulletin-entry").first()).toContainText(
     "国际服官方新闻",
   );
@@ -546,7 +546,7 @@ test("任务授权控制手动执行, 全部关闭并在当天重新授权", asy
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/#settings");
-  await settingsCategory(page, "account");
+  await settingsCategory(page, "nte-account");
   const action = page.locator("#attendance-action");
   await action.click();
   const dialog = page.getByRole("dialog");

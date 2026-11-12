@@ -22,6 +22,10 @@ Rust 依赖见 [Cargo.lock](launcher/Cargo.lock), 许可证检查配置见 [deny
 
 音频启动环境中的 `target.object` 属性用于让 Easy Effects 保留游戏的独立路由, 依据其 [播放流目标识别逻辑](https://github.com/wwmm/easyeffects/blob/master/src/pw_node_manager.cpp); 未复制其代码.
 
+## 拼音词库
+
+手柄屏幕键盘的拼音词库由 [pinyin-data](https://github.com/mozillazg/pinyin-data) (MIT) 的单字读音、[jieba](https://github.com/fxsjy/jieba) (MIT) 的词表与词频和 [pinyin-pro](https://github.com/zh-lx/pinyin-pro) (MIT) 生成. 产物是 `launcher/ui/public/assets/pinyin-dict.json`, 生成脚本为 `launcher/ui/scripts/build-pinyin-dict.mjs`; 运行时按需读取本地文件, 不联网.
+
 ## 颜色计算
 
 | 用途           | 来源                                                                                                             | 许可证        |
@@ -74,9 +78,9 @@ Rust 依赖见 [Cargo.lock](launcher/Cargo.lock), 许可证检查配置见 [deny
 
 启动环境向导使用 [canvas-confetti](https://github.com/catdad/canvas-confetti) 的粒子物理与 Canvas 渲染, 许可证为 [ISC](https://github.com/catdad/canvas-confetti/blob/master/LICENSE). 发射时序由 Anime.js 编排, 尊重减少动态效果设置, 离开向导时清理粒子.
 
-## 性能采样与图表
+## 性能记录与图表
 
-性能比较调用系统 [MangoHud](https://github.com/flightlessmango/MangoHud) (MIT), 按其官方 `logging.cpp` 定义读取逐帧 CSV, 参考随附 mangoplot 的本地日志出图方式; 未复制代码, 不上传采样数据. 硬件补充指标来自 `/proc` 和系统 `nvidia-smi`, 无需安装 Python 分析环境.
+性能记录调用系统 [MangoHud](https://github.com/flightlessmango/MangoHud) (MIT), 按其官方 `logging.cpp` 定义读取逐帧 CSV, 参考随附 mangoplot 的本地日志出图方式; 未复制代码, 不上传采样数据. 硬件补充指标来自 `/proc` 和系统 `nvidia-smi`, 无需安装 Python 分析环境.
 
 SVG 转 PNG 使用 [resvg](https://github.com/linebender/resvg) (MIT / Apache-2.0), CSV 解析使用 [rust-csv](https://github.com/BurntSushi/rust-csv) (MIT / Unlicense). 报告图表与统计逻辑为项目实现.
 

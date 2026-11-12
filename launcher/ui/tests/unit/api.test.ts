@@ -1,7 +1,7 @@
 import { defaultAttendanceTasks } from "../../src/core/attendanceTasks";
 import { APP_VERSION } from "../../src/core/version";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { bootstrap, settings, withGame } from "./fixtures";
+import { bootstrap } from "./fixtures";
 import { gameSettings } from "../../src/core/game";
 import type { Bootstrap, GameStatus } from "../../src/types/launcher";
 
@@ -56,11 +56,9 @@ describe("浏览器命令桥接", () => {
         sourceId: id,
       }),
     ).rejects.toThrow("尚未安装");
-    await invoke("save_settings", {
-      settings: withGame(
-        { globalInstallRoot: "/global-game" },
-        copied.settings,
-      ),
+    await invoke("update_settings_section", {
+      owner: "game:nte",
+      patch: { installRoots: { global: "/global-game" } },
     });
     const global = await invoke("environment_create", {
       distribution: "global",
@@ -81,6 +79,53 @@ describe("浏览器命令桥接", () => {
     expect(gameSettings(switched.settings).distribution).toBe("global");
     expect(switched.installRoot).toBe("/global-game");
   });
+  it("按 owner 合并设置并拒绝跨 owner 与未知字段", async () => {
+    const { invoke } = await import("../../src/core/api");
+    const updated = await invoke("update_settings_section", {
+      owner: "game:nte",
+      patch: { launchMode: "official" },
+    });
+    expect(updated.owner).toBe("game:nte");
+    expect(updated.fields.launchMode).toBe("official");
+    expect(gameSettings((await invoke("bootstrap")).settings).launchMode).toBe(
+      "official",
+    );
+
+    await expect(
+      invoke("update_settings_section", {
+        owner: "game:nte",
+        patch: { theme: "dark" },
+      }),
+    ).rejects.toThrow("不能修改字段: theme");
+    await expect(
+      invoke("update_settings_section", {
+        owner: "host",
+        patch: { unknown: 1 },
+      }),
+    ).rejects.toThrow("不能修改字段: unknown");
+    await expect(
+      invoke("update_settings_section", {
+        owner: "host",
+        patch: { games: {} },
+      }),
+    ).rejects.toThrow("不能修改字段: games");
+    await expect(
+      invoke("update_settings_section", {
+        owner: "game:hsr",
+        patch: { launchMode: "direct" },
+      }),
+    ).rejects.toThrow("设置 owner 不存在");
+    await expect(
+      invoke("update_settings_section", { owner: "nte", patch: {} }),
+    ).rejects.toThrow("无法识别的设置 owner");
+
+    // 恢复演示状态, 避免影响同文件的后续用例.
+    await invoke("update_settings_section", {
+      owner: "game:nte",
+      patch: { launchMode: "background" },
+    });
+  });
+
   it("模拟环境创建、切换、保留和删除, 并保护当前和稳定环境", async () => {
     const { invoke } = await import("../../src/core/api");
     await expect(
@@ -311,12 +356,27 @@ describe("浏览器命令桥接", () => {
       changed: 0,
       files: 667,
     });
-    expect(
-      await invoke("save_settings", {
-        settings: { ...withGame({ installRoot: "/new" }), theme: "dark" },
-      }),
-    ).toMatchObject({ installRoot: "/new", settings: { theme: "dark" } });
-    await invoke("save_settings", { settings: { ...settings } });
+    const saved = await invoke("update_settings_section", {
+      owner: "game:nte",
+      patch: { installRoots: { cn: "/new" } },
+    });
+    expect((saved.fields.installRoots as Record<string, string>).cn).toBe(
+      "/new",
+    );
+    expect((await invoke("bootstrap")).installRoot).toBe("/new");
+    await invoke("update_settings_section", {
+      owner: "host",
+      patch: { theme: "dark" },
+    });
+    expect((await invoke("bootstrap")).settings.theme).toBe("dark");
+    await invoke("update_settings_section", {
+      owner: "game:nte",
+      patch: { installRoots: {} },
+    });
+    await invoke("update_settings_section", {
+      owner: "host",
+      patch: { theme: "light" },
+    });
     expect((await invoke("bootstrap")).installRoot).toBe(
       "~/Games/Neverness To Everness",
     );
@@ -381,10 +441,11 @@ describe("原生命令和事件", () => {
     native.invoke
       .mockResolvedValueOnce({ saved: true })
       .mockRejectedValueOnce(new Error("offline"));
-    await expect(invoke("save_settings", { settings })).resolves.toEqual({
+    const args = { owner: "host", patch: { theme: "dark" } };
+    await expect(invoke("update_settings_section", args)).resolves.toEqual({
       saved: true,
     });
-    expect(native.invoke).toHaveBeenCalledWith("save_settings", { settings });
+    expect(native.invoke).toHaveBeenCalledWith("update_settings_section", args);
     await expect(invoke("bootstrap")).rejects.toThrow("offline");
   });
 

@@ -54,7 +54,7 @@ it("设备不可用时显示回退, 实际输出不一致时提示, 音量和设
   wrapper.findComponent(Select).vm.$emit("change");
   await flushPromises();
   expect(form.audio.device).toBe("headphones");
-  expect(api.save).toHaveBeenCalledWith(0);
+  expect(api.save).toHaveBeenCalledWith("game", 0);
   expect(wrapper.text()).toContain("实际输出与所选设备不同");
   await wrapper.get("#set-audio-volume").setValue("150");
   expect(form.audio.volume).toBe(150);

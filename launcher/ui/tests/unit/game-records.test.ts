@@ -12,7 +12,7 @@ vi.mock("../../src/core/api", () => ({
   isDesktop: () => false,
 }));
 import * as c from "../../src/core/controller";
-import Component from "../../src/components/HomeGameRecords.vue";
+import { PlayerInfoCard as Component } from "@packages/game-nte/ui";
 
 let wrapper: VueWrapper;
 let status: AttendanceStatus;

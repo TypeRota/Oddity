@@ -1,0 +1,33 @@
+[package]
+name = "oddity-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Oddity 后端装配: 游戏包装配表与入口"
+
+[[bin]]
+name = "oddity-backend"
+path = "src/main.rs"
+
+[features]
+default = ["game-nte"]
+# 每个游戏包对应同名 feature; 关掉它就把该包从装配表里移除.
+game-nte = ["dep:oddity-game-nte"]
+game-fixture = ["dep:oddity-game-fixture"]
+
+[dependencies]
+oddity-host = { path = "../oddity-host" }
+oddity-runtime = { path = "../oddity-runtime" }
+oddity-game-nte = { path = "../../packages/game-nte/backend", optional = true }
+oddity-game-fixture = { path = "../../packages/game-fixture/backend", optional = true }
+
+[dev-dependencies]
+# 集成测试需要宿主的会话调试入口.
+oddity-host = { path = "../oddity-host", features = ["testing"] }
+oddity-platform = { path = "../oddity-platform" }
+# 集成测试直接引用包的类型与实例.
+# dev-dependencies 不能 optional: 测试构建图始终编译 NTE, 但 bin 的装配表仍只由 game-nte 决定;
+# 减法冒烟验证的是 bin, 不声称测试图不含 NTE.
+oddity-game-nte = { path = "../../packages/game-nte/backend" }
+serde_json.workspace = true
+oddity-contract = { path = "../oddity-contract" }

@@ -142,20 +142,13 @@ test("真实 Rust 命令、窗口、导航、手柄与退出", async ({}, info) 
       Buffer.from(Array.from({ length: 256 }, (_, i) => i)),
     );
     await page.evaluate(async (installRoot) => {
-      const data = await window.oddity!.invoke("bootstrap");
-      await window.oddity!.invoke("save_settings", {
-        settings: {
-          ...data.settings,
-          games: {
-            ...data.settings.games,
-            [data.settings.activeGame]: {
-              ...data.settings.games[data.settings.activeGame]!,
-              installRoot,
-            },
-          },
-          theme: "dark",
-          heroMedia: "photo",
-        },
+      await window.oddity!.invoke("update_settings_section", {
+        owner: "game:nte",
+        patch: { installRoot },
+      });
+      await window.oddity!.invoke("update_settings_section", {
+        owner: "host",
+        patch: { theme: "dark", heroMedia: "photo" },
       });
     }, install);
     const media = await page.evaluate(async () => {
@@ -203,8 +196,8 @@ test("真实 Rust 命令、窗口、导航、手柄与退出", async ({}, info) 
     });
     const invalid = await page.evaluate(async () => {
       try {
-        await window.oddity!.invoke("save_settings", {
-          settings: false,
+        await window.oddity!.invoke("update_settings_section", {
+          owner: false,
         } as never);
       } catch (error) {
         return error;
@@ -216,9 +209,9 @@ test("真实 Rust 命令、窗口、导航、手柄与退出", async ({}, info) 
     );
     expect(Array.isArray(snapshot.devices)).toBe(true);
     for (const name of [
-      "update",
+      "nte-update",
       "game-mode",
-      "bulletin",
+      "nte-bulletin",
       "records",
       "settings",
       "home",
@@ -227,18 +220,9 @@ test("真实 Rust 命令、窗口、导航、手柄与退出", async ({}, info) 
       await expect(page).toHaveURL(new RegExp(`#${name}$`));
     }
     const failure = await page.evaluate(async () => {
-      const data = await window.oddity!.invoke("bootstrap");
-      await window.oddity!.invoke("save_settings", {
-        settings: {
-          ...data.settings,
-          games: {
-            ...data.settings.games,
-            [data.settings.activeGame]: {
-              ...data.settings.games[data.settings.activeGame]!,
-              distribution: "global" as const,
-            },
-          },
-        },
+      await window.oddity!.invoke("update_settings_section", {
+        owner: "game:nte",
+        patch: { distribution: "global" },
       });
       try {
         await window.oddity!.invoke("attendance_run");

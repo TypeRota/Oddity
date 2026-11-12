@@ -85,7 +85,7 @@ test("先创建环境再启动, A/B 副本、稳定标记及删除弹窗", async
         original(handler, timeout === 620 ? 1500 : timeout, ...args),
     });
   });
-  await page.locator('[data-page="update"]').click();
+  await page.locator('[data-page="nte-update"]').click();
   await page.locator("#update-full").click();
   await page.locator('[data-page="settings"]').click();
   await expect(select).toBeDisabled();
@@ -206,7 +206,7 @@ test("创建时可选择任一已安装区服, 创建副本保持当前区服并
   page,
 }) => {
   await page.goto("/#settings");
-  await settingsCategory(page, "game");
+  await settingsCategory(page, "nte-game");
   await page.locator("#set-global-install").fill("/tmp/NTEGlobal");
   await expect(page.locator("#settings-form")).toHaveAttribute(
     "data-save-state",

@@ -9,12 +9,17 @@ import { formatPlaytime, type PlaytimeStats } from "../../core/playtime";
 import { notify } from "../../core/notifications";
 import { useControlMotion } from "../../composables/useControlMotion";
 
-const props = defineProps<{
-  open: boolean;
-  stats: PlaytimeStats;
-  theme?: string;
-  reduceMotion?: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    open: boolean;
+    stats: PlaytimeStats;
+    theme?: string;
+    reduceMotion?: boolean;
+    /** 文件名前缀; 由当前游戏的展示声明提供, 缺省用通用名. */
+    posterPrefix?: string;
+  }>(),
+  { posterPrefix: "游玩记录" },
+);
 const emit = defineEmits<{ "update:open": [value: boolean] }>();
 const { reduced } = useControlMotion();
 const reducedMotion = computed(
@@ -225,7 +230,7 @@ async function savePoster() {
 
 function posterName() {
   const date = new Date();
-  return `异环游玩记录-${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}.png`;
+  return `${props.posterPrefix}-${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}.png`;
 }
 
 const imageRequests = new Map<string, Promise<HTMLImageElement | null>>();

@@ -1,10 +1,5 @@
-import type { FileListing } from "../core/filePicker";
-import type {
-  GamepadOptions,
-  GamepadSnapshot,
-  Profile,
-  Feedback,
-} from "./gamepad";
+import type { GamepadOptions } from "./gamepad";
+import type { CapabilityFact } from "../host/capability";
 export interface PerformanceMetrics {
   fps: number;
   low1: number;
@@ -28,29 +23,26 @@ export interface PerformanceFacts {
   cpu: string | null;
   gpu: { uuid: string; name: string; driver: string } | null;
 }
-export interface PerformanceSession {
+export interface PerformanceEnvironmentSnapshot {
   id: string;
-  side: string;
+  name: string;
+  proton: string;
+}
+export interface PerformanceRecord {
+  id: string;
   startedAt: number;
   durationSeconds: number;
   frames: number;
   metrics: PerformanceMetrics;
   facts: PerformanceFacts;
+  environment: PerformanceEnvironmentSnapshot;
   warnings: string[];
-}
-export interface PerformanceComparison {
-  id: string;
-  name: string;
-  createdAt: number;
-  a: RuntimeEnvironment;
-  b: RuntimeEnvironment;
-  sessions: PerformanceSession[];
-  error: string | null;
+  pinned: boolean;
 }
 export interface PerformanceOverview {
+  recordingEnabled: boolean;
+  records: PerformanceRecord[];
   recording: string | null;
-  active: string | null;
-  comparisons: PerformanceComparison[];
 }
 export type AttendanceTrigger = "off" | "launch" | "boot" | "daily" | "manual";
 export interface AttendanceTasks {
@@ -181,7 +173,7 @@ export interface UpdateSettings {
   limitBytesPerSecond: number;
   window: UpdateWindow | null;
 }
-export type GameId = "nte" | "hsr";
+export type GameId = "nte" | "hsr" | "fixture";
 export interface AudioOptions {
   device: string | null;
   volume: number;
@@ -200,9 +192,10 @@ export interface AudioStatus {
 }
 export interface GameSettings {
   audio: AudioOptions;
-  distribution: "cn" | "global";
-  installRoot: string | null;
-  globalInstallRoot: string | null;
+  /** 当前渠道; null 表示该游戏没有渠道或尚未选择. */
+  distribution: string | null;
+  /** 按安装根键保存的安装目录. */
+  installRoots: Record<string, string>;
   /** 自定义预下载缓存目录, 空值使用安装目录内的默认路径. */
   preloadRoot: string | null;
   launchMode: string;
@@ -212,9 +205,38 @@ export interface GameSettings {
   activeEnvironment: string | null;
   stableEnvironment: string | null;
 }
+export type SettingsFieldValue = string | number | boolean;
+/** 包声明的一个设置字段及其当前值. */
+export interface SettingsFieldView {
+  key: string;
+  label: string;
+  description: string;
+  order: number;
+  type: "boolean" | "integer" | "text" | "select";
+  default: SettingsFieldValue;
+  min?: number;
+  max?: number;
+  maxChars?: number;
+  options?: string[];
+  value: SettingsFieldValue;
+}
+/** 一个 owner 的设置 section 与字段. */
+export interface SettingsSchemaView {
+  owner: string;
+  version: number;
+  fields: SettingsFieldView[];
+}
+
+export interface SettingsSectionData {
+  version: number;
+  values: Record<string, unknown>;
+}
+
 export interface Settings {
   activeGame: GameId;
   games: Partial<Record<GameId, GameSettings>>;
+  /** 按 owner 保存的声明设置 section; 没有声明 section 时省略. */
+  sections?: Record<string, SettingsSectionData>;
   runtimeEnvironments: RuntimeEnvironment[];
   gamepad: GamepadOptions;
   language: string;
@@ -229,6 +251,13 @@ export interface Settings {
   showLauncherAfterGameExit: boolean;
   snapshotSuccessMinutes: number;
 }
+/** 按 owner 更新的设置字段; 只有该 owner 的字段会写入. */
+export type SettingsPatch = Record<string, unknown>;
+/** 设置 owner 更新后的视图; 游戏 owner 的 fields 形状为 GameSettings. */
+export interface SettingsSection {
+  owner: string;
+  fields: SettingsPatch;
+}
 export interface GameAccount {
   accountId: string;
   maskedPhone: string;
@@ -237,13 +266,13 @@ export interface PlaytimeSession {
   startedAt: number;
   endedAt: number;
   mode: string;
-  distribution: "cn" | "global";
+  distribution: string;
 }
 export interface ActivePlaytime {
   startedAt: number;
   lastSeenAt: number;
   mode: string;
-  distribution: "cn" | "global";
+  distribution: string;
 }
 export interface PlaytimeHistory {
   sessions: PlaytimeSession[];
@@ -259,11 +288,11 @@ export interface RuntimeEnvironment {
   proton: ProtonPin;
   installRoot: string;
   game: GameId;
-  distribution: "cn" | "global";
+  distribution: string;
   createdAt: number;
 }
 export interface RuntimeInstallation {
-  distribution: "cn" | "global";
+  distribution: string;
   installRoot: string;
   installed: boolean;
 }
@@ -291,6 +320,15 @@ export interface IntegrityStatus {
   appVersion: string;
   releaseUrl: string;
 }
+/** 当前游戏声明的一条渠道. */
+export interface ChannelView {
+  id: string;
+  label: string;
+  default: boolean;
+  active: boolean;
+  installRootKey: string;
+}
+
 export interface Bootstrap {
   ok: boolean;
   error: string | null;
@@ -308,6 +346,12 @@ export interface Bootstrap {
   gameExists: boolean;
   sdkPath: string;
   checks: CheckItem[];
+  /** 当前游戏的能力事实, 与 bootstrap 设置同源. */
+  capabilities: CapabilityFact[];
+  /** 当前游戏声明的发行渠道. */
+  channels: ChannelView[];
+  /** 已装配包声明的设置 section 与当前值. */
+  settingsSchemas?: SettingsSchemaView[];
   runtimeInstallations: RuntimeInstallation[];
   settings: Settings;
   integrity: IntegrityStatus;
@@ -316,7 +360,7 @@ export interface Bootstrap {
 }
 export interface CheckResult {
   installed: boolean;
-  distribution: "cn" | "global";
+  distribution: string;
   installRoot: string;
   remoteVersion: string;
   localVersion: string;
@@ -378,7 +422,7 @@ export interface OptionalResource {
   needsUpdate: boolean;
 }
 export interface ResourceCatalog {
-  distribution: "cn" | "global";
+  distribution: string;
   installRoot: string;
   version: string;
   /** 公告中的未来版本, 空字符串表示当前没有资源预下载. */
@@ -410,7 +454,7 @@ export interface MigrationEnvironment {
   prefix: string;
 }
 export interface MigrationPlan {
-  distribution: "cn" | "global";
+  distribution: string;
   mode: "move" | "copy" | "repair";
   source: string;
   target: string;
@@ -425,7 +469,7 @@ export interface MigrationPlan {
 }
 export interface MigrationStatus {
   phase: MigrationPhase;
-  distribution: "cn" | "global" | null;
+  distribution: string | null;
   mode: "move" | "copy" | "repair" | "";
   source: string;
   target: string;
@@ -455,7 +499,7 @@ export interface DownloadStatus {
   autoWaiting: string;
   /** 最近一次资源检查完成时间 (Unix 毫秒), 0 表示尚未检查. */
   checkedAt: number;
-  distribution: "cn" | "global";
+  distribution: string;
   installRoot: string;
   /** 官方本地清单存在时视为已安装。 */
   installed: boolean;
@@ -525,7 +569,7 @@ export interface SnapshotSummary {
   failure: SnapshotFailure | null;
   environment: string | null;
   proton: string | null;
-  distribution: "cn" | "global";
+  distribution: string;
   mode: string;
 }
 export interface SnapshotReference {
@@ -534,7 +578,7 @@ export interface SnapshotReference {
   capturedAt: number;
   environment: string | null;
   proton: string | null;
-  distribution: "cn" | "global";
+  distribution: string;
   mode: string;
 }
 export interface SnapshotOverview {
@@ -565,199 +609,9 @@ export interface SnapshotComparison {
   unchanged: number;
 }
 
-export interface Commands {
-  runtime_setup_info: RuntimeSetupInfo;
-  runtime_setup_plan: RuntimeSetupPlan;
-  runtime_setup_apply: null;
-  runtime_setup_status: RuntimeSetupStatus;
-  runtime_setup_dismiss: null;
-  runtime_setup_environment: Bootstrap;
-  browse_files: FileListing;
-  gamepad_poll: GamepadSnapshot;
-  gamepad_release_idle: null;
-  gamepad_feedback: null;
-  gamepad_profile_validate: Profile;
-  gamepad_profile_load: Profile;
-  gamepad_profile_save: void;
-  attendance_status: AttendanceStatus;
-  game_accounts: GameAccount[];
-  game_send_code: string;
-  game_login: GameAccount;
-  game_account_remove: null;
-  attendance_refresh_game_records: AttendanceStatus;
-  attendance_login: AttendanceStatus;
-  attendance_send_code: string;
-  attendance_login_sms: AttendanceStatus;
-  attendance_configure: AttendanceStatus;
-  attendance_run: AttendanceStatus;
-  attendance_logout: AttendanceStatus;
-  attendance_keyring_check: void;
-  launcher_background: LauncherBackgroundMedia;
-  bootstrap: Bootstrap;
-  integrity_acknowledge: null;
-  check_update: CheckResult;
-  fetch_bulletins: BulletinFeed;
-  save_settings: Bootstrap;
-  environment_create: Bootstrap;
-  environment_action: Bootstrap;
-  prepare_log_export: LogPreview;
-  save_log_export: string;
-  discard_log_export: void;
-  environment_snapshot_overview: SnapshotOverview;
-  environment_snapshot_compare: SnapshotComparison;
-  environment_snapshot_save_reference: SnapshotReference;
-  environment_snapshot_delete_reference: void;
-  environment_snapshot_clear_history: void;
-  open_directory: null;
-  open_url: null;
-  launch_official: LaunchResult;
-  cancel_launch: GameStatus;
-  game_status: GameStatus;
-  take_launch_error: string | null;
-  performance_overview: PerformanceOverview;
-  performance_create: null;
-  performance_activate: null;
-  performance_report: string;
-  performance_export: string;
-  playtime_history: PlaytimeHistory;
-  playtime_export_poster: string;
-  audio_status: AudioStatus;
-  game_mode_status: GameModeStatus;
-  game_mode_gpu_info: GpuInfo;
-  game_mode_tuning_info: GameModeTuning;
-  game_mode_tuning_apply: GameModeTuning;
-  game_mode_gpu_apply: GpuInfo;
-  game_resource_catalog: ResourceCatalog;
-  game_resource_remove: ResourceCatalog;
-  game_resource_download: DownloadStatus;
-  game_preload_delete: ResourceCatalog;
-  migration_plan: MigrationPlan;
-  migration_start: MigrationStatus;
-  migration_status: MigrationStatus;
-  migration_cancel: MigrationStatus;
-  migration_cleanup: MigrationStatus;
-  migration_abandon: MigrationStatus;
-  migration_dismiss: MigrationStatus;
-  migration_retry: MigrationStatus;
-  game_download_status: DownloadStatus;
-  game_download_start: DownloadStatus;
-  game_download_cancel: DownloadStatus;
-  close_game: GameStatus;
-  win_minimize: null;
-  win_toggle_maximize: null;
-  win_close: null;
-  win_hide: null;
-}
-export interface CommandArgs {
-  audio_status: Record<string, never>;
-  runtime_setup_info: undefined;
-  runtime_setup_plan: {
-    allUsers: boolean;
-    proton: string | null;
-    createEnvironment: boolean;
-  };
-  runtime_setup_apply: undefined;
-  runtime_setup_status: undefined;
-  runtime_setup_dismiss: undefined;
-  runtime_setup_environment: undefined;
-  browse_files: { path: string | null };
-  gamepad_poll: undefined;
-  gamepad_release_idle: undefined;
-  gamepad_feedback: { deviceId: number; effect: Feedback | "stop" };
-  gamepad_profile_validate: { profile: Profile };
-  gamepad_profile_load: { path: string };
-  gamepad_profile_save: { path: string; profile: Profile };
-  attendance_status: undefined;
-  attendance_refresh_game_records: undefined;
-  attendance_send_code: { phone: string };
-  attendance_login_sms: { phone: string; code: string; deviceId: string };
-  attendance_login: {
-    phone: string;
-    password: string;
-    rememberPassword: boolean;
-  };
-  attendance_configure: { preferences: AttendancePreferences };
-  game_accounts: undefined;
-  game_send_code: { phone: string };
-  game_login: {
-    phone: string;
-    secret: string;
-    password: boolean;
-    deviceId: string;
-  };
-  game_account_remove: { accountId: string };
-  attendance_run: undefined;
-  attendance_logout: { accountId: string };
-  attendance_keyring_check: undefined;
-  launcher_background: undefined;
-  bootstrap: undefined;
-  integrity_acknowledge: { notice: IntegrityNotice };
-  check_update: { full: boolean };
-  fetch_bulletins: { distribution: "cn" | "global" };
-  save_settings: { settings: Settings };
-  environment_create: {
-    distribution: "cn" | "global";
-    name: string;
-    protonPath: string;
-    sourceId: string | null;
-  };
-  environment_action: {
-    action: "switch" | "keep" | "discard";
-    id: string | null;
-  };
-  prepare_log_export: undefined;
-  save_log_export: { id: string; destination: string };
-  discard_log_export: { id: string };
-  environment_snapshot_overview: undefined;
-  environment_snapshot_compare: { target: "baseline" | "reference" };
-  environment_snapshot_save_reference: {
-    label: string | null;
-    attemptId: string | null;
-  };
-  environment_snapshot_delete_reference: undefined;
-  environment_snapshot_clear_history: undefined;
-  open_directory: { path: string };
-  open_url: { url: string };
-  launch_official: undefined;
-  cancel_launch: undefined;
-  game_status: undefined;
-  take_launch_error: undefined;
-  performance_overview: undefined;
-  performance_create: { name: string; a: string; b: string };
-  performance_activate: { id: string | null };
-  performance_report: { id: string };
-  performance_export: { id: string; destination: string };
-  playtime_history: undefined;
-  playtime_export_poster: { destination: string; data: string };
-  game_mode_status: undefined;
-  game_mode_gpu_info: undefined;
-  game_mode_tuning_info: undefined;
-  game_mode_tuning_apply: { config: GameModeTuning };
-  game_mode_gpu_apply: { config: GpuConfig };
-  game_resource_catalog: undefined;
-  game_resource_remove: { tag: string; preload: boolean };
-  game_resource_download: { tag: string };
-  game_preload_delete: undefined;
-  migration_plan: { distribution: "cn" | "global"; target: string };
-  migration_start: { distribution: "cn" | "global"; target: string };
-  migration_status: undefined;
-  migration_cancel: undefined;
-  migration_cleanup: undefined;
-  migration_abandon: undefined;
-  migration_dismiss: undefined;
-  migration_retry: undefined;
-  game_download_status: undefined;
-  game_download_start: {
-    mode: "check" | "apply" | "launcher" | "preload";
-    full: boolean;
-  };
-  game_download_cancel: undefined;
-  close_game: undefined;
-  win_minimize: undefined;
-  win_toggle_maximize: undefined;
-  win_close: undefined;
-  win_hide: undefined;
-}
+// 命令与参数类型由契约生成, 这里转出以保持既有引用路径.
+export type { Commands, CommandArgs } from "./generated/commands";
+
 export type PreviewPaths = Partial<
   Record<
     "home" | "dataHome" | "steamRoot" | "installRoot" | "protonName",

@@ -23,6 +23,8 @@ try {
     if (file === "total") continue;
     const isUi =
       file.endsWith(".vue") ||
+      // 游戏包 UI 与宿主页面同属界面层, 不计入核心 TS 门槛.
+      /\/packages\/[^/]+\/ui\//.test(file) ||
       /\/composables\/(useNotificationArrival|usePlayerMotion|useScenePalette)\.ts$/.test(
         file,
       );

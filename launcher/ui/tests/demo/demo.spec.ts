@@ -40,11 +40,13 @@ test("浏览器演示首屏、说明弹窗、导航与启动流程", async ({ pa
   await expect(dialog).toHaveCount(0);
   await expect(page.locator(".modal")).toHaveCount(0);
 
-  for (const name of ["update", "bulletin", "records", "settings"]) {
+  for (const name of ["nte-update", "nte-bulletin", "records", "settings"]) {
     await page.locator(`[data-page="${name}"]`).click();
     await expect(page.locator(`#page-${name}`)).toBeVisible();
-    if (name !== "bulletin") continue;
-    const image = page.locator("#page-bulletin .bulletin-media img").first();
+    if (name !== "nte-bulletin") continue;
+    const image = page
+      .locator("#page-nte-bulletin .bulletin-media img")
+      .first();
     await expect(image).toBeVisible();
     await expect
       .poll(() =>
