@@ -5,7 +5,7 @@ test("分类显示相关设置, 保存现有数据且切换时保留滚动位置
   await page.setViewportSize({ width: 1180, height: 480 });
   await page.goto("/#settings");
   const nav = page.getByRole("navigation", { name: "设置分类" });
-  await expect(nav.getByRole("button")).toHaveCount(7);
+  await expect(nav.getByRole("button")).toHaveCount(8);
   await expect(
     nav.getByRole("button", { name: "手柄", exact: true }),
   ).toBeVisible();
@@ -75,11 +75,9 @@ test("搜索名称和关键词, 键盘定位并聚焦设置项, Escape 先清空
   expect(errors).toEqual([]);
 });
 
-test("分类键盘切换, 运行环境入口直接定位, 窄面板不产生横向溢出", async ({
-  page,
-}) => {
-  await page.goto("/");
-  await page.locator("#launch-btn").click();
+test("分类键盘切换, 窄面板不产生横向溢出", async ({ page }) => {
+  await page.goto("/#settings");
+  await settingsCategory(page, "runtime");
   await expect(page.locator('[data-category="runtime"]')).toHaveAttribute(
     "aria-current",
     "true",
@@ -130,4 +128,23 @@ test("分类键盘切换, 运行环境入口直接定位, 窄面板不产生横�
     "1",
   );
   await page.screenshot({ path: "test-results/settings-layout.png" });
+});
+
+test("跨屏游玩可搜索定位, 浏览器预览明确提示桌面端要求", async ({ page }) => {
+  await page.goto("/#settings");
+  await page.getByRole("searchbox", { name: "搜索设置" }).fill("Moonlight");
+  await page.locator(".settings-result").click();
+  await expect(page.locator("#settings-panel-cross-screen")).toBeVisible();
+  await expect(page.locator("#set-cross-screen")).toBeDisabled();
+  await expect(
+    page.locator("#settings-panel-cross-screen [data-setting='snapshots']"),
+  ).toHaveCount(0);
+  await expect(page.locator("#settings-panel-cross-screen")).toContainText(
+    "请在桌面版 Oddity 中开启跨屏游玩",
+  );
+  await page.setViewportSize({ width: 640, height: 520 });
+  const panel = page.locator("#settings-panel-cross-screen");
+  expect(await panel.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
+    true,
+  );
 });

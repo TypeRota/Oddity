@@ -137,9 +137,8 @@ const percent = computed(() => {
   if (value.phase === "cleanup" && value.totalBytes === 0) return 100;
   return 0;
 });
-const error = computed(
-  () => localError.value || migration.error || status.value?.error || "",
-);
+// 只保留字段校验; 命令失败与迁移失败原因都走全局通知.
+const error = computed(() => localError.value);
 const requiresCleanup = computed(
   () => status.value?.phase === "done" && status.value.cleanupPending,
 );
@@ -199,7 +198,6 @@ async function openDialog() {
     await dismissInstallMigration();
   }
   migration.plan = null;
-  migration.error = "";
   await refreshMigrationStatus();
 }
 
@@ -217,7 +215,6 @@ function updateOpen(value: boolean) {
 
 function back() {
   migration.plan = null;
-  migration.error = "";
   localError.value = "";
 }
 

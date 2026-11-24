@@ -1,7 +1,8 @@
 //! 官方启动器自带的本地动态背景.
 //!
-//! 只读取官方启动器安装目录里的视频与静态壁纸, 不复制也不随 Oddity 分发.
+//! 只读取官方启动器安装目录里的视频与静态壁纸, 不随 Oddity 分发.
 //! 安装位置探测属于宿主的安装域; 本域只消费宿主给出的启动器根目录.
+//! 开启归档后, 换下来的素材按内容哈希留在本地, 供用户切换.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -9,8 +10,15 @@ use oddity_runtime::HostContext;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+mod archive;
+
 /// 背景域注册到宿主命令组里的命令 id.
-pub(crate) const COMMANDS: &[&str] = &["launcher_background"];
+pub(crate) const COMMANDS: &[&str] = &[
+    "launcher_background",
+    "launcher_background_archive",
+    "launcher_background_select",
+    "launcher_background_configure",
+];
 
 /// 官方资源根目录, 相对启动器根目录.
 const RES_DIR: &str = "ResFilesM";
@@ -28,6 +36,10 @@ const GLOBAL_LAUNCHER_DIR: &str = "NTEGlobal";
 struct LauncherBackground {
     video: Option<PathBuf>,
     image: Option<PathBuf>,
+    /// 清单里的全部静态图, 归档时整保存.
+    images: Vec<PathBuf>,
+    /// 清单原文; 读不到时为空.
+    manifest: Option<String>,
 }
 
 /// 返回给渲染层的形状, 与宿主原先的 `LauncherBackgroundMedia` 逐字段一致.
@@ -36,6 +48,37 @@ struct LauncherBackground {
 struct Media {
     video: Option<String>,
     image: Option<String>,
+}
+
+/// 归档列表里的一个条目; 静态图用于界面缩略图.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveEntry {
+    id: String,
+    video: Option<String>,
+    image: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveMigration {
+    state: &'static str,
+    moved: usize,
+    reason: Option<&'static str>,
+}
+
+/// 归档列表与当前选择; 界面据此渲染缩略图并标记使用中的一套.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveView {
+    available: bool,
+    entries: Vec<ArchiveEntry>,
+    selected: Option<String>,
+    current: Option<String>,
+    migration: ArchiveMigration,
+    archive: bool,
+    dir: String,
+    retention: u32,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -128,13 +171,19 @@ fn read_background(dir: &Path) -> Option<LauncherBackground> {
     if !dir.is_dir() {
         return None;
     }
-    let manifest = std::fs::read_to_string(dir.join("config.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<BackgroundManifest>(&text).ok())
+    let manifest_text = std::fs::read_to_string(dir.join("config.json")).ok();
+    let manifest = manifest_text
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<BackgroundManifest>(text).ok())
         .unwrap_or_default();
     let video = resolve_video(dir, &manifest);
     let image = resolve_image(dir, &manifest);
-    (video.is_some() || image.is_some()).then_some(LauncherBackground { video, image })
+    (video.is_some() || image.is_some()).then(|| LauncherBackground {
+        images: resolve_images(dir, &manifest, image.as_ref()),
+        video,
+        image,
+        manifest: manifest_text,
+    })
 }
 
 fn resolve_video(dir: &Path, manifest: &BackgroundManifest) -> Option<PathBuf> {
@@ -165,6 +214,26 @@ fn resolve_image(dir: &Path, manifest: &BackgroundManifest) -> Option<PathBuf> {
         .or_else(|| asset_path(dir, "bg_0.png"))
 }
 
+/// 清单里能读到的全部静态图; 归档时一套素材整保存.
+fn resolve_images(
+    dir: &Path,
+    manifest: &BackgroundManifest,
+    selected: Option<&PathBuf>,
+) -> Vec<PathBuf> {
+    let mut images: Vec<PathBuf> = manifest
+        .imgs
+        .iter()
+        .filter_map(|image| asset_path(dir, &image.file))
+        .collect();
+    if images.is_empty() {
+        if let Some(selected) = selected {
+            images.push(selected.clone());
+        }
+    }
+    images.dedup();
+    images
+}
+
 /// 只接受背景目录下的单层文件名, 配置无法把路径引到目录外.
 fn asset_path(dir: &Path, name: &str) -> Option<PathBuf> {
     let mut components = Path::new(name).components();
@@ -175,33 +244,143 @@ fn asset_path(dir: &Path, name: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// 分发背景域命令; 参数为空, 结果形状与宿主实现一致.
+/// 分发背景域命令; 结果形状与宿主实现一致.
 pub(crate) async fn command(
     host: &dyn HostContext,
     command: &str,
-    _args: Value,
+    args: Value,
 ) -> std::result::Result<Value, Value> {
     match command {
         "launcher_background" => launcher_background(host).await,
+        "launcher_background_archive" => archive_view(host, None, None).await,
+        "launcher_background_select" => {
+            let id = select_id(&args)?;
+            archive_view(host, Some(id), None).await
+        }
+        "launcher_background_configure" => {
+            let preferences = preferences(&args)?;
+            archive_view(host, None, Some(preferences)).await
+        }
         _ => Err(json!("无法识别的背景命令")),
     }
 }
 
+/// 选择命令的参数: `id` 为空表示跟随官方当前素材.
+fn select_id(args: &Value) -> std::result::Result<String, Value> {
+    match args.get("id") {
+        None | Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(id)) => Ok(id.clone()),
+        _ => Err(json!("无效的背景素材")),
+    }
+}
+
+/// 归档偏好由界面整份写回, 缺失字段沿用默认值.
+fn preferences(args: &Value) -> std::result::Result<archive::Preferences, Value> {
+    let archive = args
+        .get("archive")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| json!("无效的归档设置"))?;
+    let dir = args
+        .get("dir")
+        .and_then(Value::as_str)
+        .ok_or_else(|| json!("无效的归档目录"))?
+        .to_string();
+    let retention = args
+        .get("retention")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| json!("无效的保留套数"))? as u32;
+    Ok(archive::Preferences {
+        archive,
+        dir,
+        retention,
+    })
+}
+
 async fn launcher_background(host: &dyn HostContext) -> std::result::Result<Value, Value> {
+    let store = archive::store(host);
     let media = match host.official_launcher_root() {
         Some(root) => {
-            // 扫描背景目录会读文件系统, 和公告抓取一样移出异步线程.
-            let background = tokio::task::spawn_blocking(move || resolve(&root))
-                .await
-                .map_err(|error| json!(error.to_string()))?;
-            background.map_or_else(Media::default, |background| Media {
-                video: canonical_path(background.video),
-                image: canonical_path(background.image),
+            // 扫描背景目录与归档都要读文件系统, 和公告抓取一样移出异步线程.
+            let (live, state) = tokio::task::spawn_blocking(move || {
+                let live = resolve(&root);
+                let state = store
+                    .as_ref()
+                    .map(|store| archive::sync_optional(store, live.as_ref()));
+                (live, state)
             })
+            .await
+            .map_err(|error| json!(error.to_string()))?;
+            let fallback = live.map_or_else(Media::default, |live| Media {
+                video: canonical_path(live.video),
+                image: canonical_path(live.image),
+            });
+            match state.as_ref().and_then(|state| state.selected_media()) {
+                // 归档目录掉线时路径无法规范化, 这时仍显示官方当前素材.
+                Some(media) => match archive_media(media) {
+                    archived if archived.video.is_none() && archived.image.is_none() => fallback,
+                    archived => archived,
+                },
+                None => fallback,
+            }
         }
         None => Media::default(),
     };
     serde_json::to_value(media).map_err(|error| json!(error.to_string()))
+}
+
+/// 归档列表; 传入选中的 id 或偏好时先写入再返回最新状态.
+async fn archive_view(
+    host: &dyn HostContext,
+    selection: Option<String>,
+    preferences: Option<archive::Preferences>,
+) -> std::result::Result<Value, Value> {
+    let store = archive::store(host);
+    let root = host.official_launcher_root();
+    let state = tokio::task::spawn_blocking(move || {
+        let store = store.ok_or_else(|| "背景素材归档不可用".to_string())?;
+        let live = root.as_deref().and_then(resolve);
+        match (preferences, selection) {
+            (Some(preferences), _) => archive::configure(&store, live.as_ref(), preferences),
+            (None, Some(id)) => {
+                let id = (!id.is_empty()).then_some(id.as_str());
+                archive::select(&store, live.as_ref(), id)
+            }
+            (None, None) => Ok(archive::sync_optional(&store, live.as_ref())),
+        }
+    })
+    .await
+    .map_err(|error| json!(error.to_string()))?
+    .map_err(|error| json!(error))?;
+    let view = ArchiveView {
+        available: state.available,
+        entries: state
+            .entries
+            .iter()
+            .map(|(id, media)| ArchiveEntry {
+                id: id.clone(),
+                video: canonical_path(media.video.clone()),
+                image: canonical_path(media.image.clone()),
+            })
+            .collect(),
+        selected: state.selected,
+        current: state.current,
+        migration: ArchiveMigration {
+            state: state.migration.state(),
+            moved: state.migration.moved(),
+            reason: state.migration.reason(),
+        },
+        archive: state.archive,
+        dir: state.dir,
+        retention: state.retention,
+    };
+    serde_json::to_value(view).map_err(|error| json!(error.to_string()))
+}
+
+fn archive_media(media: &archive::Media) -> Media {
+    Media {
+        video: canonical_path(media.video.clone()),
+        image: canonical_path(media.image.clone()),
+    }
 }
 
 /// 素材路径先规范化, 界面拿到的是可以直接播放的绝对路径.

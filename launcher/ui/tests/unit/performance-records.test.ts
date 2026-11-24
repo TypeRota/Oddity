@@ -11,6 +11,7 @@ const mock = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
   save: vi.fn(),
+  notify: vi.fn(),
 }));
 const controller = vi.hoisted(() => ({
   state: {} as { bootstrap: ReturnType<typeof bootstrap> | null; game: string },
@@ -25,6 +26,10 @@ vi.mock("../../src/core/api", () => ({
 vi.mock("../../src/core/desktop", () => ({ listen: mock.listen }));
 vi.mock("../../src/core/filePicker", () => ({ save: mock.save }));
 vi.mock("../../src/core/controller", () => controller);
+vi.mock("../../src/core/notifications", async () => {
+  const { errorText } = await import("../../src/core/notifications.ts");
+  return { notify: mock.notify, errorText };
+});
 
 const start = Date.UTC(2026, 4, 12, 12);
 function record(
@@ -126,6 +131,7 @@ beforeEach(() => {
     });
   mock.listen.mockReset().mockResolvedValue(vi.fn());
   mock.save.mockReset().mockResolvedValue("/tmp/report.png");
+  mock.notify.mockReset();
 });
 
 async function render() {
@@ -227,7 +233,116 @@ it("开关请求失败时回到存储里的状态", async () => {
     "checked",
     false,
   );
-  expect(wrapper.text()).toContain("无法写入性能记录索引");
+  expect(mock.notify).toHaveBeenCalledWith(
+    "切换记录开关失败: 无法写入性能记录索引",
+    "error",
+    6500,
+    { key: "performance-records" },
+  );
+  expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+  wrapper.unmount();
+});
+
+it("读取性能记录失败通过通知报告", async () => {
+  mock.invoke.mockImplementation(async (command: string) => {
+    if (command === "performance_overview") throw new Error("无法读取性能记录");
+    return null;
+  });
+  const wrapper = await render();
+  expect(mock.notify).toHaveBeenCalledWith(
+    "读取性能记录失败: 无法读取性能记录",
+    "error",
+    6500,
+    { key: "performance-records" },
+  );
+  expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+  wrapper.unmount();
+});
+
+it("固定失败通过通知报告并保留列表", async () => {
+  overview.records = [newest, middle, oldest];
+  const wrapper = await render();
+  mock.invoke.mockImplementation(async (command: string) => {
+    if (command === "performance_pin") throw new Error("固定失败");
+    if (command === "performance_overview")
+      return JSON.parse(JSON.stringify(overview));
+    return null;
+  });
+  await button(wrapper, "固定").trigger("click");
+  await flushPromises();
+  expect(mock.notify).toHaveBeenCalledWith(
+    "更新固定状态失败: 固定失败",
+    "error",
+    6500,
+    { key: "performance-records" },
+  );
+  expect(wrapper.findAll(".performance-records__record")).toHaveLength(3);
+  wrapper.unmount();
+});
+
+it("删除失败通过通知报告并保留记录与确认弹窗", async () => {
+  overview.records = [newest, middle, oldest];
+  const wrapper = await render();
+  await wrapper
+    .findAll(".performance-records__record")[1]
+    .findAll("button")[1]
+    .trigger("click");
+  await flushPromises();
+  mock.invoke.mockImplementation(async (command: string) => {
+    if (command === "performance_delete") throw new Error("索引写入失败");
+    if (command === "performance_overview")
+      return JSON.parse(JSON.stringify(overview));
+    return null;
+  });
+  await button(wrapper, "确定删除").trigger("click");
+  await flushPromises();
+  expect(mock.notify).toHaveBeenCalledWith(
+    "删除性能记录失败: 索引写入失败",
+    "error",
+    6500,
+    { key: "performance-records" },
+  );
+  expect(wrapper.get('[role="dialog"]').text()).toContain("删除性能记录");
+  expect(wrapper.findAll(".performance-records__record")).toHaveLength(3);
+  wrapper.unmount();
+});
+
+it("图表与导出失败通过通知报告", async () => {
+  overview.records = [newest, middle, oldest];
+  const wrapper = await render();
+  mock.invoke.mockImplementation(async (command: string) => {
+    if (command === "performance_report") throw new Error("图表生成失败");
+    if (command === "performance_overview")
+      return JSON.parse(JSON.stringify(overview));
+    return null;
+  });
+  await button(wrapper, "刷新报告").trigger("click");
+  await flushPromises();
+  expect(mock.notify).toHaveBeenCalledWith(
+    "生成对比图表失败: 图表生成失败",
+    "error",
+    6500,
+    { key: "performance-report" },
+  );
+
+  mock.invoke.mockImplementation(async (command: string) => {
+    if (command === "performance_report")
+      return '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+    if (command === "performance_export") throw new Error("磁盘已满");
+    if (command === "performance_overview")
+      return JSON.parse(JSON.stringify(overview));
+    return null;
+  });
+  await button(wrapper, "刷新报告").trigger("click");
+  await flushPromises();
+  await button(wrapper, "导出 PNG").trigger("click");
+  await flushPromises();
+  expect(mock.notify).toHaveBeenCalledWith(
+    "导出对比图失败: 磁盘已满",
+    "error",
+    6500,
+    { key: "performance-export" },
+  );
   wrapper.unmount();
 });
 

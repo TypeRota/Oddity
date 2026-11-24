@@ -82,6 +82,44 @@ test("浏览器演示首屏、说明弹窗、导航与启动流程", async ({ pa
   expect(errors).toEqual([]);
 });
 
+test("浏览器演示用 ?hang=1 复现卡死提示与结束流程", async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.goto("./?hang=1");
+  await expect(page.locator("#app")).toHaveClass(/is-intro-done/);
+  const notice = page.getByRole("dialog");
+  if (await notice.isVisible()) {
+    await notice.getByRole("button", { name: "继续体验" }).click();
+    await expect(page.locator(".modal")).toHaveCount(0);
+  }
+
+  await page.locator("#launch-btn").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "游戏已卡死" })).toBeVisible(
+    {
+      timeout: 15_000,
+    },
+  );
+  await expect(dialog).toContainText("Hang");
+  // 崩溃目录只用于去重, 不出现在界面上.
+  await expect(dialog).not.toContainText("UECC-Windows-");
+  await page.screenshot({ path: "test-results/demo-hang.png" });
+
+  await dialog.getByRole("button", { name: "结束游戏" }).click();
+  await expect(dialog.getByRole("heading", { name: "游戏已结束" })).toBeVisible(
+    {
+      timeout: 15_000,
+    },
+  );
+  await expect(dialog).toContainText("GameThread timed out");
+  await expect(dialog).not.toContainText("UECC-Windows-");
+  await expect(dialog.getByRole("button", { name: "结束游戏" })).toHaveCount(0);
+
+  await dialog.getByRole("button", { name: "知道了" }).click();
+  await expect(page.locator(".modal")).toHaveCount(0);
+  // 普通演示不受影响, 不会带出卡死提示.
+  expect(errors).toEqual([]);
+});
+
 test("浏览器演示识别手柄并从子路径加载按键图标", async ({ page }) => {
   const errors = collectErrors(page);
   await page.addInitScript(() => {

@@ -3,6 +3,7 @@
 //! 事件经 Service 的 EventSink 出口发送; 设置与活动状态只读; 后台任务经
 //! 宿主执行器登记, 关闭时由宿主统一取消.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,24 +13,61 @@ use oddity_runtime::{
 };
 use serde_json::Value;
 
+use crate::identity::GameId;
 use crate::service::{Service, ServiceHandle};
 use crate::settings::Settings;
 use oddity_runtime::EventSink;
 
 /// 宿主句柄: 包命令组拿到的唯一宿主入口.
-pub struct HostHandle(pub ServiceHandle);
+pub(crate) struct HostHandle {
+    app: ServiceHandle,
+    target: SettingsTarget,
+}
+
+enum SettingsTarget {
+    Command(Box<Settings>),
+    Package(GameId),
+}
+
+impl HostHandle {
+    pub(crate) fn for_command(app: ServiceHandle, settings: Settings) -> Self {
+        Self {
+            app,
+            target: SettingsTarget::Command(Box::new(settings)),
+        }
+    }
+
+    pub(crate) fn for_package(app: ServiceHandle, game: GameId) -> Self {
+        Self {
+            app,
+            target: SettingsTarget::Package(game),
+        }
+    }
+
+    fn target_settings(&self) -> Result<Cow<'_, Settings>, String> {
+        match &self.target {
+            SettingsTarget::Command(settings) => Ok(Cow::Borrowed(settings)),
+            SettingsTarget::Package(game) => {
+                let mut settings = self
+                    .app
+                    .state
+                    .settings
+                    .lock()
+                    .map_err(|error| error.to_string())?
+                    .clone();
+                settings.active_game = game.clone();
+                Ok(Cow::Owned(settings))
+            }
+        }
+    }
+}
 
 impl HostContext for HostHandle {
     fn settings(&self) -> Result<SettingsSnapshot, String> {
-        let settings = self
-            .0
-            .state
-            .settings
-            .lock()
-            .map_err(|error| error.to_string())?;
+        let settings = self.target_settings()?;
         let current = settings.current();
         let updates = &current.updates;
-        let packages = &self.0.state.packages;
+        let packages = &self.app.state.packages;
         Ok(SettingsSnapshot {
             game: settings.active_game.as_str().to_string(),
             distribution: crate::channel::effective_id(
@@ -60,60 +98,50 @@ impl HostContext for HostHandle {
     }
 
     fn activity(&self) -> Result<ActivitySnapshot, String> {
-        activity_snapshot(&self.0)
+        activity_snapshot(&self.app)
     }
 
     fn capability_context(&self) -> Result<CapabilityContext, String> {
-        let settings = self
-            .0
-            .state
-            .settings
-            .lock()
-            .map_err(|error| error.to_string())?
-            .clone();
+        let settings = self.target_settings()?;
         let activity = self.activity()?;
         Ok(build_capability_context(
-            &self.0.state.packages,
+            &self.app.state.packages,
             &settings,
             &activity,
         ))
     }
 
     fn official_launcher_root(&self) -> Option<PathBuf> {
-        // 探测会读取文件系统, 先拷出设置再释放锁.
-        let settings = self.0.state.settings.lock().ok()?.clone();
-        crate::install::launcher_root(&self.0.state.packages, &settings)
+        let settings = self.target_settings().ok()?;
+        crate::install::launcher_root(&self.app.state.packages, &settings)
     }
 
     fn emit(&self, id: &'static str, payload: Value) -> Result<(), String> {
         let event =
             oddity_contract::event(id).ok_or_else(|| format!("事件未在契约里声明: {id}"))?;
-        self.0.deliver(event, payload)
+        self.app.deliver(event, payload)
     }
 
     fn submit(&self, job: TaskJob) -> Task {
         // 进度与宿主其它事件走同一个出口.
-        let service = self.0.clone();
+        let service = self.app.clone();
         let task = Task::new(Arc::new(move |payload| {
             service.emit("task-progress", payload)
         }));
         // 登记后返回原句柄, 宿主关闭时按注册表统一取消.
-        let task = self.0.tasks.track(task);
+        let task = self.app.tasks.track(task);
         // 结果经句柄的完成状态取回, 执行器的 JoinHandle 丢弃后任务继续运行.
         drop(crate::service::spawn_blocking(task.runner(job)));
         task
     }
 
     fn cancel_task(&self, id: &str) -> bool {
-        self.0.tasks.cancel(id)
+        self.app.tasks.cancel(id)
     }
-}
 
-/// 构造可交给游戏包的宿主能力句柄.
-///
-/// 下载域的后台任务在命令返回后仍需发事件, 因此需要一份 'static 句柄.
-pub fn host_handle(app: ServiceHandle) -> Arc<dyn HostContext> {
-    Arc::new(HostHandle(app))
+    fn data_dir(&self) -> Option<PathBuf> {
+        Some(crate::paths::data_dir())
+    }
 }
 
 /// 读取宿主当前的活动状态.
@@ -149,6 +177,15 @@ pub(crate) fn build_capability_context(
         account_id: None,
         session_running: activity.game_starting || activity.game_running || activity.game_closing,
         launcher_present: crate::install::launcher_root(packages, settings).is_some(),
+        hardware: hardware_facts(settings),
+    }
+}
+
+/// 本机硬件调优事实; 调优开关来自设置, 可调优显卡由 DRM 设备探测得到.
+fn hardware_facts(settings: &Settings) -> oddity_runtime::HardwareFacts {
+    oddity_runtime::HardwareFacts {
+        game_mode: settings.current().game_mode.performance,
+        gpu: crate::game_mode::gpu::has_tunable_device(),
     }
 }
 
@@ -176,7 +213,7 @@ mod tests {
         app.subscribe("host-show", move |payload| {
             *expected.lock().unwrap() = Some(payload);
         });
-        HostHandle(app)
+        HostHandle::for_package(app, GameId::default())
             .emit("host-show", Value::Null)
             .expect("已声明的事件应能发送");
         assert_eq!(*seen.lock().unwrap(), Some(Value::Null));
@@ -187,14 +224,16 @@ mod tests {
         let (app, _events) = crate::service::test_service_with_output();
         {
             let mut settings = app.state.settings.lock().unwrap();
-            settings.active_game = crate::identity::GameId::from("nte");
-            settings.current_mut().distribution = Some(ChannelId::new("global"));
+            settings.game_mut(GameId::default()).distribution = Some(ChannelId::new("global"));
+            settings.active_game = GameId::from("other");
             settings.language = "ja-JP".into();
             settings.reduce_motion = true;
             settings.theme = "dark".into();
         }
 
-        let snapshot = HostHandle(app.clone()).settings().expect("读取设置快照");
+        let snapshot = HostHandle::for_package(app.clone(), GameId::default())
+            .settings()
+            .expect("读取设置快照");
         assert_eq!(snapshot.game, "nte");
         assert_eq!(snapshot.distribution, "global");
         assert_eq!(snapshot.language, "ja-JP");
@@ -212,7 +251,7 @@ mod tests {
     #[test]
     fn host_handle_reports_settings_read_failures() {
         let (app, _events) = crate::service::test_service_with_output();
-        let host = HostHandle(app.clone());
+        let host = HostHandle::for_package(app.clone(), GameId::default());
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = app.state.settings.lock().unwrap();
             panic!("poison settings");
@@ -223,7 +262,7 @@ mod tests {
     #[test]
     fn host_handle_emits_declared_events() {
         let (app, events) = crate::service::test_service_with_output();
-        let host = HostHandle(app);
+        let host = HostHandle::for_package(app, GameId::default());
         host.emit("game-download-state", json!({"phase": "ready"}))
             .expect("事件应写入宿主输出");
 
@@ -239,7 +278,7 @@ mod tests {
     #[test]
     fn host_handle_runs_tasks_with_progress_and_results() {
         let (app, events) = crate::service::test_service_with_output();
-        let host = HostHandle(app);
+        let host = HostHandle::for_package(app, GameId::default());
 
         let task = host.submit(Box::new(|context| {
             context
@@ -267,7 +306,7 @@ mod tests {
 
     #[test]
     fn host_handle_cancels_running_tasks() {
-        let host = HostHandle(crate::service::test_service());
+        let host = HostHandle::for_package(crate::service::test_service(), GameId::default());
         let (started_tx, started_rx) = mpsc::channel();
         let task = host.submit(Box::new(move |context| {
             started_tx.send(()).unwrap();
@@ -312,7 +351,9 @@ mod tests {
             };
         }
 
-        let snapshot = HostHandle(app).settings().expect("读取设置快照");
+        let snapshot = HostHandle::for_package(app, GameId::default())
+            .settings()
+            .expect("读取设置快照");
         assert_eq!(snapshot.install_root.as_deref(), Some("/games/nte"));
         assert_eq!(snapshot.preload_root.as_deref(), Some("/games/preload"));
         assert_eq!(
@@ -364,6 +405,7 @@ mod tests {
             snapshot: None,
             snapshot_success_after_ms: 0,
             launcher_root: None,
+            prefix: PathBuf::new(),
             monitor_state: Arc::new(Mutex::new(crate::session::monitor::MonitorState::default())),
             control: crate::session::ControlSlot::default(),
         }
@@ -385,7 +427,9 @@ mod tests {
             current.preload_root = Some("~".into());
         }
 
-        let snapshot = HostHandle(app).settings().expect("读取设置快照");
+        let snapshot = HostHandle::for_package(app, GameId::default())
+            .settings()
+            .expect("读取设置快照");
         let home = directory.join("home");
         assert_eq!(
             snapshot.install_root,
@@ -400,7 +444,9 @@ mod tests {
         let (_directory, _env) = isolated_env("assembly-activity-idle");
 
         assert_eq!(
-            HostHandle(app).activity().expect("读取活动状态"),
+            HostHandle::for_package(app, GameId::default())
+                .activity()
+                .expect("读取活动状态"),
             ActivitySnapshot::default()
         );
     }
@@ -416,7 +462,9 @@ mod tests {
             game.migration_busy = true;
         }
 
-        let activity = HostHandle(app).activity().expect("读取活动状态");
+        let activity = HostHandle::for_package(app, GameId::default())
+            .activity()
+            .expect("读取活动状态");
         assert!(activity.game_starting);
         assert!(!activity.game_running);
         assert!(!activity.game_closing);
@@ -431,12 +479,16 @@ mod tests {
         let (_directory, _env) = isolated_env("assembly-activity-session");
 
         app.state.game.lock().unwrap().session = Some(session(false, true));
-        let running = HostHandle(app.clone()).activity().expect("读取活动状态");
+        let running = HostHandle::for_package(app.clone(), GameId::default())
+            .activity()
+            .expect("读取活动状态");
         assert!(running.game_running);
         assert!(!running.game_closing);
 
         app.state.game.lock().unwrap().session = Some(session(true, false));
-        let closing = HostHandle(app).activity().expect("读取活动状态");
+        let closing = HostHandle::for_package(app, GameId::default())
+            .activity()
+            .expect("读取活动状态");
         assert!(!closing.game_running);
         assert!(closing.game_closing);
     }
@@ -455,7 +507,7 @@ mod tests {
         .expect("write migration journal");
 
         assert!(
-            HostHandle(app)
+            HostHandle::for_package(app, GameId::default())
                 .activity()
                 .expect("读取活动状态")
                 .migration_repair_pending
@@ -465,7 +517,7 @@ mod tests {
     #[test]
     fn host_handle_reports_activity_read_failures() {
         let (app, _events) = crate::service::test_service_with_output();
-        let host = HostHandle(app.clone());
+        let host = HostHandle::for_package(app.clone(), GameId::default());
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = app.state.game.lock().unwrap();
             panic!("poison game state");
@@ -488,7 +540,9 @@ mod tests {
                 .current_mut()
                 .updates
                 .metered = source;
-            let snapshot = HostHandle(app.clone()).settings().expect("读取设置快照");
+            let snapshot = HostHandle::for_package(app.clone(), GameId::default())
+                .settings()
+                .expect("读取设置快照");
             assert_eq!(snapshot.update.metered, expected);
         }
     }
@@ -496,7 +550,7 @@ mod tests {
     #[test]
     fn host_handle_cancels_registered_tasks_by_id() {
         let (app, _events) = crate::service::test_service_with_output();
-        let host = HostHandle(app.clone());
+        let host = HostHandle::for_package(app.clone(), GameId::default());
         let (started_tx, started_rx) = mpsc::channel();
         let task = host.submit(Box::new(move |context| {
             started_tx.send(()).unwrap();
@@ -522,7 +576,7 @@ mod tests {
     #[test]
     fn host_shutdown_cancels_every_registered_task() {
         let (app, _events) = crate::service::test_service_with_output();
-        let host = HostHandle(app.clone());
+        let host = HostHandle::for_package(app.clone(), GameId::default());
         let mut tasks = Vec::new();
         for _ in 0..2 {
             let (started_tx, started_rx) = mpsc::channel();

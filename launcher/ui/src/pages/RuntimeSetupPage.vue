@@ -22,7 +22,9 @@ import type {
   RuntimeSetupStatus,
 } from "../types/launcher";
 import { useControlMotion } from "../composables/useControlMotion";
+import { notify, errorText } from "../core/notifications";
 import BaseButton from "../components/BaseButton.vue";
+import BaseInput from "../components/BaseInput.vue";
 import BaseSelect from "../components/BaseSelect.vue";
 import BaseSwitch from "../components/BaseSwitch.vue";
 import DirectoryField from "../components/DirectoryField.vue";
@@ -44,6 +46,17 @@ const error = ref("");
 const log = ref("");
 const editing = ref(false);
 const celebration = ref(false);
+const environmentName = ref("");
+const initializing = ref(false);
+const automaticFlow = ref(false);
+const finished = ref(false);
+// 失效环境仍允许手动转到确认场景创建新环境.
+const confirmRequested = ref(false);
+type FailureSource = "prepare" | "apply" | "init";
+const errorSource = ref<FailureSource>("prepare");
+// 用户确认创建的环境名称; 为空表示本次只准备组件.
+let pendingName: string | null = null;
+let autoHandled = false;
 const confetti = ref<HTMLCanvasElement | null>(null);
 let cannon: ReturnType<typeof canvasConfetti.create> | undefined;
 let timer: ReturnType<typeof setInterval> | undefined;
@@ -59,26 +72,45 @@ const locked = computed(
   () => busy.value || planning.value || runtimeEnvironmentLocked.value,
 );
 const complete = computed(
-  () => status.value?.done && !error.value && !busy.value,
+  () =>
+    !!info.value?.ready &&
+    !error.value &&
+    !busy.value &&
+    !planning.value &&
+    (automaticFlow.value || finished.value),
 );
-const component = computed(() => status.value?.progress.component ?? "umu");
-const scene = computed(() =>
-  editing.value
-    ? "options"
-    : error.value
-      ? "error"
-      : busy.value || planning.value
-        ? component.value
-        : complete.value
-          ? "complete"
-          : !info.value
-            ? "checking"
-            : runtimeSetupAutomatic.value
-              ? "umu"
-              : info.value.environment
-                ? "existing"
-                : "ready",
+const component = computed(
+  () =>
+    status.value?.progress.component ??
+    (initializing.value ? "runtime" : "umu"),
 );
+type Scene =
+  | "options"
+  | "checking"
+  | "ready"
+  | "umu"
+  | "proton"
+  | "runtime"
+  | "existing"
+  | "error"
+  | "complete"
+  | "install"
+  | "init"
+  | "confirm";
+const scene = computed<Scene>(() => {
+  if (editing.value) return "options";
+  if (error.value) return "error";
+  if (busy.value || planning.value) return component.value;
+  if (complete.value) return "complete";
+  if (confirmRequested.value) return "confirm";
+  if (!info.value) return "checking";
+  if (info.value.ready) return automaticFlow.value ? "complete" : "existing";
+  // 安装缺失时初始化必然失败, 先引导完成安装.
+  if (!info.value.installed) return "install";
+  if (info.value.environment) return "init";
+  if (!info.value.umu || !info.value.proton) return "ready";
+  return "confirm";
+});
 let previousScene = scene.value;
 watch(
   scene,
@@ -89,6 +121,16 @@ watch(
 );
 const stages = ["umu", "proton", "runtime"] as const;
 const labels = { umu: "umu", proton: "Proton", runtime: "运行时" };
+// 组件准备完成后阶段图标保持完成, 与当前场景无关.
+function stageDone(index: number) {
+  if (complete.value || scene.value === "existing") return true;
+  if (stages.indexOf(component.value) > index && (busy.value || planning.value))
+    return true;
+  if (busy.value || planning.value || !info.value) return false;
+  if (index === 0) return !!info.value.umu;
+  if (index === 1) return !!info.value.proton;
+  return !!info.value.ready;
+}
 const heading = computed(
   () =>
     ({
@@ -101,9 +143,12 @@ const heading = computed(
       runtime: "准备运行时",
       error: "配置未完成",
       complete: "启动环境已就绪",
+      install: "未找到游戏安装",
+      init: "初始化运行环境",
+      confirm: "创建运行环境",
     })[scene.value],
 );
-const descriptions = {
+const descriptions: Record<Scene, string> = {
   ready: "自动准备游戏所需的启动环境.",
   checking: "正在检测已安装的组件和环境",
   existing: "可以继续创建独立环境.",
@@ -113,6 +158,10 @@ const descriptions = {
   runtime: "正在准备运行时并初始化环境",
   error: "",
   complete: "已添加至 Proton 运行环境.",
+  install:
+    "当前区服安装目录未找到官方启动器或游戏文件, 请先在游戏更新页完成安装.",
+  init: "当前环境的 prefix 不可用, 初始化后即可启动游戏.",
+  confirm: "创建独立 prefix, 首次启动时由 Proton 初始化.",
 };
 function cancelTransition(element: Element) {
   transitions.get(element)?.cancel();
@@ -178,12 +227,14 @@ function moveScene(element: Element, done: () => void, entering: boolean) {
   const sharedTerminal =
     ["checking", "ready", "umu"].includes(previousScene) &&
     ["checking", "ready", "umu"].includes(scene.value);
-  const optionsTransition =
-    previousScene === "options" || scene.value === "options";
+  // 带输入的表单场景用更短的交叠时长.
+  const formTransition =
+    ["options", "confirm"].includes(previousScene) ||
+    ["options", "confirm"].includes(scene.value);
   const blur =
     reduced.value || sharedTerminal
       ? "blur(0px)"
-      : optionsTransition
+      : formTransition
         ? "blur(6px)"
         : "blur(8px)";
   timeline.add(
@@ -193,7 +244,7 @@ function moveScene(element: Element, done: () => void, entering: boolean) {
       filter: entering ? [blur, "blur(0px)"] : [filter, blur],
       duration: reduced.value
         ? 100
-        : optionsTransition
+        : formTransition
           ? 160
           : sharedTerminal
             ? 180
@@ -213,14 +264,23 @@ watch(
       return;
     }
     if (!busy.value && !planning.value) {
+      autoHandled = false;
+      automaticFlow.value = false;
+      finished.value = false;
+      errorSource.value = "prepare";
+      pendingName = null;
+      confirmRequested.value = false;
+      environmentName.value = "";
       status.value = null;
       error.value = "";
       editing.value = false;
       info.value = null;
     }
     await refresh();
-    if (!busy.value && !planning.value)
+    if (!busy.value && !planning.value) {
       allUsers.value = !!info.value?.systemUmu;
+      maybeAutomatic();
+    }
   },
   { immediate: true },
 );
@@ -229,29 +289,52 @@ watch([allUsers, mode, proton], () => {
   status.value = null;
   error.value = "";
 });
-function failed(cause: unknown) {
-  error.value = cause instanceof Error ? cause.message : String(cause);
+// 向导失败保留整屏的"配置未完成"与重试, 具体原因交给全局通知.
+function failed(cause: unknown, source: FailureSource = "prepare") {
+  errorSource.value = source;
+  const message = errorText(cause);
+  notify(`启动环境配置失败: ${message}`, "error", 6500, {
+    key: "runtime-setup",
+  });
+  // 用户确认的创建流程失败后回到表单, 名称与选择保留.
+  if (source !== "init" && pendingName) {
+    error.value = "";
+    return;
+  }
+  error.value = message;
 }
 function refresh() {
   return invoke("runtime_setup_info")
     .then((value) => {
       info.value = value;
+      if (!environmentName.value)
+        environmentName.value = value.suggestedName || "";
     })
-    .catch(failed);
+    .catch((cause) => failed(cause, "prepare"));
 }
-watch([active, info, runtimeEnvironmentLocked, runtimeSetupAutomatic], () => {
-  if (
-    !active.value ||
-    !info.value ||
-    !runtimeSetupAutomatic.value ||
-    locked.value
-  )
-    return;
+// 自动流程只准备组件, 创建环境必须由用户确认.
+function maybeAutomatic() {
+  if (autoHandled || !active.value || !info.value || locked.value) return;
+  if (!runtimeSetupAutomatic.value) return;
+  autoHandled = true;
   runtimeSetupAutomatic.value = false;
-  prepare();
-});
-function prepare() {
+  automaticFlow.value = true;
+  // 环境可用不代表组件齐备, 缺少任一组件时仍需准备, 否则启动会反复回到向导.
+  if (info.value.ready && info.value.umu && info.value.proton) return;
+  if (!info.value.umu || !info.value.proton) prepare();
+}
+function openConfirm() {
   if (locked.value) return;
+  error.value = "";
+  editing.value = false;
+  pendingName = null;
+  confirmRequested.value = true;
+  if (!environmentName.value)
+    environmentName.value = info.value?.suggestedName ?? "";
+}
+function prepare(name: string | null = null) {
+  if (locked.value) return;
+  pendingName = name?.trim() || null;
   editing.value = false;
   celebration.value = false;
   celebrated = false;
@@ -260,7 +343,7 @@ function prepare() {
   status.value = null;
   void invoke("runtime_setup_plan", {
     allUsers: !!info.value?.systemUmu || allUsers.value,
-    createEnvironment: !!info.value?.environment,
+    environmentName: pendingName,
     proton: mode.value === "manual" ? proton.value.trim() : null,
   })
     .then((value) => {
@@ -268,7 +351,7 @@ function prepare() {
       if (value.systemCommand) plan.value = value;
       else apply();
     })
-    .catch(failed)
+    .catch((cause) => failed(cause, "prepare"))
     .finally(() => {
       planning.value = false;
     });
@@ -278,6 +361,7 @@ function apply() {
   plan.value = null;
   busy.value = true;
   runtimeEnvironmentBusy.value = true;
+  initializing.value = false;
   error.value = "";
   status.value = null;
   timer = setInterval(() => {
@@ -285,15 +369,29 @@ function apply() {
       .then((value) => {
         status.value = value;
       })
-      .catch(failed);
+      .catch((cause) => failed(cause, "apply"));
   }, 500);
   void invoke("runtime_setup_apply")
     .then(async () => {
       status.value = await invoke("runtime_setup_status");
       await refresh();
       applyBootstrap(await invoke("bootstrap"), false);
+      finished.value = !!info.value?.ready;
+      pendingName = null;
     })
-    .catch(failed)
+    .catch(async (cause) => {
+      // 环境已登记但 prefix 初始化失败: 刷新后回到初始化场景, 不再重复创建.
+      await refresh();
+      if (info.value?.environment && info.value.installed) {
+        pendingName = null;
+        confirmRequested.value = false;
+        notify(`启动环境配置失败: ${errorText(cause)}`, "error", 6500, {
+          key: "runtime-setup",
+        });
+        return;
+      }
+      failed(cause, "apply");
+    })
     .finally(() => {
       clearInterval(timer);
       busy.value = false;
@@ -301,10 +399,56 @@ function apply() {
       plan.value = null;
     });
 }
+// 只初始化当前选择的环境, 不创建新环境.
+function initialize() {
+  if (locked.value) return;
+  busy.value = true;
+  runtimeEnvironmentBusy.value = true;
+  initializing.value = true;
+  celebration.value = false;
+  celebrated = false;
+  confirmRequested.value = false;
+  error.value = "";
+  status.value = null;
+  timer = setInterval(() => {
+    void invoke("runtime_setup_status")
+      .then((value) => {
+        status.value = value;
+      })
+      .catch((cause) => failed(cause, "init"));
+  }, 500);
+  void invoke("runtime_setup_environment")
+    .then(async () => {
+      status.value = await invoke("runtime_setup_status");
+      await refresh();
+      applyBootstrap(await invoke("bootstrap"), false);
+      finished.value = !!info.value?.ready;
+    })
+    .catch((cause) => failed(cause, "init"))
+    .finally(() => {
+      clearInterval(timer);
+      busy.value = false;
+      runtimeEnvironmentBusy.value = false;
+      initializing.value = false;
+    });
+}
+function retry() {
+  if (errorSource.value === "init") initialize();
+  else prepare(pendingName);
+}
+function restartCheck() {
+  if (locked.value) return;
+  error.value = "";
+  info.value = null;
+  void refresh();
+}
+function goToUpdate() {
+  showPage("nte-update");
+}
 function finish() {
   void invoke("runtime_setup_dismiss")
     .then(() => (complete.value ? openSettings("runtime") : showPage("home")))
-    .catch(failed);
+    .catch((cause) => failed(cause, "prepare"));
 }
 onMounted(() => {
   if (isDesktop())
@@ -371,9 +515,7 @@ onBeforeUnmount(() => {
           ><svg class="icon" viewBox="0 0 256 256" aria-hidden="true">
             <use
               :href="
-                complete ||
-                scene === 'existing' ||
-                stages.indexOf(component) > index
+                stageDone(index)
                   ? '#i-check-circle'
                   : '#i-' + ['terminal-window', 'cpu', 'hard-drives'][index]
               "
@@ -434,7 +576,7 @@ onBeforeUnmount(() => {
                   opacity=".35"
                 />
               </template>
-              <template v-else-if="scene === 'proton'">
+              <template v-else-if="scene === 'proton' || scene === 'confirm'">
                 <rect
                   x="74"
                   y="44"
@@ -473,7 +615,7 @@ onBeforeUnmount(() => {
                   stroke-linecap="round"
                 />
               </template>
-              <template v-else-if="scene === 'runtime'">
+              <template v-else-if="scene === 'runtime' || scene === 'init'">
                 <g v-for="(y, index) in [38, 76, 114]" :key="y">
                   <rect
                     x="46"
@@ -600,19 +742,56 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <p
-              v-if="scene === 'existing'"
+              v-if="scene === 'existing' || scene === 'init'"
               class="wizard-copy wizard-existing"
               :title="info?.environment?.proton.path"
             >
               <strong>{{ info?.environment?.name }}</strong
               ><span>{{ info?.environment?.proton.path }}</span>
             </p>
+            <div v-if="scene === 'confirm'" class="wizard-copy wizard-confirm">
+              <div class="wizard-fields">
+                <div class="wizard-field">
+                  <span>区服</span><strong>{{ info?.channel }}</strong>
+                </div>
+                <div class="wizard-field">
+                  <span>安装目录</span
+                  ><strong :title="info?.installRoot">{{
+                    info?.installRoot
+                  }}</strong>
+                </div>
+                <div class="wizard-field">
+                  <span>Proton</span
+                  ><strong :title="info?.proton ?? ''">{{
+                    info?.proton ?? "将自动准备"
+                  }}</strong>
+                </div>
+              </div>
+              <div class="field">
+                <label for="runtime-setup-name">环境名称</label>
+                <BaseInput
+                  id="runtime-setup-name"
+                  v-model="environmentName"
+                  maxlength="64"
+                  :disabled="locked"
+                  placeholder="例如 默认运行环境"
+                />
+                <small class="field__hint"
+                  >名称在全部运行环境中唯一, 用于区分独立的 prefix.</small
+                >
+              </div>
+            </div>
             <p
               v-if="scene === 'error'"
               class="wizard-copy wizard-error"
-              role="alert"
+              role="status"
             >
-              {{ error }}
+              配置未完成, 失败原因已显示在通知中.<template
+                v-if="errorSource === 'init'"
+              >
+                可在 设置 → 运行环境 中仅移除失效环境的登记,
+                或创建新的运行环境.</template
+              >
             </p>
             <p
               v-if="scene === 'complete'"
@@ -631,18 +810,52 @@ onBeforeUnmount(() => {
               ><BaseButton
                 icon="i-download-simple"
                 :disabled="locked || (mode === 'manual' && !proton.trim())"
-                @click="prepare"
+                @click="prepare()"
                 >开始配置</BaseButton
               ><BaseButton variant="ghost" @click="editing = false"
                 >返回</BaseButton
               ></template
             ><template v-else-if="scene === 'existing'"
-              ><BaseButton icon="i-plus" :disabled="locked" @click="prepare"
+              ><BaseButton icon="i-plus" :disabled="locked" @click="openConfirm"
                 >继续创建</BaseButton
               ><BaseButton variant="ghost" @click="openSettings('runtime')"
                 >查看运行环境</BaseButton
               ><BaseButton variant="ghost" @click="editing = true"
                 >安装选项</BaseButton
+              ></template
+            ><template v-else-if="scene === 'confirm'"
+              ><BaseButton
+                icon="i-plus"
+                :disabled="locked || !environmentName.trim()"
+                @click="prepare(environmentName)"
+                >创建并初始化</BaseButton
+              ><BaseButton variant="ghost" @click="editing = true"
+                >安装选项</BaseButton
+              ><BaseButton variant="ghost" @click="finish"
+                >稍后</BaseButton
+              ></template
+            ><template v-else-if="scene === 'init'"
+              ><BaseButton
+                icon="i-hard-drives"
+                :disabled="locked"
+                @click="initialize"
+                >初始化运行环境</BaseButton
+              ><BaseButton variant="ghost" @click="openConfirm"
+                >创建新的运行环境</BaseButton
+              ><BaseButton variant="ghost" @click="finish"
+                >稍后</BaseButton
+              ></template
+            ><template v-else-if="scene === 'install'"
+              ><BaseButton icon="i-download-simple" @click="goToUpdate"
+                >前往游戏更新页</BaseButton
+              ><BaseButton
+                variant="ghost"
+                icon="i-arrows-clockwise"
+                :disabled="locked"
+                @click="restartCheck"
+                >重新检测</BaseButton
+              ><BaseButton variant="ghost" @click="finish"
+                >稍后</BaseButton
               ></template
             ><template v-else-if="complete"
               ><BaseButton icon="i-check-circle" @click="finish"
@@ -664,10 +877,24 @@ onBeforeUnmount(() => {
               ></template
             ><template v-else
               ><BaseButton
+                v-if="!info"
+                icon="i-arrows-clockwise"
+                :disabled="locked"
+                @click="restartCheck"
+                >重新检测</BaseButton
+              ><BaseButton
+                v-else
                 :icon="error ? 'i-arrows-clockwise' : 'i-download-simple'"
                 :disabled="locked || !info"
-                @click="prepare"
+                @click="retry"
                 >{{ error ? "重试" : "自动配置" }}</BaseButton
+              ><BaseButton
+                v-if="error && info?.environment"
+                variant="ghost"
+                icon="i-plus"
+                :disabled="locked"
+                @click="openConfirm"
+                >创建新的运行环境</BaseButton
               ><BaseButton variant="ghost" @click="editing = true"
                 >安装选项</BaseButton
               ><BaseButton variant="ghost" @click="finish">稍后</BaseButton
@@ -873,6 +1100,52 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 确认场景同时展示安装信息与名称输入, 压缩插画和标题占位. */
+.wizard-scene[data-scene="confirm"] {
+  grid-template-rows: 96px 40px 22px minmax(0, 1fr);
+  align-content: center;
+}
+.wizard-scene[data-scene="confirm"] .wizard-art {
+  width: 128px;
+  height: 96px;
+}
+.wizard-confirm {
+  grid-row: 4;
+  width: min(100%, 430px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+  align-self: start;
+}
+.wizard-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-solid);
+}
+.wizard-field {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  font-size: 12px;
+}
+.wizard-field span {
+  flex: none;
+  color: var(--muted);
+}
+.wizard-field strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--bone);
 }
 .wizard-option-details {
   display: flex;

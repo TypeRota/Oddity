@@ -111,7 +111,7 @@ impl Fixture {
         host.set_settings(settings.0.clone());
         host.set_launcher_root(Some(dir.path().join(root)));
         bind(&host);
-        let ctx = Ctx::new().expect("更新域上下文");
+        let ctx = Ctx::new(host.clone()).expect("更新域上下文");
         Self {
             dir,
             server,
@@ -130,7 +130,7 @@ impl Fixture {
         change(&mut settings);
         self.host.set_settings(settings.clone());
         self.settings = Settings(settings);
-        self.ctx = Ctx::new().expect("更新域上下文");
+        self.ctx = Ctx::new(self.host.clone()).expect("更新域上下文");
     }
 
     fn set_game(&mut self, game: &str) {
@@ -138,7 +138,7 @@ impl Fixture {
         settings.game = game.into();
         self.host.set_settings(settings.clone());
         self.settings = Settings(settings);
-        self.ctx = Ctx::new().expect("更新域上下文");
+        self.ctx = Ctx::new(self.host.clone()).expect("更新域上下文");
     }
 
     fn set_starting(&self, starting: bool) {

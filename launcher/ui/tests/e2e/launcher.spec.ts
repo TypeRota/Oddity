@@ -533,13 +533,15 @@ test("国际服切换同步启动方式、公告来源和专属功能", async ({
     "data-opened-url",
     "https://static.pwsdk.com/nte/contract/contract.html",
   );
+  // 国际服不提供账号与玩家档案能力: 相关区块整块卸载, 只保留两种启动方式.
+  await expect(page.locator("#set-mode")).not.toContainText("直接启动");
+  await expect(page.locator('[data-setting="game-account"]')).toHaveCount(0);
   await page.locator('[data-page="home"]').click();
-  const player = page.locator(".game-records__capsule");
-  await expect(player).toBeVisible();
-  await player.click();
-  await expect(page.locator(".game-records__empty")).toContainText(
-    "当前地区暂无可读取的玩家信息",
-  );
+  await expect(page.locator("#page-home")).toBeVisible();
+  await expect(page.locator(".game-records")).toHaveCount(0);
+  await page.locator('[data-page="settings"]').click();
+  await expect(page.locator('[data-category="nte-account"]')).toHaveCount(0);
+  await expect(page.locator('[data-setting="player-state"]')).toHaveCount(0);
 });
 
 test("任务授权控制手动执行, 全部关闭并在当天重新授权", async ({ page }) => {

@@ -165,6 +165,13 @@ for (const [target, dependencies] of Object.entries({
     if (!config[target].depends.includes(dependency))
       fail(`${target} 缺少 ${dependency}`);
 }
+if (!config.deb.recommends?.includes("wireshark-common"))
+  fail("deb 缺少 dumpcap 推荐依赖");
+if (
+  !config.rpm.fpm.includes("--rpm-tag") ||
+  !config.rpm.fpm.includes("Recommends: wireshark-cli")
+)
+  fail("rpm 缺少 dumpcap 推荐依赖");
 for (const file of [
   "launcher/ui/electron/main.ts",
   "launcher/ui/electron/preload.ts",
@@ -194,6 +201,7 @@ for (const file of [
 const archTemplate = read("packaging/arch/PKGBUILD.in");
 for (const needle of [
   "pkgname=oddity-bin",
+  "wireshark-cli: sync in-game player state with dumpcap",
   "nss",
   "libdrm",
   "libsecret",

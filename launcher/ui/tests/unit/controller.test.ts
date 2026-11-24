@@ -34,6 +34,7 @@ const hostPatch = (overrides: Record<string, unknown>) => ({
 import type {
   Bootstrap,
   CheckResult,
+  GameHangScene,
   GameStatus,
   DownloadStatus,
   ResourceCatalog,
@@ -44,6 +45,7 @@ import type {
   SettingsSection,
   IntegrityStatus,
   MigrationStatus,
+  EnvironmentAudit,
 } from "../../src/types/launcher";
 
 const backend = vi.hoisted(() => ({
@@ -67,6 +69,7 @@ const backend = vi.hoisted(() => ({
   startStatus: null as DownloadStatus | null,
   startFail: false,
   data: {} as Bootstrap,
+  audit: { environments: [], orphans: [] } as EnvironmentAudit,
   result: {} as CheckResult,
   status: {} as GameStatus,
   playtimeHistory: { sessions: [], active: null } as PlaytimeHistory,
@@ -76,6 +79,8 @@ const backend = vi.hoisted(() => ({
   isMaximized: vi.fn(),
   onResized: vi.fn(),
   resize: async () => {},
+  /** 宿主在设置写入后回传的能力事实; 由具体用例替换. */
+  capabilities: () => [] as Bootstrap["capabilities"],
 }));
 vi.mock("../../src/core/api", () => ({
   isDesktop: () => backend.native,
@@ -215,6 +220,7 @@ beforeEach(() => {
   backend.integrityHandler = () => {};
   backend.migrationHandler = () => {};
   backend.data = bootstrap();
+  backend.audit = { environments: [], orphans: [] };
   backend.result = check();
   backend.status = session();
   backend.playtimeHistory = { sessions: [], active: null };
@@ -263,6 +269,14 @@ beforeEach(() => {
       },
     ) => {
       switch (command) {
+        case "game_state_status":
+          return {
+            state: "disabled",
+            enabled: false,
+            observation: null,
+            message: null,
+            record: null,
+          };
         case "attendance_status":
           return {
             accounts: [],
@@ -374,7 +388,11 @@ beforeEach(() => {
               ...backend.data.settings,
             };
             delete fields.games;
-            return structuredClone({ owner, fields });
+            return structuredClone({
+              owner,
+              fields,
+              capabilities: backend.capabilities(),
+            });
           }
           const gameId = owner.slice("game:".length) as "nte" | "hsr";
           const games = backend.data.settings.games as Record<
@@ -387,7 +405,94 @@ beforeEach(() => {
               ? gameSettings(backend.data.settings).installRoots.global ||
                 "/games/global"
               : gameSettings(backend.data.settings).installRoots.cn || "/game";
-          return structuredClone({ owner, fields: games[gameId] });
+          return structuredClone({
+            owner,
+            fields: games[gameId],
+            capabilities: backend.capabilities(),
+          });
+        }
+        case "environment_action": {
+          const { action, id } = args as unknown as {
+            action: "switch" | "keep" | "discard" | "rebind" | "forget";
+            id: string | null;
+          };
+          const game = backend.data.settings.games.nte!;
+          const profile = backend.data.settings.runtimeEnvironments.find(
+            (entry) => entry.id === id,
+          );
+          if (!profile) throw new Error("运行环境不存在");
+          if (action === "switch") {
+            game.activeEnvironments = { ...game.activeEnvironments, cn: id! };
+          } else if (action === "keep") {
+            game.stableEnvironments = { ...game.stableEnvironments, cn: id! };
+          } else if (action === "rebind") {
+            profile.installRoot = backend.data.installRoot;
+          } else if (action === "forget") {
+            backend.data.settings.runtimeEnvironments =
+              backend.data.settings.runtimeEnvironments.filter(
+                (entry) => entry.id !== id,
+              );
+            for (const slots of [
+              game.activeEnvironments,
+              game.stableEnvironments,
+            ]) {
+              for (const key of Object.keys(slots)) {
+                if (slots[key] === id) delete slots[key];
+              }
+            }
+          } else {
+            if (
+              Object.values({
+                ...game.activeEnvironments,
+                ...game.stableEnvironments,
+              }).includes(id!)
+            )
+              throw new Error("不能删除当前环境或稳定环境");
+            backend.data.settings.runtimeEnvironments =
+              backend.data.settings.runtimeEnvironments.filter(
+                (entry) => entry.id !== id,
+              );
+          }
+          return structuredClone(backend.data);
+        }
+        case "environment_import": {
+          const { id, name, protonPath } = args as unknown as {
+            id: string;
+            name: string;
+            protonPath: string;
+          };
+          if (
+            backend.data.settings.runtimeEnvironments.some(
+              (entry) => entry.id === id || entry.name === name.trim(),
+            )
+          )
+            throw new Error("运行环境已登记");
+          const imported = {
+            id,
+            name: name.trim(),
+            proton: { path: protonPath, identity: "imported" },
+            installRoot: backend.data.installRoot,
+            game: "nte" as const,
+            createdAt: 1,
+          };
+          backend.data.settings.runtimeEnvironments.push(imported);
+          return structuredClone(backend.data);
+        }
+        case "environment_orphan_delete":
+          return null;
+        case "environment_audit":
+          return structuredClone(backend.audit);
+        case "environment_rename": {
+          const { id, name } = args as unknown as {
+            id: string | null;
+            name: string;
+          };
+          const profile = backend.data.settings.runtimeEnvironments.find(
+            (entry) => entry.id === id,
+          );
+          if (!profile) throw new Error("运行环境不存在");
+          profile.name = name.trim();
+          return structuredClone(backend.data);
         }
         case "launch_official":
           backend.status = session({ running: true, pid: 123 });
@@ -471,12 +576,7 @@ it("环境操作先保存修改, 处理期间拒绝重入并同步新登记", as
   c.form.installRoots.global = "/new-install";
   c.queueSettingsSave("game", 500);
   c.queueSettingsSave("host", 500);
-  const task = c.createRuntimeEnvironment(
-    "测试环境",
-    "/new-proton",
-    null,
-    "cn",
-  );
+  const task = c.createRuntimeEnvironment("测试环境", "/new-proton", null);
   await flushPromises();
   expect(c.runtimeEnvironmentBusy.value).toBe(true);
   await c.checkUpdate();
@@ -491,16 +591,15 @@ it("环境操作先保存修改, 处理期间拒绝重入并同步新登记", as
   releaseSave();
   await flushPromises();
   expect(backend.invoke).toHaveBeenCalledWith("environment_create", {
-    distribution: "cn",
     name: "测试环境",
     protonPath: "/new-proton",
     sourceId: null,
   });
   expect(c.runtimeEnvironmentBusy.value).toBe(true);
   expect(c.settingsPathsLocked.value).toBe(true);
-  expect(
-    await c.createRuntimeEnvironment("重复", "/new-proton", null, "cn"),
-  ).toBe(false);
+  expect(await c.createRuntimeEnvironment("重复", "/new-proton", null)).toBe(
+    false,
+  );
   const next = bootstrap({
     settings: {
       ...backend.data.settings,
@@ -511,7 +610,6 @@ it("环境操作先保存修改, 处理期间拒绝重入并同步新登记", as
           proton: { path: "/new-proton", identity: "pin" },
           installRoot: "/game",
           game: "nte",
-          distribution: "cn",
           createdAt: 1,
         },
       ],
@@ -528,15 +626,171 @@ it("环境操作先保存修改, 处理期间拒绝重入并同步新登记", as
   expect(backend.data.settings.runtimeEnvironments[0].name).toBe("测试环境");
 }, 15_000);
 
-it("环境操作失败时保留原选择并释放等待状态", async () => {
+it("环境操作失败时保留原选择, 用全局通知报告并释放等待状态", async () => {
   const c = await boot();
   backend.invoke.mockRejectedValueOnce(new Error("固定的 Proton 已变化"));
   expect(await c.runtimeEnvironmentAction("switch", "missing")).toBe(false);
-  expect(c.runtimeEnvironmentError.value).toContain("Proton 已变化");
+  expect(c.notifications[0]?.message).toContain("Proton 已变化");
+  expect(c.notifications[0]?.kind).toBe("error");
   expect(c.runtimeEnvironmentBusy.value).toBe(false);
+  expect(gameSettings(c.state.bootstrap?.settings).activeEnvironments).toEqual(
+    {},
+  );
+});
+it("重命名运行环境提交新名称并保留当前标记", async () => {
+  const env = {
+    id: "a".repeat(32),
+    name: "旧名字",
+    proton: { path: "/proton-a", identity: "pin" },
+    installRoot: "/game",
+    game: "nte" as const,
+    createdAt: 1,
+  };
+  backend.data.settings.runtimeEnvironments = [env];
+  backend.data.settings.games.nte!.activeEnvironments = { cn: env.id };
+  backend.data.settings.games.nte!.stableEnvironments = { cn: env.id };
+  const c = await boot();
+  expect(await c.renameRuntimeEnvironment("新名字", env.id)).toBe(true);
+  expect(backend.invoke).toHaveBeenCalledWith("environment_rename", {
+    name: "新名字",
+    id: env.id,
+  });
+  expect(c.state.bootstrap?.settings.runtimeEnvironments[0].name).toBe(
+    "新名字",
+  );
+  expect(gameSettings(c.state.bootstrap?.settings).activeEnvironments.cn).toBe(
+    env.id,
+  );
+  expect(gameSettings(c.state.bootstrap?.settings).stableEnvironments.cn).toBe(
+    env.id,
+  );
+});
+
+it("环境操作按动作给出明确通知", async () => {
+  const env = {
+    id: "a".repeat(32),
+    name: "稳定环境",
+    proton: { path: "/proton-a", identity: "pin" },
+    installRoot: "/game",
+    game: "nte" as const,
+    createdAt: 1,
+  };
+  backend.data.settings.runtimeEnvironments = [env];
+  backend.data.settings.games.nte!.activeEnvironments = {};
+  backend.data.settings.games.nte!.stableEnvironments = {};
+  const c = await boot();
+  const message = () => c.notifications[0]?.message ?? "";
+  expect(await c.runtimeEnvironmentAction("switch", env.id)).toBe(true);
+  expect(message()).toBe("已切换到运行环境「稳定环境」.");
+  expect(await c.runtimeEnvironmentAction("keep", env.id)).toBe(true);
+  expect(message()).toBe("已将「稳定环境」保留为稳定环境.");
+  expect(await c.runtimeEnvironmentAction("rebind", env.id)).toBe(true);
+  expect(message()).toBe("已更新运行环境「稳定环境」的安装目录绑定.");
+  backend.data.settings.games.nte!.activeEnvironments = {};
+  backend.data.settings.games.nte!.stableEnvironments = {};
+  expect(await c.runtimeEnvironmentAction("discard", env.id)).toBe(true);
+  expect(message()).toBe("已删除运行环境「稳定环境」.");
+  backend.data.settings.runtimeEnvironments = [
+    { ...env, id: "b".repeat(32), name: "待登记环境" },
+  ];
+  c.applyBootstrap(backend.data, false);
+  expect(await c.runtimeEnvironmentAction("forget", "b".repeat(32))).toBe(true);
+  expect(message()).toBe("已移除运行环境「待登记环境」的登记.");
+});
+
+it("导入与未登记目录清理使用全局通知并拒绝重入", async () => {
+  const c = await boot();
+  const id = "c".repeat(32);
+  expect(await c.importRuntimeEnvironment(id, " 导入的环境 ", "/proton")).toBe(
+    true,
+  );
+  expect(backend.invoke).toHaveBeenCalledWith("environment_import", {
+    id,
+    name: " 导入的环境 ",
+    protonPath: "/proton",
+  });
+  expect(c.notifications[0]?.message).toBe("已导入运行环境「导入的环境」.");
   expect(
-    gameSettings(c.state.bootstrap?.settings).activeEnvironment,
-  ).toBeNull();
+    c.state.bootstrap?.settings.runtimeEnvironments.some(
+      (entry) => entry.id === id,
+    ),
+  ).toBe(true);
+  expect(await c.deleteEnvironmentOrphan("logs", "d".repeat(32))).toBe(true);
+  expect(backend.invoke).toHaveBeenCalledWith("environment_orphan_delete", {
+    kind: "logs",
+    name: "d".repeat(32),
+  });
+  expect(c.notifications[0]?.message).toBe(
+    `已删除未登记目录「${"d".repeat(32)}」.`,
+  );
+  backend.invoke.mockRejectedValueOnce(new Error("磁盘写入失败"));
+  expect(await c.deleteEnvironmentOrphan("pending", "e".repeat(32))).toBe(
+    false,
+  );
+  expect(c.notifications[0]?.message).toBe("磁盘写入失败");
+  // 操作入口被占用时不再发命令.
+  c.runtimeEnvironmentBusy.value = true;
+  backend.invoke.mockClear();
+  expect(await c.importRuntimeEnvironment(id, "重复", "/proton")).toBe(false);
+  expect(await c.deleteEnvironmentOrphan("logs", "d".repeat(32))).toBe(false);
+  expect(backend.invoke).not.toHaveBeenCalled();
+  c.runtimeEnvironmentBusy.value = false;
+});
+
+it("读取环境状态失败返回空结果并通知一次", async () => {
+  const c = await boot();
+  backend.invoke.mockRejectedValueOnce(new Error("读取失败"));
+  expect(await c.loadEnvironmentAudit()).toBeNull();
+  expect(c.notifications[0]).toMatchObject({
+    message: "读取环境状态失败: 读取失败",
+    kind: "error",
+    key: "environment-audit",
+  });
+});
+
+it("安装目录保存后提示仍指向旧目录的运行环境", async () => {
+  const env = {
+    id: "a".repeat(32),
+    name: "旧目录环境",
+    proton: { path: "/proton-a", identity: "pin" },
+    installRoot: "/game",
+    game: "nte" as const,
+    createdAt: 1,
+  };
+  backend.data.settings.runtimeEnvironments = [env];
+  backend.data.settings.games.nte!.activeEnvironments = { cn: env.id };
+  backend.audit = {
+    environments: [
+      {
+        id: env.id,
+        name: env.name,
+        state: "ready",
+        installRoot: "/game",
+        installRootCurrent: "/new-game",
+      },
+    ],
+    orphans: [],
+  };
+  const c = await boot();
+  c.form.installRoots.cn = "/new-game";
+  c.queueSettingsSave("game", 0);
+  expect(await c.saveSettings()).toBe(true);
+  await flushPromises();
+  const rootNotices = () =>
+    c.notifications.filter(
+      (item) => item.message === "安装目录已变更, 部分运行环境仍指向旧目录.",
+    );
+  expect(rootNotices()).toHaveLength(1);
+  expect(rootNotices()[0]).toMatchObject({
+    kind: "info",
+    key: "runtime-environment-root",
+  });
+  // 同一环境再次保存安装目录时不重复提示.
+  c.form.installRoots.cn = "/another-game";
+  c.queueSettingsSave("game", 0);
+  expect(await c.saveSettings()).toBe(true);
+  await flushPromises();
+  expect(rootNotices()).toHaveLength(1);
 });
 const key = (value: string, options: KeyboardEventInit = {}) =>
   document.dispatchEvent(
@@ -609,6 +863,9 @@ describe("启动与设置", () => {
     const original = backend.invoke.getMockImplementation()!;
     backend.invoke.mockImplementation(async (command, args) => {
       if (command === "runtime_setup_info") return { needsSetup: true };
+      // 向导页会自动开始准备, 给一份能正常推进的计划, 让这条用例只看入口提示.
+      if (command === "runtime_setup_plan")
+        return { log: "/tmp/runtime-setup.log", systemCommand: null };
       return original(command, args);
     });
     backend.data = bootstrap({
@@ -1215,6 +1472,7 @@ describe("启动与设置", () => {
         ...gameSettings(c.state.bootstrap?.settings),
         installRoots: { global: "/first" },
       },
+      capabilities: c.state.bootstrap?.capabilities ?? [],
     });
     await flushPromises();
     const saves = backend.invoke.mock.calls.filter(
@@ -4465,4 +4723,353 @@ it("安全验证结果先于 bootstrap 到达时不会降级", async () => {
   );
   await nextTick();
   expect(c.state.bootstrap?.integrity.state).toBe("verified");
+});
+
+it("切换归档素材后重新解析背景", async () => {
+  const cn = "http://127.0.0.1:4321/cn-keyart.jpg";
+  const archived = "http://127.0.0.1:4321/archived-keyart.jpg";
+  backend.background = { video: null, image: cn };
+  backend.data.settings = {
+    ...settings,
+    reduceMotion: false,
+    heroMedia: "photo",
+  };
+  const c = await boot();
+  expect(c.media.image).toBe(cn);
+
+  // 后台选择历史素材后返回的是那一套, 缓存键必须随之失效.
+  backend.background = { video: null, image: archived };
+  c.reloadHeroBackground();
+  await flushPromises();
+
+  expect(c.media.image).toBe(archived);
+  expect(c.media.officialImage).toBe(true);
+});
+
+describe("游戏卡死提示", () => {
+  const hangScene = (
+    overrides: Partial<GameHangScene> = {},
+  ): GameHangScene => ({
+    crashType: "Hang",
+    errorMessage:
+      "GameThread timed out waiting for RenderThread after 120.00 seconds",
+    site: "UECC-Windows-6A2F1C0E_0000",
+    detectedAt: 1_760_000_000_000,
+    ...overrides,
+  });
+  const dialog = () => document.querySelector<HTMLElement>(`[role="dialog"]`);
+  const dialogButtons = () => [
+    ...document.querySelectorAll<HTMLButtonElement>(
+      `[role="dialog"] .hang-dialog__actions button`,
+    ),
+  ];
+  const dialogButton = (label: string) =>
+    dialogButtons().find((item) => item.textContent?.includes(label));
+
+  it("运行中上报现场时自动弹窗, 标题按崩溃类型区分", async () => {
+    const c = await boot();
+    const page = c.state.page;
+    // 没有现场时保持安静.
+    backend.handler(session({ running: true, pid: 123 }));
+    await flushPromises();
+    expect(c.hangView.value).toBeNull();
+    expect(dialog()).toBeNull();
+
+    // 现场上报后自动弹窗, 打开提示不改动页面与表单.
+    backend.handler(session({ running: true, pid: 123, hang: hangScene() }));
+    await flushPromises();
+    expect(c.hang.dialog).toBe(true);
+    expect(c.state.page).toBe(page);
+    expect(c.ui.saveState).toBe("idle");
+    expect(c.hangView.value?.running).toBe(true);
+    expect(c.hangView.value?.primary).toBe("结束游戏");
+    expect(c.hangView.value?.secondary).toBe("导出日志");
+    expect(dialog()?.textContent).toContain("GameThread timed out");
+    // 崩溃目录只用于去重, 不展示给玩家.
+    expect(dialog()?.textContent).not.toContain("UECC-Windows-");
+
+    // 文案区分崩溃类型, 按钮动作不变.
+    for (const [crashType, title] of [
+      ["Hang", "游戏已卡死"],
+      ["hang", "游戏已卡死"],
+      ["Crash", "游戏已崩溃"],
+      ["Assertion", "游戏已崩溃"],
+      ["", "游戏出现异常"],
+      ["  ", "游戏出现异常"],
+    ] as const) {
+      backend.handler(
+        session({ running: true, pid: 123, hang: hangScene({ crashType }) }),
+      );
+      await flushPromises();
+      expect(c.hangView.value?.title, crashType).toBe(title);
+      expect(dialog()?.querySelector("h2")?.textContent).toBe(title);
+      expect(c.hangView.value?.primary).toBe("结束游戏");
+    }
+  });
+
+  it("摘要为空时仍可操作, 进程结束后改为已结束形态", async () => {
+    const c = await boot();
+    // 崩溃类型与错误信息都没读到: 不渲染摘要列表, 但要有可执行按钮.
+    backend.handler(
+      session({
+        running: true,
+        pid: 123,
+        hang: hangScene({ crashType: "", errorMessage: "" }),
+      }),
+    );
+    await flushPromises();
+    expect(c.hangView.value?.rows).toEqual([]);
+    expect(dialog()?.querySelector(".hang-dialog__details")).toBeNull();
+    expect(c.hangView.value?.primary).toBe("结束游戏");
+
+    // 只有错误信息时不渲染空的崩溃类型行.
+    backend.handler(
+      session({ running: true, pid: 123, hang: hangScene({ crashType: "" }) }),
+    );
+    await flushPromises();
+    expect(c.hangView.value?.rows.map((row) => row.label)).toEqual([
+      "错误信息",
+    ]);
+    expect(dialog()?.textContent).not.toContain("崩溃类型");
+
+    // 进程结束但现场仍在: 只说明结束, 不再提供结束游戏.
+    backend.handler(
+      session({ hang: hangScene({ crashType: "Crash", errorMessage: "" }) }),
+    );
+    await flushPromises();
+    expect(c.hangView.value?.title).toBe("游戏已结束");
+    expect(c.hangView.value?.running).toBe(false);
+    expect(c.hangView.value?.rows.map((row) => row.label)).toEqual([
+      "崩溃类型",
+    ]);
+    expect(dialogButton("结束游戏")).toBeUndefined();
+  });
+
+  it("关闭后同一现场不再自动弹出, 换现场或重新启动才恢复", async () => {
+    const c = await boot();
+    backend.handler(session({ running: true, pid: 123, hang: hangScene() }));
+    await flushPromises();
+    expect(c.hang.dialog).toBe(true);
+
+    c.dismissHangDialog();
+    await flushPromises();
+    expect(c.hang.dialog).toBe(false);
+    // 同一现场重复上报不再打扰用户.
+    backend.handler(session({ running: true, pid: 123, hang: hangScene() }));
+    await flushPromises();
+    expect(c.hang.dialog).toBe(false);
+
+    // 新的崩溃目录属于新的现场, 需要重新提示.
+    backend.handler(
+      session({
+        running: true,
+        pid: 123,
+        hang: hangScene({ site: "UECC-Windows-1133A6F4_0001" }),
+      }),
+    );
+    await flushPromises();
+    expect(c.hang.dialog).toBe(true);
+
+    // 收起提示后同一现场不再打扰.
+    c.dismissHangDialog();
+    await flushPromises();
+    expect(c.hang.dialog).toBe(false);
+
+    // 下一次启动清空现场, 关闭记忆随之重置.
+    backend.handler(session({ running: true, pid: 123, hang: null }));
+    await flushPromises();
+    expect(c.hang.scene).toBeNull();
+    backend.handler(session({ running: true, pid: 123, hang: hangScene() }));
+    await flushPromises();
+    expect(c.hang.dialog).toBe(true);
+  });
+
+  it("提示里结束游戏后保留现场并改为已结束形态", async () => {
+    const c = await boot();
+    const { settingsNavigation } =
+      await import("../../src/core/settingsCatalog");
+    backend.handler(session({ running: true, pid: 123, hang: hangScene() }));
+    await flushPromises();
+    // 进程结束后后端仍保留崩溃现场, 提示改为已结束形态.
+    const original = backend.invoke.getMockImplementation()!;
+    backend.invoke.mockImplementation(async (command, args) => {
+      if (command !== "close_game") return original(command, args);
+      backend.status = session({ hang: hangScene() });
+      return structuredClone(backend.status);
+    });
+
+    dialogButton("结束游戏")!.click();
+    // 结束请求已发出, 主按钮只反映进行中, 不再接受重复点击.
+    expect(c.state.game).toBe("closing");
+    expect(c.hangView.value?.ending).toBe(true);
+    expect(c.hangView.value?.primary).toBe("正在结束");
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+
+    expect(backend.invoke).toHaveBeenCalledWith("close_game");
+    expect(c.state.game).toBe("idle");
+    expect(c.hang.dialog).toBe(true);
+    expect(c.hangView.value?.running).toBe(false);
+    expect(c.hangView.value?.title).toBe("游戏已结束");
+    expect(c.hangView.value?.primary).toBe("导出日志");
+    expect(c.hangView.value?.secondary).toBe("知道了");
+
+    // 进程结束后仍可从提示导出日志.
+    dialogButton("导出日志")!.click();
+    await flushPromises();
+    expect(c.hang.dialog).toBe(false);
+    expect(settingsNavigation.category).toBe("maintenance");
+  });
+
+  it("启动阶段就卡死时提示运行中, 结束动作不依赖主页暂停语义", async () => {
+    const c = await boot();
+    backend.invoke.mockClear();
+    // 后台启动还没进入 running 阶段, 但进程已经存在并上报了现场.
+    backend.handler(
+      session({
+        running: true,
+        pid: 123,
+        hang: hangScene(),
+        launch: { stage: "game", startedAt: Date.now(), cancelling: false },
+      }),
+    );
+    await flushPromises();
+
+    // 有现场时后台不会再发启动完成事件, 相位必须推进, 窗口也不能收起.
+    expect(c.state.game).toBe("running");
+    expect(c.launchView.value.label).toBe("关闭游戏");
+    expect(c.hang.dialog).toBe(true);
+    expect(c.hangView.value?.title).toBe("游戏已卡死");
+    expect(c.hangView.value?.primary).toBe("结束游戏");
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+    expect(backend.invoke).not.toHaveBeenCalledWith("win_hide");
+
+    // 相位被外部改回启动中时, 结束动作仍然发出命令.
+    backend.invoke.mockClear();
+    c.state.game = "launching";
+    c.hangEndGame();
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+    expect(backend.invoke).toHaveBeenCalledWith("close_game");
+    expect(c.state.game).not.toBe("launching");
+  });
+
+  it("启动反馈期间结束进程后不再报启动未完成", async () => {
+    const c = await boot();
+    const original = backend.invoke.getMockImplementation()!;
+    // 启动命令返回前就收到卡死现场, 用户在提示里结束了这次启动.
+    backend.invoke.mockImplementation(async (command, args) => {
+      if (command === "launch_official") {
+        backend.status = session({
+          running: true,
+          pid: 123,
+          hang: hangScene(),
+        });
+        backend.handler(backend.status);
+        return { mode: "official", pid: 123 };
+      }
+      if (command === "close_game") {
+        backend.status = session({ hang: hangScene() });
+        return structuredClone(backend.status);
+      }
+      return original(command, args);
+    });
+    c.handleLaunchAction();
+    await flushPromises();
+    expect(c.hang.dialog).toBe(true);
+    expect(c.hangView.value?.title).toBe("游戏已卡死");
+
+    dialogButton("结束游戏")!.click();
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(1500);
+    await flushPromises();
+
+    expect(backend.invoke).toHaveBeenCalledWith("close_game");
+    expect(c.state.game).toBe("idle");
+    expect(c.hangView.value?.title).toBe("游戏已结束");
+    // 用户主动结束的启动不应再提示"游戏进程已退出，启动未完成".
+    expect(noticeMessage()).not.toBe("游戏进程已退出，启动未完成。");
+  });
+
+  it("结束请求进行中时两个按钮都不可用", async () => {
+    const c = await boot();
+    backend.handler(session({ running: true, pid: 123, hang: hangScene() }));
+    await flushPromises();
+    // 结束命令挂起期间界面处于进行中, 此时不该再接受其它入口.
+    const original = backend.invoke.getMockImplementation()!;
+    backend.invoke.mockImplementation((command, args) =>
+      command === "close_game"
+        ? new Promise(() => {})
+        : original(command, args),
+    );
+
+    dialogButton("结束游戏")!.click();
+    await nextTick();
+    await flushPromises();
+
+    expect(c.hangView.value?.ending).toBe(true);
+    const buttons = dialogButtons();
+    expect(buttons).toHaveLength(2);
+    // 结束中不能让玩家跳到设置页, 否则进程结束后停在诊断页面.
+    for (const item of buttons) expect(item.disabled).toBe(true);
+  });
+
+  it("结束失败且读不到状态时不会停在启动中", async () => {
+    const c = await boot();
+    backend.handler(
+      session({
+        running: true,
+        pid: 123,
+        hang: hangScene(),
+        launch: { stage: "game", startedAt: Date.now(), cancelling: false },
+      }),
+    );
+    await flushPromises();
+    expect(c.state.game).toBe("running");
+
+    const original = backend.invoke.getMockImplementation()!;
+    backend.invoke.mockImplementation(async (command, args) => {
+      if (command === "close_game" || command === "game_status")
+        throw new Error("connection lost");
+      return original(command, args);
+    });
+    c.hangEndGame();
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+
+    expect(c.state.game).toBe("running");
+    expect(noticeMessage()).toContain("connection lost");
+  });
+});
+
+it("设置写入后按宿主回传的能力事实更新上下文", async () => {
+  const c = await boot();
+  backend.capabilities = () => [
+    {
+      id: "oddity.tuning.cpu",
+      revision: 1,
+      state: "available",
+      code: null,
+      message: null,
+    },
+    {
+      id: "oddity.tuning.gpu",
+      revision: 1,
+      state: "unsupported",
+      code: null,
+      message: null,
+    },
+  ];
+  c.form.gameMode.performance = true;
+  c.queueSettingsSave("game", 0);
+  expect(await c.saveSettings()).toBe(true);
+  await flushPromises();
+
+  const facts = c.state.bootstrap?.capabilities ?? [];
+  expect(facts.map((fact) => [fact.id, fact.state])).toEqual([
+    ["oddity.tuning.cpu", "available"],
+    ["oddity.tuning.gpu", "unsupported"],
+  ]);
 });

@@ -3,6 +3,7 @@
 //! 用法: `cargo run -p ui-registry-gen` 写盘; 加 `--check` 只比对, 不一致时
 //! 打印第一处差异并以非零码退出.
 
+mod capabilities;
 mod ids;
 mod render;
 

@@ -4,8 +4,9 @@ use super::TEST_PACKAGE;
 use crate::{
     GamePackage, GameProcess, LaunchError, LaunchFailure, LaunchFailureKind, LaunchMode,
     LaunchPlan, LaunchProgress, LaunchProvider, LaunchResult, LaunchStage, PackageDescriptor,
-    ProcessExit, ProtonRef, Registry, RunnerSpec, SessionControl, SessionEnd, SessionHost,
-    SessionSample, SessionStatus, SessionTarget, SessionTicket, SpawnRequest, StartedFacts,
+    ProcessExit, ProtonRef, Registry, RunnerSpec, SessionControl, SessionEnd, SessionHang,
+    SessionHost, SessionSample, SessionStatus, SessionTarget, SessionTicket, SpawnRequest,
+    StartedFacts,
 };
 use serde_json::json;
 use std::ffi::OsString;
@@ -526,6 +527,7 @@ fn session_status_keeps_the_ui_payload() {
         log: None,
         launch: None,
         error: None,
+        hang: None,
     };
     assert_eq!(
         serde_json::to_value(&idle).unwrap(),
@@ -548,6 +550,7 @@ fn session_status_keeps_the_ui_payload() {
         log: Some("/logs/launch.log".into()),
         launch: None,
         error: None,
+        hang: None,
     };
     assert_eq!(
         serde_json::to_value(&running).unwrap(),
@@ -574,6 +577,7 @@ fn session_status_keeps_the_ui_payload() {
             cancelling: false,
         }),
         error: None,
+        hang: None,
     };
     assert_eq!(
         serde_json::to_value(&starting).unwrap(),
@@ -605,6 +609,7 @@ fn session_status_keeps_the_ui_payload() {
             cancelling: true,
         }),
         error: None,
+        hang: None,
     };
     assert_eq!(
         serde_json::to_value(&closing).unwrap(),
@@ -632,6 +637,7 @@ fn session_status_keeps_the_ui_payload() {
         log: None,
         launch: None,
         error: Some("启动失败：退出码 1".into()),
+        hang: None,
     };
     let value = serde_json::to_value(&failed).unwrap();
     assert_eq!(
@@ -647,7 +653,36 @@ fn session_status_keeps_the_ui_payload() {
         })
     );
     assert!(value.get("launch").is_none());
+
+    // 崩溃现场只在命中时出现, 会话结束后仍随状态一起投影.
+    let crashed = SessionStatus {
+        running: false,
+        closing: false,
+        pid: None,
+        started_at: None,
+        exe: None,
+        log: None,
+        launch: None,
+        error: None,
+        hang: Some(SessionHang {
+            crash_type: "Hang".into(),
+            error_message: "watchdog timeout".into(),
+            site: "UECC-Windows-1A2B_0000".into(),
+            detected_at: 1_794_365_930_348,
+        }),
+    };
+    assert_eq!(
+        serde_json::to_value(&crashed).unwrap()["hang"],
+        json!({
+            "crashType": "Hang",
+            "errorMessage": "watchdog timeout",
+            "site": "UECC-Windows-1A2B_0000",
+            "detectedAt": 1_794_365_930_348u64,
+        })
+    );
+    assert!(value.get("hang").is_none());
 }
+
 #[test]
 fn launch_progress_stages_only_advance_and_freeze_while_cancelling() {
     let mut progress = LaunchProgress::new(42);

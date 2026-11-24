@@ -326,6 +326,29 @@ it("弹窗按层级选择, 方向键优先交给控件, 返回关闭弹窗", asy
   n.refresh();
   expect(target()).not.toBe("base");
 });
+it("操作期间变灰的按钮不会把焦点挤给关闭按钮", async () => {
+  const n = layout(
+    `<div class="modal" data-modal-layer="1"><div class="modal__panel"><button data-pad-close>关闭弹窗</button><button id="archive-on">归档旧素材</button><button id="tile-1">第 1 套</button><button id="tile-2">第 2 套</button></div></div>`,
+  );
+  expect(target()).toBe("archive-on");
+
+  const tile = document.getElementById("tile-2")!;
+  pad.gamepadTarget.value = tile;
+  tile.setAttribute("data-pad-selected", "true");
+  n.refresh();
+  expect(target()).toBe("tile-2");
+
+  // 点选素材后请求还没回来, 期间素材格不能从候选里消失.
+  // 变成不可用的是开关与目录, 素材格仍在原位.
+  for (const id of ["archive-on"])
+    document.getElementById(id)!.setAttribute("disabled", "");
+  n.refresh();
+  expect(target()).toBe("tile-2");
+
+  // 素材格自己还在候选里时, 焦点不能被挤到关闭按钮上.
+  expect(pad.gamepadTarget.value).toBe(tile);
+  expect(target()).not.toBe("");
+});
 it("文本编辑和文件选择快捷操作只作用于当前弹层", async () => {
   const n = layout(
     `<input id="text"><textarea id="area" data-y="90"></textarea><button id="region" data-pad-region data-y="140">区域</button>`,

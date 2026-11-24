@@ -6,6 +6,7 @@ export const settingsCategories = [
   { id: "appearance", label: "外观与交互", icon: "i-monitor", order: 1 },
   { id: "audio", label: "音频", icon: "i-speaker-high", order: 2 },
   { id: "gamepad", label: "手柄", icon: "i-game-controller", order: 3 },
+  { id: "cross-screen", label: "跨屏游玩", icon: "i-monitor", order: 4 },
   { id: "runtime", label: "运行环境", icon: "i-hard-drives", order: 5 },
   { id: "maintenance", label: "诊断与维护", icon: "i-shield-check", order: 7 },
 ] as const;
@@ -18,6 +19,13 @@ export const settingsNavigation = reactive<{
 }>({ category: "appearance", query: "" });
 
 export const settingsEntries = [
+  {
+    id: "cross-screen",
+    category: "cross-screen",
+    label: "跨屏游玩",
+    description: "在手机, 平板或电视上用 Moonlight 游玩.",
+    keywords: "Sunshine Moonlight 串流 手机 平板 电视 远程 跨屏",
+  },
   {
     id: "audio-output",
     category: "audio",
@@ -36,8 +44,9 @@ export const settingsEntries = [
     id: "gamepad",
     category: "gamepad",
     label: "手柄",
-    description: "配置手柄操作、按键图标与触觉反馈.",
-    keywords: "DS DualSense DualShock Xbox Switch 手柄 振动 反馈 摇杆",
+    description: "配置手柄操作、按键图标、键盘布局与触觉反馈.",
+    keywords:
+      "DS DualSense DualShock Xbox Switch 手柄 振动 反馈 摇杆 键盘 布局 美式 字母表 QWERTY A-Z",
   },
   {
     id: "theme",

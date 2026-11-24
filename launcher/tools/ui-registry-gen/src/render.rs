@@ -1,10 +1,9 @@
 //! 扫描 `launcher/packages/*/ui` 并渲染宿主注册表生成物.
 //!
-//! 生成物只装配各包声明, 不执行包代码; 贡献 id 从声明字面量读取并校验,
-//! 格式化规则对齐 prettier 的 80 列与常见的换行方式.
+//! 生成前静态校验贡献 id 和能力依赖. 输出格式对齐 prettier 的 80 列限制.
 
-use crate::ids;
 use crate::Output;
+use crate::{capabilities, ids};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -42,7 +41,8 @@ pub fn outputs(root: &Path) -> Result<Vec<Output>, String> {
 }
 
 fn packages(root: &Path) -> Result<Vec<Package>, String> {
-    let host = ids::host_page_ids(root)?;
+    let host_capabilities = capabilities::read(root, "crates/oddity-host/src/hardware.rs")?;
+    let host = ids::host_page_ids(root, &host_capabilities)?;
     let dir = root.join("packages");
     let entries =
         fs::read_dir(&dir).map_err(|error| format!("launcher/packages: 无法读取: {error}"))?;
@@ -67,7 +67,17 @@ fn packages(root: &Path) -> Result<Vec<Package>, String> {
         let src = dir.join(&name).join("ui/src");
         require(&name, &src, "pages.ts")?;
         require(&name, &src, "contribution.ts")?;
-        let ids = ids::read(&name, &src)?;
+        let mut catalog = host_capabilities.clone();
+        for (id, revision) in
+            capabilities::read(root, &format!("packages/{name}/backend/src/lib.rs"))?
+        {
+            if catalog.insert(id.clone(), revision).is_some() {
+                return Err(format!(
+                    "launcher/packages/{name}: 能力 \"{id}\" 与宿主能力重名"
+                ));
+            }
+        }
+        let ids = ids::read(&name, &src, &catalog)?;
         let owner = format!("launcher/packages/{name}/ui");
         register(&mut namespaces, "包命名空间", &ids.namespace, &owner)?;
         for id in ids.contributions() {
@@ -304,13 +314,13 @@ mod tests {
         fs::create_dir_all(&src).expect("创建包目录");
         fs::write(
             src.join("pages.ts"),
-            format!("export const pages = [{{ id: \"{page_id}\" }}];\n"),
+            format!("export const pages = [{{ id: \"{page_id}\", requires: [] }}];\n"),
         )
         .expect("写入 pages");
         fs::write(
             src.join("contribution.ts"),
             format!(
-                "export const contribution = {{ namespace: \"{dir}\", pageContributions: pages.map((page) => ({{ ...page }})), homeCards: [], settingsSections: [] }};\n"
+                "import {{ pages }} from \"./pages\";\nexport const contribution = {{ namespace: \"{dir}\", pageContributions: pages.map((page) => ({{ ...page }})), homeCards: [], settingsSections: [] }};\n"
             ),
         )
         .expect("写入 contribution");
@@ -340,7 +350,7 @@ mod tests {
         fs::create_dir_all(&host).expect("创建宿主目录");
         let entries = ids
             .iter()
-            .map(|id| format!("  {{ id: \"{id}\" }},\n"))
+            .map(|id| format!("  {{ id: \"{id}\", requires: [] }},\n"))
             .collect::<String>();
         fs::write(
             host.join("pages.ts"),
@@ -396,7 +406,7 @@ mod tests {
         fs::create_dir_all(&src).expect("创建包目录");
         fs::write(
             src.join("pages.ts"),
-            "export const pages = [{ id: \"update\" }];\n",
+            "export const pages = [{ id: \"update\", requires: [] }];\n",
         )
         .expect("写入 pages");
         fs::write(
@@ -440,6 +450,181 @@ mod tests {
         assert!(error.contains("runtime-setup"), "{error}");
         assert!(error.contains("launcher/ui/src/host/pages.ts"), "{error}");
         fs::remove_dir_all(&root).expect("清理临时目录");
+    }
+
+    #[test]
+    fn validates_requirements_against_the_registered_providers() {
+        let root = temp_root("requires");
+        write_host_pages(&root, &["home"]);
+        write_package(&root, "game-test", false, false);
+        let package = root.join("packages/game-test");
+        let backend = package.join("backend/src");
+        fs::create_dir_all(&backend).expect("创建后端目录");
+        fs::write(
+            backend.join("lib.rs"),
+            r#"
+const SETTINGS: CapabilityDescriptor = CapabilityDescriptor {
+    id: CapabilityId("oddity.test.settings"),
+    revision: CapabilityRevision(2),
+    scope: Scope::GAME,
+};
+const UNUSED: CapabilityDescriptor = CapabilityDescriptor {
+    id: CapabilityId("oddity.test.unused"),
+    revision: CapabilityRevision(2),
+    scope: Scope::GAME,
+};
+static CAPABILITIES: &[Capability] = &[Capability::new(SETTINGS, availability)];
+"#,
+        )
+        .expect("写入能力表");
+        let src = package.join("ui/src");
+        fs::write(
+            src.join("requirements.ts"),
+            r#"export const settings = { id: "oddity.test.settings", revision: 2, necessity: "optional" } as const;"#,
+        )
+        .expect("写入能力要求");
+        for (entry, expected) in [
+            ("requires: [settings]", None),
+            ("", Some("缺少 requires")),
+            ("requires: requirements", Some("需要数组字面量")),
+            (
+                r#"requires: [{ id: "oddity.test.unused", revision: 2, necessity: "required" }]"#,
+                Some("未知能力 \"oddity.test.unused\""),
+            ),
+            (
+                r#"requires: [{ id: "oddity.test.settings", revision: 1, necessity: "required" }]"#,
+                Some("revision 为 1, 后端声明为 2"),
+            ),
+            (
+                r#"requires: [{ id: "oddity.test.settings", revision: 2.5, necessity: "required" }]"#,
+                Some("revision 必须是"),
+            ),
+            (
+                r#"requires: [{ id: "oddity.test.settings", revision: 2, necessity: "mandatory" }]"#,
+                Some("necessity 必须是 required 或 optional"),
+            ),
+            (
+                r#"requires: [{ id: "oddity.test.settings", revision: 2, necessity: "required" }]"#,
+                None,
+            ),
+        ] {
+            fs::write(
+                src.join("contribution.ts"),
+                format!(
+                    r#"
+import {{ settings }} from "./requirements";
+export const contribution = {{
+  namespace: "game-test",
+  settingsSections: [{{
+    id: "game-test-settings",
+    requires: [],
+    entries: [{{ id: "nickname", {entry} }}],
+  }}],
+}};
+"#
+                ),
+            )
+            .expect("写入贡献");
+            if let Some(expected) = expected {
+                let error = outputs(&root).expect_err("无效能力声明必须阻止生成");
+                assert!(error.contains(expected), "{error}");
+                assert!(error.contains("game-test-settings: nickname"), "{error}");
+            } else {
+                outputs(&root).expect("有效能力声明可以生成");
+            }
+        }
+        fs::remove_dir_all(root).expect("清理临时目录");
+    }
+
+    #[test]
+    fn rejects_breaking_changes_to_nte_capability_declarations() {
+        let root = temp_root("nte-requires");
+        let source = crate::launcher_root();
+        let contribution = "packages/game-nte/ui/src/contribution.ts";
+        let requirements = "packages/game-nte/ui/src/requirements.ts";
+        let backend = "packages/game-nte/backend/src/lib.rs";
+        for file in [
+            "crates/oddity-host/src/hardware.rs",
+            "ui/src/host/pages.ts",
+            "packages/game-fixture/backend/src/lib.rs",
+            "packages/game-fixture/ui/src/contribution.ts",
+            "packages/game-fixture/ui/src/pages.ts",
+            "packages/game-fixture/ui/src/preview.ts",
+            "packages/game-nte/ui/src/game.ts",
+            "packages/game-nte/ui/src/pages.ts",
+            "packages/game-nte/ui/src/preview.ts",
+            contribution,
+            requirements,
+            backend,
+        ] {
+            let target = root.join(file);
+            fs::create_dir_all(target.parent().unwrap()).expect("创建声明目录");
+            fs::copy(source.join(file), target).expect("复制项目声明");
+        }
+        outputs(&root).expect("异环与 fixture 的声明可以一起生成");
+
+        for (file, before, after, location, diagnostic) in [
+            (
+                contribution,
+                "      requires: [playerProfile],\n",
+                "",
+                "nte-player-info",
+                "缺少 requires",
+            ),
+            (
+                contribution,
+                "          requires: [accountGame],\n",
+                "",
+                "nte-game: game-account",
+                "缺少 requires",
+            ),
+            (
+                requirements,
+                "oddity.profile.player",
+                "oddity.profile",
+                "nte-player-info.requires (./requirements.ts 中的 playerProfile)",
+                "未知能力 \"oddity.profile\"",
+            ),
+            (
+                requirements,
+                "oddity.profile.player",
+                "oddity.fixture.settings",
+                "nte-player-info",
+                "未知能力 \"oddity.fixture.settings\"",
+            ),
+            (
+                requirements,
+                "necessity: \"required\"",
+                "necessity: \"mandatory\"",
+                "nte-game: game-account",
+                "necessity 必须是 required 或 optional",
+            ),
+            (
+                "packages/game-nte/ui/src/game.ts",
+                "direct: [accountGame]",
+                "direct: [{ id: \"oddity.account.typo\", revision: 1, necessity: \"required\" }]",
+                "nte/direct",
+                "未知能力 \"oddity.account.typo\"",
+            ),
+            (
+                backend,
+                "id: CapabilityId(\"oddity.profile.player\"),\n    revision: CapabilityRevision(1),",
+                "id: CapabilityId(\"oddity.profile.player\"),\n    revision: CapabilityRevision(2),",
+                "nte-player-info",
+                "revision 为 1, 后端声明为 2",
+            ),
+        ] {
+            let path = root.join(file);
+            let original = fs::read_to_string(&path).expect("读取声明");
+            assert!(original.contains(before), "{file} 中缺少 {before:?}");
+            fs::write(&path, original.replacen(before, after, 1)).expect("改写声明");
+            let result = outputs(&root);
+            fs::write(&path, original).expect("还原声明");
+            let error = result.expect_err("无效声明必须阻止生成");
+            assert!(error.contains(location), "{error}");
+            assert!(error.contains(diagnostic), "{error}");
+        }
+        fs::remove_dir_all(root).expect("清理临时目录");
     }
 
     #[test]

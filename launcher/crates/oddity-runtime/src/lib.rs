@@ -22,7 +22,7 @@ mod tasks;
 
 pub use capability::{
     Availability, Capability, CapabilityContext, CapabilityDescriptor, CapabilityFailure,
-    CapabilityId, CapabilityRequirement, CapabilityRevision, Necessity, Scope,
+    CapabilityId, CapabilityRequirement, CapabilityRevision, HardwareFacts, Necessity, Scope,
 };
 pub use events::EventSink;
 pub use group::{CommandDispatch, CommandGroup, DispatchFuture, DispatchOutcome};
@@ -35,8 +35,8 @@ pub use install::{InstallLocator, InstallQuery, LauncherInfo};
 pub use launch::{
     GameProcess, LaunchError, LaunchFailure, LaunchFailureKind, LaunchMode, LaunchPlan,
     LaunchProgress, LaunchProvider, LaunchResult, LaunchStage, ProcessExit, ProtonRef, RunnerSpec,
-    SessionControl, SessionEnd, SessionHost, SessionSample, SessionStatus, SessionTarget,
-    SessionTicket, SpawnRequest, StartedFacts,
+    SessionControl, SessionEnd, SessionHang, SessionHost, SessionSample, SessionStatus,
+    SessionTarget, SessionTicket, SpawnRequest, StartedFacts,
 };
 pub use package::{ChannelDescriptor, GamePackage, PackageDescriptor};
 pub use registry::{CapabilityIssue, Registry, ValidationIssue};

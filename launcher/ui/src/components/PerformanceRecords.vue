@@ -15,7 +15,8 @@ import {
   openSettings,
 } from "../core/controller";
 import { save } from "../core/filePicker";
-import { gameSettings } from "../core/game";
+import { activeEnvironmentId } from "../core/game";
+import { notify, errorText } from "../core/notifications";
 import type { PerformanceOverview, PerformanceRecord } from "../types/launcher";
 
 const overview = ref<PerformanceOverview>({
@@ -25,8 +26,6 @@ const overview = ref<PerformanceOverview>({
 });
 const a = ref("");
 const b = ref("");
-const error = ref("");
-const deleteError = ref("");
 const report = ref("");
 const reporting = ref(false);
 const saved = ref("");
@@ -43,9 +42,14 @@ const locked = computed(
     migrationBusy.value ||
     runtimeEnvironmentBusy.value,
 );
-// 采样需要当前运行环境; 没有环境时启动不会产生记录.
+// 采样需要当前区服的运行环境; 没有环境时启动不会产生记录.
 const hasEnvironment = computed(() =>
-  Boolean(gameSettings(state.bootstrap?.settings).activeEnvironment),
+  Boolean(
+    activeEnvironmentId(
+      state.bootstrap?.settings,
+      state.bootstrap?.channels ?? [],
+    ),
+  ),
 );
 const recordOptions = computed(() =>
   records.value.map((record) => ({
@@ -165,8 +169,6 @@ function deltaClass(row: ComparisonRow) {
   const improved = row.better === "down" ? row.delta < 0 : row.delta > 0;
   return improved ? "is-better" : "is-worse";
 }
-const message = (reason: unknown) =>
-  reason instanceof Error ? reason.message : String(reason);
 
 let disposed = false;
 let generation = 0;
@@ -204,8 +206,11 @@ async function loadReport() {
     (svg) => {
       if (!disposed && run === reportRun) report.value = svg;
     },
-    (reason) => {
-      if (!disposed && run === reportRun) error.value = message(reason);
+    (cause) => {
+      if (!disposed && run === reportRun)
+        notify(`生成对比图表失败: ${errorText(cause)}`, "error", 6500, {
+          key: "performance-report",
+        });
     },
   );
   if (!disposed && run === reportRun) reporting.value = false;
@@ -219,10 +224,12 @@ async function reload() {
       if (disposed || run !== generation) return;
       overview.value = result;
       selectDefault();
-      error.value = "";
     },
-    (reason) => {
-      if (!disposed && run === generation) error.value = message(reason);
+    (cause) => {
+      if (!disposed && run === generation)
+        notify(`读取性能记录失败: ${errorText(cause)}`, "error", 6500, {
+          key: "performance-records",
+        });
     },
   );
   if (disposed || run !== generation) return;
@@ -232,13 +239,14 @@ async function reload() {
 async function toggleRecording(enabled: boolean) {
   if (switching.value) return;
   switching.value = true;
-  error.value = "";
   await invoke("performance_recording", { enabled }).then(
     reload,
-    async (reason) => {
+    async (cause) => {
       // 请求失败时以存储里的开关状态为准, 让开关回到实际值.
       await reload();
-      error.value = message(reason);
+      notify(`切换记录开关失败: ${errorText(cause)}`, "error", 6500, {
+        key: "performance-records",
+      });
     },
   );
   switching.value = false;
@@ -253,19 +261,19 @@ function selectSide(side: "a" | "b", id: string) {
 async function togglePin(record: PerformanceRecord) {
   if (locked.value || pinning.value || removing.value) return;
   pinning.value = record.id;
-  error.value = "";
   await invoke("performance_pin", {
     id: record.id,
     pinned: !record.pinned,
-  }).then(reload, (reason) => {
-    error.value = message(reason);
+  }).then(reload, (cause) => {
+    notify(`更新固定状态失败: ${errorText(cause)}`, "error", 6500, {
+      key: "performance-records",
+    });
   });
   pinning.value = "";
 }
 
 function askDelete(record: PerformanceRecord) {
   if (locked.value || removing.value) return;
-  deleteError.value = "";
   pending.value = record;
 }
 
@@ -273,15 +281,16 @@ async function confirmDelete() {
   const record = pending.value;
   if (!record || removing.value) return;
   removing.value = true;
-  deleteError.value = "";
   await invoke("performance_delete", { id: record.id }).then(
     async () => {
       pending.value = null;
       report.value = "";
       await reload();
     },
-    (reason) => {
-      deleteError.value = message(reason);
+    (cause) => {
+      notify(`删除性能记录失败: ${errorText(cause)}`, "error", 6500, {
+        key: "performance-records",
+      });
     },
   );
   removing.value = false;
@@ -290,7 +299,9 @@ async function confirmDelete() {
 async function exportPng() {
   if (!canCompare.value || !reportUrl.value) return;
   if (!isDesktop()) {
-    error.value = "导出 PNG 需要在桌面应用中使用.";
+    notify("导出 PNG 需要在桌面应用中使用.", "error", 6500, {
+      key: "performance-export",
+    });
     return;
   }
   const destination = await save({
@@ -299,7 +310,6 @@ async function exportPng() {
     filters: [{ name: "PNG 图片", extensions: ["png"] }],
   });
   if (!destination) return;
-  error.value = "";
   await invoke("performance_export", {
     a: a.value,
     b: b.value,
@@ -308,8 +318,10 @@ async function exportPng() {
     (path) => {
       saved.value = path;
     },
-    (reason) => {
-      error.value = message(reason);
+    (cause) => {
+      notify(`导出对比图失败: ${errorText(cause)}`, "error", 6500, {
+        key: "performance-export",
+      });
     },
   );
 }
@@ -506,7 +518,6 @@ onBeforeUnmount(() => {
         </div>
       </article>
     </SettingGroup>
-    <p v-if="error" role="alert">{{ error }}</p>
     <BaseModal
       :open="pending !== null"
       title="删除性能记录"
@@ -518,7 +529,6 @@ onBeforeUnmount(() => {
     >
       <p>确定删除 {{ pendingLabel }}? 此操作无法撤销.</p>
       <p class="performance-records__meta">原始采样文件会一并删除.</p>
-      <p v-if="deleteError" role="alert">{{ deleteError }}</p>
       <div class="performance-records__actions">
         <BaseButton variant="danger" :busy="removing" @click="confirmDelete"
           >确定删除</BaseButton

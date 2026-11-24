@@ -854,19 +854,20 @@ fn execute(
     );
     journal.next_settings = next_settings.clone();
 
-    if let Some(active) = next_settings.current().active_environment.as_deref() {
+    {
         let candidate = next_settings.clone();
         if let Err(error) = crate::environment_commands::prefix(&app.state.packages, &candidate) {
             rollback(&source, &target, repair);
             remove_journal();
             return Err(format!("迁移后运行环境不可用: {error}"));
         }
-        if let Err(error) = crate::environment_commands::verify_proton(&candidate) {
+        if let Err(error) =
+            crate::environment_commands::verify_proton(&app.state.packages, &candidate)
+        {
             rollback(&source, &target, repair);
             remove_journal();
             return Err(format!("迁移后 Proton 校验失败: {error}"));
         }
-        let _ = active;
     }
 
     if check_cancel(&cancel).is_err() {
@@ -876,7 +877,7 @@ fn execute(
     }
     journal.phase = "committed".into();
     write_journal(&journal)?;
-    if let Err(error) = crate::settings::persist(&next_settings) {
+    if let Err(error) = crate::settings::persist_from(&next_settings, "migration") {
         rollback(&source, &target, repair);
         remove_journal();
         return Err(format!("保存迁移后的设置失败: {error}"));
@@ -1128,7 +1129,7 @@ pub fn retry(app: &ServiceHandle) -> Result<MigrationStatus, String> {
     status.phase = "rebinding".into();
     status.error.clear();
     set_status(app, status, None);
-    if let Err(error) = crate::settings::persist(&journal.next_settings) {
+    if let Err(error) = crate::settings::persist_from(&journal.next_settings, "migration") {
         if let Ok(mut game) = app.state.game.lock() {
             game.migration_busy = false;
         }
@@ -1316,7 +1317,7 @@ pub fn recover(registry: &Registry, data: &Path, _settings_path: &Path) {
                 return;
             }
             if !Path::new(&journal.target).exists()
-                || crate::settings::persist(&journal.next_settings).is_err()
+                || crate::settings::persist_from(&journal.next_settings, "migration").is_err()
             {
                 return;
             }
@@ -1347,7 +1348,7 @@ pub fn recover(registry: &Registry, data: &Path, _settings_path: &Path) {
                 remove_journal();
             } else if target.exists() {
                 if !Path::new(&journal.target).exists()
-                    || crate::settings::persist(&journal.next_settings).is_err()
+                    || crate::settings::persist_from(&journal.next_settings, "migration").is_err()
                 {
                     return;
                 }
@@ -1478,7 +1479,6 @@ Version=1.0
             },
             install_root: PathBuf::from("/games/old-global"),
             game: GameId::from("nte"),
-            distribution: ChannelId::new("global"),
             created_at: 1,
         }];
         let plan = MigrationPlan {
@@ -1634,7 +1634,6 @@ Version=1.0
             proton: pin,
             install_root: source.clone(),
             game: GameId::from("nte"),
-            distribution: ChannelId::new("cn"),
             created_at: 1,
         };
         let mut settings = Settings::default();
@@ -1642,8 +1641,12 @@ Version=1.0
             .current_mut()
             .install_roots
             .insert("cn".into(), source.display().to_string());
-        settings.current_mut().active_environment = Some(id.clone());
-        settings.current_mut().stable_environment = Some(id.clone());
+        settings
+            .current_mut()
+            .set_active_environment("cn", Some(&id));
+        settings
+            .current_mut()
+            .set_stable_environment("cn", Some(&id));
         settings.runtime_environments = vec![profile];
         let app = crate::service::test_service();
         *app.state.settings.lock().unwrap() = settings;

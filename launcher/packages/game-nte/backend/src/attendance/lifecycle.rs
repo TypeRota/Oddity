@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use oddity_runtime::HostContext;
 
-use super::{default_dir, default_service, Failure, FailureKind, Result, Service, Trigger};
+use super::{default_dir, Failure, FailureKind, Result, Service, Trigger};
 
 /// 启动器打开时按偏好触发一次自动签到.
 pub(crate) fn on_launch(host: &dyn HostContext) {
@@ -18,18 +18,22 @@ pub(crate) fn on_launch(host: &dyn HostContext) {
     if settings.game != crate::PACKAGE_ID || settings.distribution != "cn" {
         return;
     }
-    let service = default_service();
+    let data = host.data_dir();
+    launch(Service::with_data_dir(default_dir(), data.as_deref()));
+}
+
+/// 按偏好决定是否签到; 签到是阻塞的长任务, 交给独立线程, 不占用宿主关闭路径.
+pub(super) fn launch<V: super::Vault + Send + 'static>(service: Service<V>) {
     if !service
         .status()
         .is_ok_and(|status| status.preferences.trigger == Trigger::Launch)
     {
         return;
     }
-    // 签到是阻塞的长任务, 交给独立线程, 不占用宿主关闭路径.
     let _ = std::thread::Builder::new()
         .name("oddity-attendance".into())
-        .spawn(|| {
-            let _ = default_service().run(Some(Trigger::Launch));
+        .spawn(move || {
+            let _ = service.run(Some(Trigger::Launch));
         });
 }
 
@@ -46,7 +50,8 @@ pub(crate) fn headless_entry(args: &[OsString]) -> Option<i32> {
         .find(|pair| pair[0] == "--taygedo-config")
         .map(|pair| PathBuf::from(&pair[1]))
         .unwrap_or_else(default_dir);
-    Some(match run_headless(Service::new(dir)) {
+    // 无头入口没有宿主上下文, 日志目录按用户数据目录推导.
+    Some(match run_headless(Service::with_data_dir(dir, None)) {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("{error}");
@@ -56,6 +61,11 @@ pub(crate) fn headless_entry(args: &[OsString]) -> Option<i32> {
 }
 
 fn run_headless(service: Service<super::KeyringVault>) -> Result<()> {
+    execute(service)
+}
+
+/// 无头执行的公共流程; 与入口共用, 测试可换用内存密钥环.
+pub(super) fn execute<V: super::Vault>(service: Service<V>) -> Result<()> {
     let current = service.status()?;
     if current.accounts.is_empty() {
         return Err(Failure::new(FailureKind::Auth, "请先登录塔吉多账号"));

@@ -16,6 +16,8 @@ pub(crate) const PACKAGES: &[&dyn GamePackage] = &[
 /// 按装配表构建注册表.
 pub fn build() -> Registry {
     let mut registry = Registry::new();
+    // 硬件提供者与具体游戏无关, 先于游戏包登记.
+    registry.install_host_capabilities(oddity_host::hardware::CAPABILITIES);
     for &package in PACKAGES {
         registry.install(package);
     }
@@ -76,21 +78,26 @@ mod tests {
     use oddity_runtime::{CommandDispatch, CommandGroup, DispatchFuture, PackageDescriptor};
     use serde_json::{json, Value};
 
-    fn discard<'a>(
-        _: &'a dyn oddity_runtime::HostContext,
+    fn echo_with_game<'a>(
+        host: Arc<dyn oddity_runtime::HostContext>,
         _: &'a str,
         payload: Value,
     ) -> DispatchFuture<'a> {
-        Box::pin(async move { Ok(payload) })
+        Box::pin(async move {
+            let settings = host.settings().map_err(|error| json!(error))?;
+            Ok(json!({"game": settings.game, "payload": payload}))
+        })
     }
 
     /// 装配表构造的服务; 事件出口留在宿主里, 用例不读.
     fn test_service() -> oddity_host::service::ServiceHandle {
-        test_service_with_output().0
+        test_service_with_output(build()).0
     }
 
     /// 同上, 保留事件接收端与临时目录.
-    fn test_service_with_output() -> (
+    fn test_service_with_output(
+        registry: Registry,
+    ) -> (
         oddity_host::service::ServiceHandle,
         mpsc::Receiver<Value>,
         TempDir,
@@ -103,8 +110,8 @@ mod tests {
         let service = Service::new(ServiceConfig {
             settings: oddity_host::settings::Settings::default(),
             data_dir,
-            registry: Arc::new(build()),
-            events,
+            registry: Arc::new(registry),
+            events: oddity_host::service::EventBus::Channel(events),
             input,
         });
         (service, receiver, directory)
@@ -223,7 +230,21 @@ mod tests {
             groups,
             [
                 (Some("nte"), "bulletin", vec!["fetch_bulletins"]),
-                (Some("nte"), "background", vec!["launcher_background"]),
+                (
+                    Some("nte"),
+                    "background",
+                    vec![
+                        "launcher_background",
+                        "launcher_background_archive",
+                        "launcher_background_select",
+                        "launcher_background_configure",
+                    ]
+                ),
+                (
+                    Some("nte"),
+                    "player_state",
+                    vec!["game_state_status", "game_state_start", "game_state_stop"]
+                ),
                 (
                     Some("nte"),
                     "attendance",
@@ -405,7 +426,7 @@ mod tests {
                 "fixture",
                 "fixture-copy",
                 &["fixture_echo"],
-                discard as CommandDispatch,
+                echo_with_game as CommandDispatch,
             ));
         }
     }
@@ -442,7 +463,7 @@ mod tests {
                 "hsr",
                 "update",
                 &["check_update"],
-                discard as CommandDispatch,
+                echo_with_game as CommandDispatch,
             ));
         }
     }
@@ -459,13 +480,37 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_command_receives_the_requested_game_context() {
+        let mut registry = build();
+        registry.register(CommandGroup::shared(
+            "test",
+            &["settings_probe"],
+            echo_with_game,
+        ));
+        let (app, _events, _directory) = test_service_with_output(registry);
+        app.state.settings.lock().unwrap().active_game =
+            oddity_host::identity::GameId::from("fixture");
+        let response = oddity_host::service::block_on(oddity_host::protocol::dispatch(
+            app,
+            "settings_probe".into(),
+            Some("nte".into()),
+            json!({"source": "caller"}),
+        ))
+        .unwrap();
+        assert_eq!(
+            response,
+            json!({"game": "nte", "payload": {"source": "caller"}})
+        );
+    }
+
+    #[test]
     fn a_group_cannot_take_over_a_host_command() {
         let mut registry = build();
         registry.register(CommandGroup::for_game(
             "nte",
             "test",
             &["game_status"],
-            discard as CommandDispatch,
+            echo_with_game as CommandDispatch,
         ));
         let error = validate(&registry).unwrap_err();
         assert!(error.contains("game_status"), "{error}");
@@ -572,7 +617,7 @@ mod tests {
 
     #[test]
     fn group_commands_route_after_host_arms() {
-        let (app, _events, _dir) = test_service_with_output();
+        let (app, _events, _dir) = test_service_with_output(build());
         let error = oddity_host::service::block_on(oddity_host::protocol::dispatch(
             app.clone(),
             "fetch_bulletins".into(),
@@ -614,7 +659,7 @@ mod tests {
         );
 
         // 命令组从宿主能力拿启动器根目录, 素材解析发生在包内.
-        let (app, _events, _guard) = test_service_with_output();
+        let (app, _events, _guard) = test_service_with_output(build());
         {
             let mut settings = app.state.settings.lock().unwrap();
             settings.current_mut().install_roots.insert(
@@ -700,7 +745,7 @@ mod empty_assembly {
             settings: oddity_host::settings::Settings::default(),
             data_dir: directory.0.clone(),
             registry: Arc::new(Registry::new()),
-            events,
+            events: oddity_host::service::EventBus::Channel(events),
             input,
         });
         (service, directory)

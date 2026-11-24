@@ -9,6 +9,7 @@ use oddity_runtime::{
     InstallLocator, LaunchProvider, PackageDescriptor, PackageRuntime, Registry, Scope,
 };
 use serde_json::Value;
+use std::sync::Arc;
 
 pub mod attendance;
 pub mod auth;
@@ -17,6 +18,7 @@ mod bulletin;
 pub mod cli;
 mod install;
 pub mod launch;
+pub mod player_state;
 mod runtime;
 pub mod update;
 
@@ -100,6 +102,12 @@ impl GamePackage for NtePackage {
         ));
         registry.register(CommandGroup::for_game(
             PACKAGE_ID,
+            "player_state",
+            player_state::COMMANDS,
+            player_state_dispatch,
+        ));
+        registry.register(CommandGroup::for_game(
+            PACKAGE_ID,
             "attendance",
             attendance::COMMANDS,
             attendance_dispatch,
@@ -155,7 +163,7 @@ impl GamePackage for NtePackage {
 
 /// 公告域分发: 失败载荷沿用宿主的 JSON 形状, 由域内按命令解析参数.
 fn bulletin_dispatch<'a>(
-    _host: &'a dyn HostContext,
+    _host: Arc<dyn HostContext>,
     command: &'a str,
     args: Value,
 ) -> DispatchFuture<'a> {
@@ -164,45 +172,54 @@ fn bulletin_dispatch<'a>(
 
 /// 背景域分发: 宿主负责定位官方启动器, 参数与结果仍是宿主载荷.
 fn background_dispatch<'a>(
-    host: &'a dyn HostContext,
+    host: Arc<dyn HostContext>,
     command: &'a str,
     args: Value,
 ) -> DispatchFuture<'a> {
-    Box::pin(background::command(host, command, args))
+    Box::pin(async move { background::command(host.as_ref(), command, args).await })
 }
 
 /// 签到域分发: 区服来自宿主只读设置快照, 密钥环与网络由平台能力提供.
 fn attendance_dispatch<'a>(
-    host: &'a dyn HostContext,
+    host: Arc<dyn HostContext>,
     command: &'a str,
     args: Value,
 ) -> DispatchFuture<'a> {
-    Box::pin(attendance::command(host, command, args))
+    Box::pin(async move { attendance::command(host.as_ref(), command, args).await })
 }
 
 /// 账号域分发: 国服能力门与官方启动器根目录由宿主提供.
 fn auth_dispatch<'a>(
-    host: &'a dyn HostContext,
+    host: Arc<dyn HostContext>,
     command: &'a str,
     args: Value,
 ) -> DispatchFuture<'a> {
-    Box::pin(auth::command(host, command, args))
+    Box::pin(async move { auth::command(host.as_ref(), command, args).await })
 }
 
 /// 更新域分发: 只读设置快照, 活动状态与官方启动器根目录由宿主提供.
 fn update_dispatch<'a>(
-    host: &'a dyn HostContext,
+    host: Arc<dyn HostContext>,
     command: &'a str,
     args: Value,
 ) -> DispatchFuture<'a> {
-    Box::pin(update::command(host, command, args))
+    Box::pin(async move { update::command(host.as_ref(), command, args).await })
 }
 
 /// 下载命令组分发: 状态常驻包内, 后台任务经绑定的宿主句柄发事件.
 fn download_dispatch<'a>(
-    host: &'a dyn HostContext,
+    host: Arc<dyn HostContext>,
     command: &'a str,
     args: Value,
 ) -> DispatchFuture<'a> {
     Box::pin(update::commands::dispatch(host, command, args))
+}
+
+/// 角色同步域: 目标进程归属与只读采集留在游戏包内.
+fn player_state_dispatch<'a>(
+    host: Arc<dyn HostContext>,
+    command: &'a str,
+    args: Value,
+) -> DispatchFuture<'a> {
+    Box::pin(async move { player_state::command(host.as_ref(), command, args).await })
 }

@@ -4,6 +4,7 @@ import BaseInput from "./BaseInput.vue";
 import { ref } from "vue";
 import { homeDir, join } from "../core/desktop";
 import { open } from "../core/filePicker";
+import { notify, errorText } from "../core/notifications";
 
 const props = defineProps<{
   id: string;
@@ -18,12 +19,10 @@ const emit = defineEmits<{
   change: [];
 }>();
 const picking = ref(false);
-const error = ref("");
 
 async function browse() {
   if (props.disabled || picking.value) return;
   picking.value = true;
-  error.value = "";
   try {
     let defaultPath = props.modelValue.trim();
     if (defaultPath === "~" || defaultPath.startsWith("~/")) {
@@ -41,7 +40,7 @@ async function browse() {
       emit("change");
     }
   } catch (cause) {
-    error.value = `无法打开目录选择框: ${String(cause)}`;
+    notify(`无法打开目录选择框: ${errorText(cause)}`, "error", 6500);
   } finally {
     picking.value = false;
   }
@@ -56,8 +55,6 @@ async function browse() {
         :id="id"
         :model-value="modelValue"
         mono
-        :invalid="!!error"
-        :aria-describedby="error ? `${id}-error` : undefined"
         type="text"
         spellcheck="false"
         autocomplete="off"
@@ -79,8 +76,5 @@ async function browse() {
         浏览
       </BaseButton>
     </div>
-    <small v-if="error" :id="`${id}-error`" class="field__hint" role="alert">{{
-      error
-    }}</small>
   </div>
 </template>

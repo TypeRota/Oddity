@@ -41,6 +41,7 @@ fn session(closing: bool, alive: bool) -> Session {
         snapshot: None,
         snapshot_success_after_ms: 0,
         launcher_root: None,
+        prefix: PathBuf::new(),
         monitor_state: Arc::new(Mutex::new(crate::session::monitor::MonitorState::default())),
         control: crate::session::ControlSlot::default(),
     }
@@ -56,9 +57,25 @@ fn global_environment() -> RuntimeEnvironment {
         },
         install_root: PathBuf::from("/tmp/install"),
         game: crate::identity::GameId::from("nte"),
-        distribution: ChannelId::new("global"),
         created_at: 0,
     }
+}
+
+#[test]
+fn launch_blocker_reports_busy_states_without_touching_the_registry() {
+    let _lock = crate::testing::serial();
+    crate::testing::reset();
+    let mut tracker = Registry {
+        environment_busy: true,
+        ..Default::default()
+    };
+    assert!(crate::session::launch_blocker(&crate::testing::packages(), &tracker).is_err());
+    // 只读检查不能改写启动状态, 否则被拒绝的请求也会卡住后续启动.
+    assert!(!tracker.starting);
+    tracker.environment_busy = false;
+    crate::session::launch_blocker(&crate::testing::packages(), &tracker).unwrap();
+    assert!(!tracker.starting);
+    crate::testing::reset();
 }
 
 #[test]
@@ -139,10 +156,15 @@ fn prepare_launch_clears_finished_sessions() {
 fn launch_summary_uses_region_environment_or_current_distribution() {
     let mut app = crate::service::test_service();
     let mut settings = crate::tests::settings_with_game(ChannelId::new("cn"), None, None);
-    settings.runtime_environments = vec![global_environment()];
+    let environment = global_environment();
+    settings
+        .current_mut()
+        .set_active_environment("global", Some(&environment.id));
+    settings.runtime_environments = vec![environment];
     std::sync::Arc::get_mut(&mut app).unwrap().state = managed_state(settings, Registry::default());
 
     let region = cli::LaunchRequest {
+        cross_screen_socket: None,
         game: crate::identity::GameId::from("nte"),
         region: Some(ChannelId::new("global")),
         mode: cli::LaunchMode::Background,
@@ -154,6 +176,7 @@ fn launch_summary_uses_region_environment_or_current_distribution() {
     );
 
     let environment = cli::LaunchRequest {
+        cross_screen_socket: None,
         game: crate::identity::GameId::from("nte"),
         region: None,
         mode: cli::LaunchMode::Background,
@@ -165,6 +188,7 @@ fn launch_summary_uses_region_environment_or_current_distribution() {
     );
 
     let current = cli::LaunchRequest {
+        cross_screen_socket: None,
         game: crate::identity::GameId::from("nte"),
         region: None,
         mode: cli::LaunchMode::Background,
@@ -176,6 +200,7 @@ fn launch_summary_uses_region_environment_or_current_distribution() {
     );
 
     let unknown = cli::LaunchRequest {
+        cross_screen_socket: None,
         game: crate::identity::GameId::from("nte"),
         region: None,
         mode: cli::LaunchMode::Background,
@@ -187,6 +212,7 @@ fn launch_summary_uses_region_environment_or_current_distribution() {
     );
 
     let other_game = cli::LaunchRequest {
+        cross_screen_socket: None,
         game: crate::identity::GameId::from("hsr"),
         region: None,
         mode: cli::LaunchMode::Background,
@@ -202,6 +228,7 @@ fn launch_summary_uses_region_environment_or_current_distribution() {
 fn external_launch_rejects_games_without_a_launch_profile() {
     let app = crate::service::test_service();
     let request = cli::LaunchRequest {
+        cross_screen_socket: None,
         game: crate::identity::GameId::from("hsr"),
         region: None,
         mode: cli::LaunchMode::Background,

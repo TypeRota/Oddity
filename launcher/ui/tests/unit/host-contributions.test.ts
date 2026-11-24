@@ -73,6 +73,7 @@ describe("宿主页面贡献表", () => {
         component,
         order: 1,
         nav: { label: "隐藏", icon: "x" },
+        requires: [],
         visible: () => false,
       },
       {
@@ -81,6 +82,7 @@ describe("宿主页面贡献表", () => {
         component,
         order: 2,
         nav: { label: "显示", icon: "y" },
+        requires: [],
         visible: () => true,
       },
     ];
@@ -117,6 +119,7 @@ describe("宿主页面贡献表", () => {
         component,
         order: 10,
         nav: false,
+        requires: [],
         visible: () => false,
       },
       {
@@ -125,6 +128,7 @@ describe("宿主页面贡献表", () => {
         component,
         order: 20,
         nav: false,
+        requires: [],
         visible: () => true,
       },
       {
@@ -133,6 +137,7 @@ describe("宿主页面贡献表", () => {
         component,
         order: 30,
         nav: false,
+        requires: [],
         visible: () => true,
       },
     ];

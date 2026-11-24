@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 test.use({ video: "on" });
 
-test("交叉模糊过渡无空白帧, 外层位置固定, 完成后可继续创建", async ({
+test("组件准备后确认创建环境, 交叉模糊过渡无空白帧且布局固定", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -55,6 +55,29 @@ test("交叉模糊过渡无空白帧, 外层位置固定, 完成后可继续创�
     );
     await page.screenshot({ path: `test-results/wizard-${stage}.png` });
   }
+  // 自动流程只准备组件, 创建环境必须经过确认场景.
+  await expect(wizard.locator('[data-scene="confirm"]')).toHaveCSS(
+    "opacity",
+    "1",
+  );
+  await expect(wizard.locator('[data-scene="complete"]')).toHaveCount(0);
+  await expect(wizard).toContainText("国服");
+  await expect(wizard.locator("#runtime-setup-name")).toHaveValue(
+    "默认运行环境",
+  );
+  await page.screenshot({ path: "test-results/wizard-confirm.png" });
+  const frames = await samples;
+  expect(Math.min(...frames.map((frame) => frame.opacity))).toBeGreaterThan(
+    0.85,
+  );
+  expect(frames.some((frame) => frame.layers === 2 && frame.blur)).toBe(true);
+  for (const key of ["navY", "footerY", "viewportH"] as const) {
+    const values = frames.map((frame) => frame[key]);
+    expect(Math.max(...values) - Math.min(...values)).toBeLessThan(0.5);
+  }
+  await wizard
+    .getByRole("button", { name: "创建并初始化", exact: true })
+    .click();
   await expect(wizard.locator('[data-scene="complete"]')).toHaveCSS(
     "opacity",
     "1",
@@ -80,15 +103,6 @@ test("交叉模糊过渡无空白帧, 外层位置固定, 完成后可继续创�
     .boundingBox();
   expect(canvasBounds).toEqual({ x: 0, y: 0, width: 1180, height: 760 });
   await page.screenshot({ path: "test-results/wizard-complete.png" });
-  const frames = await samples;
-  expect(Math.min(...frames.map((frame) => frame.opacity))).toBeGreaterThan(
-    0.85,
-  );
-  expect(frames.some((frame) => frame.layers === 2 && frame.blur)).toBe(true);
-  for (const key of ["navY", "footerY", "viewportH"] as const) {
-    const values = frames.map((frame) => frame[key]);
-    expect(Math.max(...values) - Math.min(...values)).toBeLessThan(0.5);
-  }
   await wizard
     .getByRole("button", { name: "查看运行环境", exact: true })
     .click();
@@ -96,9 +110,10 @@ test("交叉模糊过渡无空白帧, 外层位置固定, 完成后可继续创�
     "默认运行环境",
   );
   await page.getByRole("button", { name: "打开向导", exact: true }).click();
-  await expect(
-    wizard.getByRole("heading", { name: "已有可用运行环境" }),
-  ).toBeVisible();
+  await expect(wizard.locator('[data-scene="existing"]')).toHaveCSS(
+    "opacity",
+    "1",
+  );
   await expect(wizard.locator(".wizard-existing")).toContainText(
     "默认运行环境",
   );
@@ -107,6 +122,10 @@ test("交叉模糊过渡无空白帧, 外层位置固定, 完成后可继续创�
     "false",
   );
   await wizard.getByRole("button", { name: "继续创建", exact: true }).click();
+  await expect(wizard.locator("#runtime-setup-name")).toHaveValue("运行环境 2");
+  await wizard
+    .getByRole("button", { name: "创建并初始化", exact: true })
+    .click();
   await expect(wizard.locator('[data-scene="complete"]')).toHaveCSS(
     "opacity",
     "1",
@@ -140,6 +159,13 @@ test("umu 安装范围明确, 系统安装成功后锁定并复用, 新环境仍
   );
   await authorization
     .getByRole("button", { name: "授权并安装", exact: true })
+    .click();
+  await expect(wizard.locator('[data-scene="confirm"]')).toHaveCSS(
+    "opacity",
+    "1",
+  );
+  await wizard
+    .getByRole("button", { name: "创建并初始化", exact: true })
     .click();
   await expect(wizard.locator('[data-scene="complete"]')).toHaveCSS(
     "opacity",

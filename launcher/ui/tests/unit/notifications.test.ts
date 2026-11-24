@@ -93,3 +93,13 @@ it("动作更新同一条通知时保留新状态, 清空后忽略迟到结果",
   await vi.advanceTimersByTimeAsync(100);
   expect(n.notifications).toHaveLength(0);
 });
+
+it("失败原因统一成一句话文案, 空值有兜底", () => {
+  expect(n.errorText(new Error("读取失败"))).toBe("读取失败");
+  expect(n.errorText("后端拒绝")).toBe("后端拒绝");
+  expect(n.errorText({ message: "对象形式" })).toBe("对象形式");
+  // 空白与非字符串原因都退回兜底文案, 避免通知里出现空行或 "null".
+  expect(n.errorText("   ")).toBe("操作失败.");
+  expect(n.errorText(null)).toBe("操作失败.");
+  expect(n.errorText(undefined)).toBe("操作失败.");
+});

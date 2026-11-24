@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { form, state } from "../core/controller";
 import { invoke } from "../core/api";
-import { notify } from "../core/notifications";
+import { notify, errorText } from "../core/notifications";
 import type { GpuConfig, GpuInfo } from "../types/launcher";
 import BaseButton from "./BaseButton.vue";
 import BaseModal from "./BaseModal.vue";
@@ -11,7 +11,6 @@ import BaseSwitch from "./BaseSwitch.vue";
 import SettingGroup from "./settings/SettingGroup.vue";
 import SettingRow from "./settings/SettingRow.vue";
 
-const props = defineProps<{ available: boolean }>();
 const info = ref<GpuInfo | null>(null);
 const loading = ref(false);
 const saved = ref("");
@@ -21,9 +20,7 @@ const dirty = computed(
 const applying = ref(false);
 const confirming = ref(false);
 let disposed = false;
-const supported = computed(
-  () => props.available && Boolean(info.value?.devices.length),
-);
+const supported = computed(() => Boolean(info.value?.devices.length));
 const editable = computed(
   () =>
     supported.value &&
@@ -63,12 +60,7 @@ async function reload() {
     },
     (cause: unknown) => {
       if (!disposed)
-        notify(
-          cause instanceof Error ? cause.message : String(cause),
-          "error",
-          6500,
-          { key: "game-mode-gpu" },
-        );
+        notify(errorText(cause), "error", 6500, { key: "game-mode-gpu" });
     },
   );
   loading.value = false;
@@ -108,12 +100,7 @@ async function apply() {
     },
     (cause: unknown) => {
       if (!disposed)
-        notify(
-          cause instanceof Error ? cause.message : String(cause),
-          "error",
-          6500,
-          { key: "game-mode-gpu" },
-        );
+        notify(errorText(cause), "error", 6500, { key: "game-mode-gpu" });
     },
   );
   applying.value = false;
@@ -133,10 +120,7 @@ defineExpose({ reload });
 
 <template>
   <SettingGroup title="GPU 超频">
-    <div
-      :class="{ 'is-unavailable': !supported || !form.gameMode.performance }"
-      class="game-mode-gpu"
-    >
+    <div :class="{ 'is-unavailable': !supported }" class="game-mode-gpu">
       <SettingRow
         data-game-setting="gpu"
         tabindex="-1"

@@ -5,6 +5,7 @@ import { computed, nextTick, reactive, ref } from "vue";
 import { desktopWindow } from "./desktop";
 import type {
   AttendanceStatus,
+  PlayerStateStatus,
   AttendanceTrigger,
   Bootstrap,
   CheckResult,
@@ -12,6 +13,7 @@ import type {
   LaunchProgress,
   LaunchStage,
   GameStatus,
+  GameHangScene,
   DownloadStatus,
   ResourceCatalog,
   LauncherBackgroundMedia,
@@ -28,6 +30,7 @@ import type {
   IntegrityStatus,
   MigrationPlan,
   MigrationStatus,
+  EnvironmentAudit,
 } from "../types/launcher";
 import {
   invoke,
@@ -40,13 +43,14 @@ import {
   listenMigrationState,
 } from "./api";
 import { DEMO_NOTICE_KEY, isDemo } from "./demo";
-import { activeGame, gameSettings } from "./game";
+import { activeGame, DEFAULT_LAUNCH_MODE, gameSettings } from "./game";
 import {
   notify,
+  errorText,
   dismissNotification,
   resetNotifications,
 } from "./notifications";
-export { notify, notifications } from "./notifications";
+export { notify, errorText, notifications } from "./notifications";
 import { latestSession, formatPlaytime } from "./playtime";
 import { settingsNavigation, type SettingsCategory } from "./settingsCatalog";
 import { APP_VERSION } from "./version";
@@ -58,10 +62,13 @@ import {
   navigationItems,
   resolvePage,
   type PageId,
+  launchModeAvailable,
 } from "../host/pages";
 
 let generation = 0;
 let windowFocusRevision = 0;
+// 已提示过安装目录变化的运行环境, 避免每次保存设置都重复通知.
+const warnedEnvironmentRoots = new Set<string>();
 let events = new window.AbortController();
 const disposers: (() => void)[] = [];
 let downloadRevision = 0;
@@ -73,13 +80,15 @@ const downloadStarting = ref<"check" | "apply" | "launcher" | "preload" | null>(
 );
 export const runtimeEnvironmentBusy = ref(false);
 export const runtimeSetupAutomatic = ref(false);
-export const runtimeEnvironmentError = ref("");
 export const migration = reactive({
   plan: null as MigrationPlan | null,
   status: null as MigrationStatus | null,
   planning: false,
-  error: "",
 });
+// 迁移命令失败统一走通知; 迁移状态里的失败阶段仍由进度界面展示.
+function failMigration(cause: unknown) {
+  notify(errorText(cause), "error", 6500, { key: "install-migration" });
+}
 const MIGRATION_BUSY_PHASES = new Set([
   "planning",
   "moving",
@@ -167,6 +176,82 @@ export const gameRecords = reactive({
   error: "",
   nextRefresh: 0,
 });
+export const livePlayerState = reactive({
+  status: {
+    state: "disabled",
+    enabled: false,
+    observation: null,
+    message: null,
+    record: null,
+  } as PlayerStateStatus,
+  loading: false,
+  busy: false,
+  error: "",
+});
+let livePlayerRevision = 0;
+let lastPlayerStateFailure = "";
+
+function playerStateRequest(
+  command: "game_state_status" | "game_state_start" | "game_state_stop",
+) {
+  const changing = command !== "game_state_status";
+  if (livePlayerState.busy || (!changing && livePlayerState.loading))
+    return Promise.resolve();
+  const epoch = generation;
+  const revision = changing ? ++livePlayerRevision : livePlayerRevision;
+  const distribution = form.distribution;
+  if (changing) livePlayerState.busy = true;
+  else livePlayerState.loading = true;
+  return invoke(command)
+    .then(
+      (next) => {
+        if (
+          epoch === generation &&
+          revision === livePlayerRevision &&
+          distribution === form.distribution
+        ) {
+          livePlayerState.status = next;
+          livePlayerState.error = "";
+          if (
+            next.state === "error" &&
+            next.message &&
+            lastPlayerStateFailure !== next.message
+          ) {
+            lastPlayerStateFailure = next.message;
+            notify(next.message, "error", 6500, { key: "player-state" });
+          }
+          if (
+            (!next.enabled && next.state === "disabled") ||
+            next.state === "capturing" ||
+            next.state === "unidentified"
+          )
+            lastPlayerStateFailure = "";
+        }
+      },
+      (cause: unknown) => {
+        if (
+          epoch === generation &&
+          revision === livePlayerRevision &&
+          distribution === form.distribution
+        ) {
+          const message = attendanceMessage(cause);
+          if (livePlayerState.error !== message)
+            notify(message, "error", 6500, { key: "player-state" });
+          livePlayerState.error = message;
+        }
+      },
+    )
+    .finally(() => {
+      if (epoch === generation) {
+        if (changing) livePlayerState.busy = false;
+        else livePlayerState.loading = false;
+      }
+    });
+}
+export const refreshPlayerState = () => playerStateRequest("game_state_status");
+export const startPlayerState = () => playerStateRequest("game_state_start");
+export const stopPlayerState = () => playerStateRequest("game_state_stop");
+
 const GAME_RECORD_REFRESH_MS = 30 * 60 * 1000;
 let attendanceRevision = 0;
 let attendanceStatusRevision = 0;
@@ -210,7 +295,6 @@ export function syncAttendance(next: AttendanceStatus, syncForm = true) {
 }
 export async function refreshGameRecords(force = false) {
   if (
-    form.distribution === "global" ||
     !attendance.status?.accounts.length ||
     gameRecords.loading ||
     (attendance.busy && !attendance.running) ||
@@ -226,12 +310,36 @@ export async function refreshGameRecords(force = false) {
   }
   gameRecords.loading = true;
   gameRecords.waiting = false;
+  const previousError = gameRecords.error;
   gameRecords.error = "";
   gameRecords.nextRefresh = Date.now() + GAME_RECORD_REFRESH_MS;
   try {
     const next = await invoke("attendance_refresh_game_records");
     // 账号变更后丢弃旧查询, 签到结果由各自字段独立合并。
     if (epoch !== generation || revision !== attendanceRevision) return;
+    for (const account of next.accounts) {
+      const failure = account.gameRecordError;
+      const previous = attendance.status?.accounts.find(
+        (item) => item.id === account.id,
+      )?.gameRecordError;
+      if (
+        failure &&
+        (failure.kind !== previous?.kind ||
+          failure.message !== previous.message)
+      )
+        notify(failure.message, "error", 6500, {
+          key: `game-records:${account.id}`,
+          ...(["auth", "verification"].includes(failure.kind)
+            ? {
+                primary: {
+                  label: "前往账号设置",
+                  icon: "i-user",
+                  run: () => openSettings("nte-account"),
+                },
+              }
+            : {}),
+        });
+    }
     mergeAttendance(next, "records");
   } catch (cause) {
     if (epoch === generation && revision === attendanceRevision) {
@@ -242,6 +350,8 @@ export async function refreshGameRecords(force = false) {
         cause.kind === "busy";
       gameRecords.waiting = !!busy;
       gameRecords.error = busy ? "" : attendanceMessage(cause);
+      if (!busy && (force || previousError !== gameRecords.error))
+        notify(gameRecords.error, "error", 6500, { key: "game-records" });
       gameRecords.nextRefresh =
         Date.now() + (busy ? 2000 : GAME_RECORD_REFRESH_MS);
       if (busy)
@@ -256,9 +366,7 @@ export async function refreshGameRecords(force = false) {
   }
 }
 function attendanceMessage(cause: unknown) {
-  return cause && typeof cause === "object" && "message" in cause
-    ? String(cause.message)
-    : String(cause);
+  return errorText(cause);
 }
 async function attendanceAction(
   action: () => Promise<AttendanceStatus>,
@@ -278,7 +386,10 @@ async function attendanceAction(
       if (source === "all") gameRecords.nextRefresh = 0;
     }
   } catch (cause) {
-    if (epoch === generation) attendance.error = attendanceMessage(cause);
+    if (epoch === generation) {
+      attendance.error = attendanceMessage(cause);
+      notify(errorText(cause), "error", 6500, { key: "attendance" });
+    }
     throw cause;
   } finally {
     if (epoch === generation) attendance.busy = false;
@@ -304,7 +415,13 @@ export async function loadAttendance() {
     attendance.loaded = true;
     attendance.error = "";
   } catch (cause) {
-    if (epoch === generation) attendance.error = attendanceMessage(cause);
+    if (epoch !== generation) return;
+    attendance.error = attendanceMessage(cause);
+    // 轮询失败按同一键合并, 避免后台重试时反复弹出.
+    if (!attendance.loaded)
+      notify(`签到状态读取失败: ${errorText(cause)}`, "error", 6500, {
+        key: "attendance-status",
+      });
   } finally {
     if (epoch === generation) attendance.loading = false;
   }
@@ -333,7 +450,10 @@ export async function sendAttendanceCode(phone: string): Promise<string> {
   try {
     return await invoke("attendance_send_code", { phone: phone.trim() });
   } catch (cause) {
-    if (epoch === generation) attendance.error = attendanceMessage(cause);
+    if (epoch === generation) {
+      attendance.error = attendanceMessage(cause);
+      notify(errorText(cause), "error", 6500, { key: "attendance" });
+    }
     throw cause;
   } finally {
     if (epoch === generation) attendance.busy = false;
@@ -432,10 +552,11 @@ export async function loadPlaytime(): Promise<PlaytimeHistory | null> {
     return next;
   } catch (cause) {
     if (epoch === generation && request === playtimeRequest) {
-      playtime.error =
-        cause && typeof cause === "object" && "message" in cause
-          ? String(cause.message)
-          : String(cause);
+      playtime.error = errorText(cause);
+      // 记录页是唯一读取入口, 失败原因走通知; 页面只保留空态与重试.
+      notify(`读取游玩记录失败: ${playtime.error}`, "error", 6500, {
+        key: "playtime-history",
+      });
     }
     return null;
   } finally {
@@ -486,7 +607,7 @@ export const form = reactive({
   gamepad: defaultGamepadOptions(),
   installRoots: {} as Record<string, string>,
   distribution: null as string | null,
-  launchMode: "background",
+  launchMode: DEFAULT_LAUNCH_MODE,
   gameAccountId: "",
   gameMode: {
     performance: false,
@@ -562,6 +683,16 @@ export const ui = reactive({
   integrityDialog: false,
   demoNotice: false,
 });
+// 卡死现场: 运行中上报, 进程结束后继续展示, 直到下一次启动清空.
+export const hang = reactive({
+  dialog: false,
+  scene: null as GameHangScene | null,
+  // 已关闭过的崩溃现场, 同一现场不再自动弹出.
+  dismissed: "",
+  // 进程事实以后端状态为准: 启动阶段可能长时间没有阶段事件.
+  running: false,
+  closing: false,
+});
 const BUNDLED_CROP_X = 0.54;
 const BUNDLED_CROP_Y = 0.38;
 const EMPTY_BACKGROUND: LauncherBackgroundMedia = { video: null, image: null };
@@ -627,6 +758,36 @@ export const launchView = computed(() => {
         }
       : LAUNCH_COPY[state.game];
   return { ...copy, busy, disabled, pausing, pauseAvailable };
+});
+/** 崩溃现场的标题: 只有 Hang 是卡死, 其它现场按崩溃表述; 进程已退出时只说结果. */
+function hangTitle(crashType: string, running: boolean) {
+  if (!running) return "游戏已结束";
+  const type = crashType.trim();
+  if (type.toLocaleLowerCase() === "hang") return "游戏已卡死";
+  if (type) return "游戏已崩溃";
+  return "游戏出现异常";
+}
+// 卡死提示只描述当前会话的事实: 进程是否还在, 崩溃现场与可执行的动作.
+export const hangView = computed(() => {
+  const scene = hang.scene;
+  if (!scene) return null;
+  const running = hang.running;
+  // 结束请求已发出但后端尚未确认退出时, 按钮只反映进行中.
+  const ending = running && (hang.closing || state.game === "closing");
+  const rows: { label: string; value: string }[] = [];
+  if (scene.crashType) rows.push({ label: "崩溃类型", value: scene.crashType });
+  if (scene.errorMessage)
+    rows.push({ label: "错误信息", value: scene.errorMessage });
+  return {
+    running,
+    ending,
+    title: hangTitle(scene.crashType, running),
+    rows,
+    // 运行中先结束进程再处理日志; 进程结束后只剩导出与确认.
+    primary: running ? (ending ? "正在结束" : "结束游戏") : "导出日志",
+    primaryIcon: running ? "i-power" : "i-download-simple",
+    secondary: running ? "导出日志" : "知道了",
+  };
 });
 function downloadNeedsWork() {
   return (
@@ -1052,6 +1213,8 @@ function requestLaunchHide() {
   if (!launchHidePending) return;
   launchHidePending = false;
   launchCancelRequested.value = false;
+  // 崩溃现场存在时窗口要留给提示, 不能收进托盘.
+  if (hang.scene) return;
   if (isDesktop()) void invoke("win_hide").catch(() => {});
 }
 
@@ -1204,6 +1367,18 @@ function refreshLauncherBackground(data: Bootstrap) {
     }
     replaceHeroBackground(key, source);
   });
+}
+
+/// 选择归档素材后同步主视觉: 丢掉缓存键, 让下一次解析读回新素材.
+export function reloadHeroBackground() {
+  launcherBackground = { ...EMPTY_BACKGROUND };
+  launcherBackgroundKey = "";
+  heroVideoRequest = null;
+  heroImageRequest = null;
+  // 素材来源变了, 视频与图片都要重新请求, 不能复用上一套的缓存.
+  media.videoKey = "";
+  media.imageKey = "";
+  if (state.bootstrap) refreshLauncherBackground(state.bootstrap);
 }
 
 function replaceHeroBackground(key: string, source: LauncherBackgroundMedia) {
@@ -1448,12 +1623,7 @@ export async function openIntegrityRelease() {
   try {
     await invoke("open_url", { url });
   } catch (error) {
-    notify(
-      error instanceof Error ? error.message : String(error),
-      "error",
-      6500,
-      { key: "integrity" },
-    );
+    notify(errorText(error), "error", 6500, { key: "integrity" });
   }
 }
 
@@ -1554,7 +1724,11 @@ export function applyBootstrap(
     form.installRoots[activeKey] = data.installRoot || "";
   }
   form.distribution = active?.id ?? saved.distribution ?? null;
-  form.launchMode = saved.launchMode || "background";
+  const savedMode = saved.launchMode || DEFAULT_LAUNCH_MODE;
+  // 当前上下文用不了的启动方式不留存在表单里, 回到设置默认值后自然写回.
+  form.launchMode = launchModeAvailable(savedMode, factsFrom(data))
+    ? savedMode
+    : DEFAULT_LAUNCH_MODE;
   form.gameAccountId = saved.gameAccountId || "";
   Object.assign(
     form.gameMode,
@@ -1608,7 +1782,7 @@ export async function checkUpdate(full = false, silent = false) {
     state.check = result;
   } catch (error) {
     if (epoch !== generation) return;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorText(error);
     ui.updateError = true;
     if (!silent)
       notify(message, "error", 6500, {
@@ -1804,8 +1978,7 @@ export async function loadResourceCatalog(force = false) {
   } catch (error) {
     if (epoch !== generation || revision !== resourceCatalogRevision) return;
     state.resourceCatalog = null;
-    state.resourcesError =
-      error instanceof Error ? error.message : String(error);
+    state.resourcesError = errorText(error);
   } finally {
     if (epoch === generation && revision === resourceCatalogRevision)
       state.resourcesLoading = false;
@@ -1832,7 +2005,7 @@ export async function removeOptionalResource(tag: string, preload: boolean) {
     await startGameDownload("check", false, true);
     return true;
   } catch (error) {
-    if (epoch === generation) notify(String(error), "error", 6500);
+    if (epoch === generation) notify(errorText(error), "error", 6500);
     return false;
   } finally {
     if (epoch === generation) state.resourcesSaving = false;
@@ -1860,7 +2033,7 @@ export async function downloadOptionalResource(tag: string) {
     applyDownloadStatus(status);
     pollDownloadStatus();
   } catch (error) {
-    if (epoch === generation) notify(String(error), "error", 6500);
+    if (epoch === generation) notify(errorText(error), "error", 6500);
   } finally {
     if (epoch === generation) resourceDownloadsStarting.delete(tag);
   }
@@ -1984,7 +2157,7 @@ export async function deletePreloadResources() {
     dismissPreloadNotice();
     notify("预下载资源已删除.", "ok", 4000, { key: "preload-delete" });
   } catch (error) {
-    if (epoch === generation) notify(String(error), "error", 6500);
+    if (epoch === generation) notify(errorText(error), "error", 6500);
   }
 }
 
@@ -2009,19 +2182,14 @@ export async function startGameDownload(
   } catch (error) {
     if (mode === "check") checkRefreshPending = false;
     if (epoch === generation && !silent)
-      notify(
-        error instanceof Error ? error.message : String(error),
-        "error",
-        6500,
-        {
-          key: "game-download",
-          primary: {
-            label: "重试",
-            icon: "i-arrows-clockwise",
-            run: () => startGameDownload(mode, full, false),
-          },
+      notify(errorText(error), "error", 6500, {
+        key: "game-download",
+        primary: {
+          label: "重试",
+          icon: "i-arrows-clockwise",
+          run: () => startGameDownload(mode, full, false),
         },
-      );
+      });
   } finally {
     if (epoch === generation) downloadStarting.value = null;
   }
@@ -2061,8 +2229,13 @@ export async function cancelGameDownload() {
     if (epoch === generation && revision === downloadRevision)
       applyDownloadStatus(status);
   } catch (error) {
-    notify(String(error), "error", 6500);
+    notify(errorText(error), "error", 6500);
   }
+}
+
+/** 读取当前相位; 异步流程用函数边界重新取, 避免被入口守卫的类型收窄误导. */
+function currentPhase(): GamePhase {
+  return state.game;
 }
 
 function setLaunchState(next: GamePhase) {
@@ -2071,10 +2244,41 @@ function setLaunchState(next: GamePhase) {
   // 进入或离开游戏会话时和切页一样暂停/恢复主视觉。
   if ((previous === "idle") !== (next === "idle"))
     applyHeroMedia(state.heroMedia);
+  // 运行状态变化决定卡死提示的形态与可见性.
+  syncHangDialog();
   if (next !== "running" || previous === "running") return;
   // 启动流程直接进入 running, 在这里统一刷新活动会话。
   playtimeRequestedAt = 0;
   void loadPlaytimeIfStale();
+}
+
+/** 卡死现场存在且未被关闭时保持提示; 进程退出后继续提示, 直到用户处理. */
+function syncHangDialog() {
+  const scene = hang.scene;
+  if (!scene) {
+    hang.dialog = false;
+    return;
+  }
+  if (hang.dismissed === scene.site) return;
+  hang.dialog = true;
+}
+
+/** 关闭卡死提示; 同一崩溃现场不再自动弹出, 需要时仍可从诊断与维护导出日志. */
+export function dismissHangDialog() {
+  hang.dialog = false;
+  hang.dismissed = hang.scene?.site ?? "";
+}
+
+/** 结束卡死的游戏进程; 启动阶段进程已存在, 不需要等主页按钮进入关闭语义. */
+export function hangEndGame() {
+  if (state.game === "closing") return;
+  void requestCloseGame();
+}
+
+/** 打开诊断与维护里的日志导出; 卡死提示随之关闭. */
+export function hangExportLogs() {
+  dismissHangDialog();
+  openSettings("maintenance");
 }
 
 function applyGameStatus(
@@ -2083,10 +2287,25 @@ function applyGameStatus(
 ) {
   if (!status || typeof status.running !== "boolean") return;
   const previous = state.game;
+  // 卡死提示跟随后端事实, 启动阶段长时间没有阶段事件时仍要能提示并结束进程.
+  hang.running = status.running;
+  hang.closing = status.closing;
+  // 现场以崩溃目录为准: 换了目录或本轮启动清空时, 重新允许自动弹出.
+  const scene = status.hang ?? null;
+  if (!scene || scene.site !== hang.scene?.site) hang.dismissed = "";
+  hang.scene = scene;
+  syncHangDialog();
   // 关闭期间由命令维护反馈, 避免后台事件覆盖中间状态。
   if (!force && previous === "closing") return;
-  // 前台/直接启动没有阶段事件, 命令返回前保持本地启动状态。
-  if (!force && previous === "launching" && !status.launch && !state.launch)
+  // 前台/直接启动没有阶段事件, 命令返回前保持本地启动状态;
+  // 但卡死现场出现时进程事实已经确定, 相位要跟上, 否则主页一直是"正在启动".
+  if (
+    !force &&
+    previous === "launching" &&
+    !status.launch &&
+    !state.launch &&
+    !(status.running && scene)
+  )
     return;
   if (announce && status.error) notify(status.error, "error", 7500);
 
@@ -2096,7 +2315,14 @@ function applyGameStatus(
     if (cancelling || launch.stage !== "running") {
       state.launch = launch;
       if (status.running) state.session = status;
-      setLaunchState("launching");
+      // 有崩溃现场时后台不会再发启动完成事件; 相位停在 launching 会让主页一直显示启动中.
+      setLaunchState(
+        status.running && !cancelling && scene
+          ? status.closing
+            ? "closing"
+            : "running"
+          : "launching",
+      );
       return;
     }
     state.launch = null;
@@ -2161,7 +2387,13 @@ async function launchGame() {
         return data.umuAvailable && data.prefixExists;
       })
       .catch((error: unknown) => {
-        notify(String(error), "error", 6500);
+        notify(errorText(error), "error", 7000, {
+          primary: {
+            label: "创建运行环境",
+            icon: "i-plus",
+            run: () => openSettings("runtime"),
+          },
+        });
         return false;
       });
     runtimeEnvironmentBusy.value = false;
@@ -2190,6 +2422,11 @@ async function launchGame() {
     }
     const result = await invoke("launch_official");
     if (epoch !== generation) return;
+    // 卡死提示可能已经结束了这次启动, 重新读取相位后再决定是否写回会话.
+    if (currentPhase() !== "launching") {
+      resetLaunchFlags();
+      return;
+    }
     state.session = result;
     if (result.mode === "background") {
       // 后台启动的阶段与收窗由 game-state 事件驱动。
@@ -2204,6 +2441,11 @@ async function launchGame() {
     const remaining = LAUNCH_FEEDBACK_MS - (performance.now() - startedAt);
     if (remaining > 0) await wait(remaining);
     if (epoch !== generation) return;
+    // 等待期间会话已被结束或暂停时, 这里不再是启动流程的收尾者.
+    if (currentPhase() !== "launching") {
+      resetLaunchFlags();
+      return;
+    }
 
     // 收起窗口前确认游戏仍在运行。
     const status = await invoke("game_status").catch(() => null);
@@ -2224,13 +2466,13 @@ async function launchGame() {
 
     if (status) applyGameStatus(status, { force: true });
     setLaunchState("running");
-    requestLaunchHide();
+    // 卡死提示刚把窗口带回前台时不能再收走, 否则玩家看不到提示.
+    if (hang.scene) launchHidePending = false;
+    else requestLaunchHide();
   } catch (error) {
     if (epoch !== generation) return;
     const cancelled =
-      launchCancelRequested.value ||
-      (error instanceof Error ? error.message : String(error)) ===
-        LAUNCH_CANCELLED;
+      launchCancelRequested.value || errorText(error) === LAUNCH_CANCELLED;
     resetLaunchFlags();
     let status = null;
     try {
@@ -2246,18 +2488,13 @@ async function launchGame() {
       setLaunchState("idle");
     }
     if (cancelled) return;
-    notify(
-      error instanceof Error ? error.message : String(error),
-      "error",
-      7500,
-      {
-        primary: {
-          label: "查看环境差异",
-          icon: "i-shield-check",
-          run: () => openSettings("maintenance"),
-        },
+    notify(errorText(error), "error", 7500, {
+      primary: {
+        label: "查看环境差异",
+        icon: "i-shield-check",
+        run: () => openSettings("maintenance"),
       },
-    );
+    });
   }
 }
 
@@ -2280,17 +2517,13 @@ export async function pauseLaunch() {
     } catch {}
     if (epoch !== generation) return;
     if (status) applyGameStatus(status, { force: true });
-    notify(
-      error instanceof Error ? error.message : String(error),
-      "error",
-      7500,
-    );
+    notify(errorText(error), "error", 7500);
   }
 }
 
-async function closeGame() {
+/** 请求结束游戏会话; 只要后端已有会话就能用, 不要求本地相位处于运行中. */
+async function requestCloseGame() {
   const epoch = generation;
-  if (state.game !== "running") return;
   setLaunchState("closing");
   try {
     const status = await invoke("close_game");
@@ -2305,13 +2538,15 @@ async function closeGame() {
     } catch {}
     if (epoch !== generation) return;
     if (status) applyGameStatus(status, { force: true });
-    else setLaunchState("running");
-    notify(
-      error instanceof Error ? error.message : String(error),
-      "error",
-      7500,
-    );
+    // 结束失败时不能退回启动中: 启动流程可能已经返回, 相位会永远停在那里.
+    else setLaunchState(hang.running ? "running" : "idle");
+    notify(errorText(error), "error", 7500);
   }
+}
+
+async function closeGame() {
+  if (state.game !== "running") return;
+  await requestCloseGame();
 }
 
 export function handleLaunchAction() {
@@ -2350,7 +2585,7 @@ function installPathsChanged(
 function selectedLaunchMode(): string {
   return ["official", "background", "direct"].includes(form.launchMode)
     ? form.launchMode
-    : "background";
+    : DEFAULT_LAUNCH_MODE;
 }
 
 function currentSettings(): Settings {
@@ -2397,8 +2632,8 @@ function currentSettings(): Settings {
         ? { start: form.updates.windowStart, end: form.updates.windowEnd }
         : null,
     },
-    activeEnvironment: savedGame.activeEnvironment,
-    stableEnvironment: savedGame.stableEnvironment,
+    activeEnvironments: { ...(savedGame.activeEnvironments ?? {}) },
+    stableEnvironments: { ...(savedGame.stableEnvironments ?? {}) },
   };
   games[gameId] = game;
   return {
@@ -2511,6 +2746,9 @@ function pendingSettingsOwners(): { owner: string; patch: SettingsPatch }[] {
 function applySettingsSection(section: SettingsSection): void {
   const settings = state.bootstrap?.settings;
   if (!settings) return;
+  // 设置改动可能改变上下文: 能力事实由宿主重新求值后一并回传.
+  if (section.capabilities)
+    state.bootstrap!.capabilities = section.capabilities;
   const schema = settingsSchema(section.owner);
   if (schema) {
     const values =
@@ -2669,6 +2907,7 @@ async function persistCurrentSettings(
         const data = await invoke("bootstrap");
         if (epoch !== generation) return false;
         applyBootstrap(data, false, false);
+        await warnEnvironmentRoots(epoch);
       } catch {}
     }
     if (preferencesChanged) {
@@ -2691,12 +2930,7 @@ async function persistCurrentSettings(
     return true;
   } catch (error) {
     if (epoch !== generation) return false;
-    if (!silent)
-      notify(
-        error instanceof Error ? error.message : String(error),
-        "error",
-        6000,
-      );
+    if (!silent) notify(errorText(error), "error", 6000);
     ui.saveState = "error";
     return false;
   }
@@ -2715,10 +2949,10 @@ export async function saveSettings(silent = false): Promise<boolean> {
 
 async function changeEnvironment(
   operation: () => Promise<Bootstrap>,
+  success = "运行环境已更新.",
 ): Promise<boolean> {
   if (runtimeEnvironmentLocked.value) return false;
   const epoch = generation;
-  runtimeEnvironmentError.value = "";
   // 先占用操作入口, 防止保存表单期间的自动检查抢占安装锁.
   runtimeEnvironmentBusy.value = true;
   try {
@@ -2726,13 +2960,10 @@ async function changeEnvironment(
     const data = await operation();
     if (epoch !== generation) return false;
     applyBootstrap(data);
-    notify("运行环境已更新.");
+    notify(success);
     return true;
   } catch (cause) {
-    if (epoch === generation) {
-      runtimeEnvironmentError.value = String(cause);
-      notify(runtimeEnvironmentError.value, "error", 6500);
-    }
+    if (epoch === generation) notify(errorText(cause), "error", 6500);
     return false;
   } finally {
     if (epoch === generation) {
@@ -2749,22 +2980,145 @@ export function createRuntimeEnvironment(
   name: string,
   protonPath: string,
   sourceId: string | null,
-  distribution: string,
 ) {
   return changeEnvironment(() =>
-    invoke("environment_create", { name, protonPath, sourceId, distribution }),
+    invoke("environment_create", { name, protonPath, sourceId }),
   );
 }
 
+/** 环境操作成功后的通知文案; 名称取操作前的设置快照. */
+function environmentActionMessage(
+  action: "switch" | "keep" | "discard" | "rebind" | "forget",
+  name: string,
+) {
+  if (!name) return "运行环境已更新.";
+  const label = `「${name}」`;
+  switch (action) {
+    case "switch":
+      return `已切换到运行环境${label}.`;
+    case "keep":
+      return `已将${label}保留为稳定环境.`;
+    case "discard":
+      return `已删除运行环境${label}.`;
+    case "rebind":
+      return `已更新运行环境${label}的安装目录绑定.`;
+    case "forget":
+      return `已移除运行环境${label}的登记.`;
+  }
+}
+
 export function runtimeEnvironmentAction(
-  action: "switch" | "keep" | "discard",
+  action: "switch" | "keep" | "discard" | "rebind" | "forget",
   id: string | null,
 ) {
-  return changeEnvironment(() => invoke("environment_action", { action, id }));
+  const name =
+    state.bootstrap?.settings.runtimeEnvironments.find(
+      (entry) => entry.id === id,
+    )?.name ?? "";
+  return changeEnvironment(
+    () => invoke("environment_action", { action, id }),
+    environmentActionMessage(action, name),
+  );
+}
+
+export function renameRuntimeEnvironment(name: string, id: string | null) {
+  return changeEnvironment(() => invoke("environment_rename", { name, id }));
+}
+
+/** 读取运行环境健康状态; 失败只保留全局通知, 界面按无数据处理. */
+export async function loadEnvironmentAudit(): Promise<EnvironmentAudit | null> {
+  const epoch = generation;
+  try {
+    const audit = await invoke("environment_audit");
+    return audit ?? null;
+  } catch (cause) {
+    if (epoch === generation)
+      notify(`读取环境状态失败: ${errorText(cause)}`, "error", 6500, {
+        key: "environment-audit",
+      });
+    return null;
+  }
+}
+
+/** 导入未登记的环境目录, 并绑定当前区服的安装目录. */
+export function importRuntimeEnvironment(
+  id: string,
+  name: string,
+  protonPath: string,
+) {
+  return changeEnvironment(
+    () => invoke("environment_import", { id, name, protonPath }),
+    `已导入运行环境「${name.trim()}」.`,
+  );
+}
+
+/** 清理未登记的环境目录或日志目录. */
+export async function deleteEnvironmentOrphan(
+  kind: "environment" | "logs" | "pending",
+  name: string,
+): Promise<boolean> {
+  if (runtimeEnvironmentLocked.value) return false;
+  const epoch = generation;
+  runtimeEnvironmentBusy.value = true;
+  try {
+    await invoke("environment_orphan_delete", { kind, name });
+    if (epoch !== generation) return false;
+    notify(`已删除未登记目录「${name}」.`);
+    return true;
+  } catch (cause) {
+    if (epoch === generation) notify(errorText(cause), "error", 6500);
+    return false;
+  } finally {
+    if (epoch === generation) runtimeEnvironmentBusy.value = false;
+  }
+}
+
+/**
+ * 安装目录变化后提示仍指向旧目录的环境.
+ *
+ * 同一环境与目标目录只提醒一次, 避免每次保存都重复弹出.
+ */
+async function warnEnvironmentRoots(epoch: number) {
+  let audit: EnvironmentAudit | null = null;
+  try {
+    audit = await invoke("environment_audit");
+  } catch {
+    return;
+  }
+  if (epoch !== generation || !audit) return;
+  const changed = (audit.environments ?? []).filter(
+    (environment) =>
+      environment.state === "ready" &&
+      environment.installRoot !== environment.installRootCurrent &&
+      !warnedEnvironmentRoots.has(
+        `${environment.id}:${environment.installRootCurrent}`,
+      ),
+  );
+  if (!changed.length) return;
+  for (const environment of changed)
+    warnedEnvironmentRoots.add(
+      `${environment.id}:${environment.installRootCurrent}`,
+    );
+  notify("安装目录已变更, 部分运行环境仍指向旧目录.", "info", 6000, {
+    key: "runtime-environment-root",
+    primary: {
+      label: "查看运行环境",
+      icon: "i-hard-drives",
+      run: () => openSettings("runtime"),
+    },
+  });
 }
 
 function applyMigrationStatus(next: MigrationStatus) {
+  const previous = migration.status;
   migration.status = next;
+  // 后台上报的失败阶段只在进入失败时通知一次, 轮询刷新不重复提示.
+  if (
+    next.error &&
+    (next.phase === "failed" || next.phase === "repair") &&
+    (previous?.error !== next.error || previous.phase !== next.phase)
+  )
+    notify(next.error, "error", 6500, { key: "install-migration" });
   if (next.phase === "done") {
     void invoke("bootstrap")
       .then((data) => {
@@ -2785,12 +3139,11 @@ export async function planInstallMigration(
   target: string,
 ) {
   migration.planning = true;
-  migration.error = "";
   migration.plan = null;
   try {
     migration.plan = await invoke("migration_plan", { distribution, target });
   } catch (error) {
-    migration.error = error instanceof Error ? error.message : String(error);
+    failMigration(error);
   } finally {
     migration.planning = false;
   }
@@ -2800,13 +3153,12 @@ export async function startInstallMigration(
   distribution: string,
   target: string,
 ) {
-  migration.error = "";
   try {
     applyMigrationStatus(
       await invoke("migration_start", { distribution, target }),
     );
   } catch (error) {
-    migration.error = error instanceof Error ? error.message : String(error);
+    failMigration(error);
   }
 }
 
@@ -2814,7 +3166,7 @@ export async function cancelInstallMigration() {
   try {
     applyMigrationStatus(await invoke("migration_cancel"));
   } catch (error) {
-    migration.error = error instanceof Error ? error.message : String(error);
+    failMigration(error);
   }
 }
 
@@ -2822,7 +3174,7 @@ export async function retryInstallMigration() {
   try {
     applyMigrationStatus(await invoke("migration_retry"));
   } catch (error) {
-    migration.error = error instanceof Error ? error.message : String(error);
+    failMigration(error);
   }
 }
 
@@ -2830,7 +3182,7 @@ export async function cleanupInstallMigration() {
   try {
     applyMigrationStatus(await invoke("migration_cleanup"));
   } catch (error) {
-    migration.error = error instanceof Error ? error.message : String(error);
+    failMigration(error);
   }
 }
 
@@ -2843,7 +3195,7 @@ export async function abandonInstallMigration(): Promise<boolean> {
     }
     return true;
   } catch (error) {
-    migration.error = error instanceof Error ? error.message : String(error);
+    failMigration(error);
     return false;
   }
 }
@@ -2852,7 +3204,7 @@ export async function dismissInstallMigration() {
   try {
     applyMigrationStatus(await invoke("migration_dismiss"));
   } catch (error) {
-    migration.error = error instanceof Error ? error.message : String(error);
+    failMigration(error);
   }
 }
 
@@ -2870,11 +3222,7 @@ export async function redetect() {
     notify("已重新检测环境。");
   } catch (error) {
     if (epoch !== generation) return;
-    notify(
-      error instanceof Error ? error.message : String(error),
-      "error",
-      6000,
-    );
+    notify(errorText(error), "error", 6000);
   } finally {
     if (epoch === generation) ui.redetecting = false;
   }
@@ -2893,11 +3241,7 @@ export async function openUrl(url: string) {
     notify("已在浏览器打开。");
   } catch (error) {
     if (epoch !== generation) return;
-    notify(
-      error instanceof Error ? error.message : String(error),
-      "error",
-      6000,
-    );
+    notify(errorText(error), "error", 6000);
   }
 }
 
@@ -2963,7 +3307,7 @@ export async function windowAction(action: "minimize" | "maximize" | "close") {
     await invoke(command);
   } catch (error) {
     if (epoch !== generation) return;
-    notify(error instanceof Error ? error.message : String(error), "error");
+    notify(errorText(error), "error");
   }
 }
 
@@ -3087,7 +3431,12 @@ async function watchWindowShape() {
 
 export async function init() {
   runtimeSetupAutomatic.value = false;
+  warnedEnvironmentRoots.clear();
   const epoch = ++generation;
+  livePlayerRevision++;
+  livePlayerState.loading = false;
+  livePlayerState.busy = false;
+  void refreshPlayerState();
   checkRefreshPending = false;
   // 子组件先挂载时发起的读取属于上一代, 在此重新加载当前状态。
   attendance.loading = false;
@@ -3150,11 +3499,7 @@ export async function init() {
   } catch (error) {
     if (epoch !== generation) return;
     ui.setupNeeded = true;
-    notify(
-      error instanceof Error ? error.message : String(error),
-      "error",
-      6500,
-    );
+    notify(errorText(error), "error", 6500);
   }
 
   // 冷启动失败且桌面通知不可用时, 后端会把错误留在这里.
@@ -3195,8 +3540,22 @@ export async function init() {
 
 export function dispose() {
   generation++;
+  livePlayerRevision++;
+  lastPlayerStateFailure = "";
+  Object.assign(livePlayerState, {
+    status: {
+      state: "disabled",
+      enabled: false,
+      observation: null,
+      message: null,
+      record: null,
+    },
+    loading: false,
+    busy: false,
+    error: "",
+  });
   runtimeEnvironmentBusy.value = false;
-  runtimeEnvironmentError.value = "";
+  warnedEnvironmentRoots.clear();
   Object.assign(gameRecords, {
     loading: false,
     waiting: false,
@@ -3233,6 +3592,11 @@ export function dispose() {
   ui.introDone = false;
   ui.integrityDialog = false;
   ui.demoNotice = false;
+  hang.dialog = false;
+  hang.scene = null;
+  hang.dismissed = "";
+  hang.running = false;
+  hang.closing = false;
   playtimeRequest++;
   playtimeRequestedAt = 0;
   lastLaunchStartedAt = null;

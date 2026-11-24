@@ -1,6 +1,6 @@
 # 安全政策
 
-请通过 GitHub 的[私密漏洞报告](https://github.com/LaT-SKY/Oddity/security/advisories/new)提交 Oddity 安全问题, 不要公开漏洞细节.
+请通过邮件把 Oddity 安全问题发送到 me@miprota.cc, 不要创建公开 Issue, 也不要公开漏洞细节.
 
 ## 报告内容
 

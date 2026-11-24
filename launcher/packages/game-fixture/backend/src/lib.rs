@@ -9,6 +9,7 @@ use oddity_runtime::{
     HostContext, PackageDescriptor, Registry, Scope, SettingsSchema,
 };
 use serde_json::Value;
+use std::sync::Arc;
 
 mod fixture;
 mod settings;
@@ -83,6 +84,6 @@ impl GamePackage for FixturePackage {
 }
 
 /// 两个命令组共用同一套 JSON 载荷分发.
-fn dispatch<'a>(_host: &'a dyn HostContext, command: &'a str, args: Value) -> DispatchFuture<'a> {
+fn dispatch<'a>(_host: Arc<dyn HostContext>, command: &'a str, args: Value) -> DispatchFuture<'a> {
     Box::pin(fixture::command(command, args))
 }

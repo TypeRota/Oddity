@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import GameModePage from "../../src/pages/GameModePage.vue";
 import { form, state, ui, queueSettingsSave } from "../../src/core/controller";
-import { bootstrap } from "./fixtures";
+import { bootstrap, capabilities as bootstrapCapabilities } from "./fixtures";
 import type { GameModeStatus } from "../../src/types/launcher";
 
 const { invoke, notify } = vi.hoisted(() => ({
@@ -12,7 +12,10 @@ const { invoke, notify } = vi.hoisted(() => ({
 vi.mock("../../src/components/PerformanceRecords.vue", () => ({
   default: { template: '<div data-game-setting="records" />' },
 }));
-vi.mock("../../src/core/notifications", () => ({ notify }));
+vi.mock("../../src/core/notifications", async () => {
+  const { errorText } = await import("../../src/core/notifications.ts");
+  return { notify, errorText };
+});
 vi.mock("../../src/core/api", () => ({ invoke, isDesktop: () => true }));
 vi.mock("../../src/core/controller", async () => {
   const { reactive } = await import("vue");
@@ -99,7 +102,63 @@ it("独立保存游戏模式选项", async () => {
   expect(wrapper.get('[role="status"]').text()).toBe("已保存");
 });
 
+it("调优能力不可用时 CPU 与 GPU 分类整体卸载, 也不进入搜索索引", async () => {
+  state.bootstrap = bootstrap({
+    capabilities: bootstrapCapabilities.map((fact) =>
+      fact.id === "oddity.tuning.cpu" || fact.id === "oddity.tuning.gpu"
+        ? { ...fact, state: "unsupported" as const }
+        : fact,
+    ),
+  });
+  wrapper = mount(GameModePage);
+  await flushPromises();
+  const ids = () =>
+    wrapper
+      .findAll("[data-category]")
+      .map((node) => node.attributes("data-category"));
+  expect(ids()).toEqual(["general", "records", "gamescope"]);
+  expect(wrapper.find("#game-mode-panel-cpu").exists()).toBe(false);
+  expect(wrapper.find("#game-mode-panel-gpu").exists()).toBe(false);
+  await wrapper.get("#game-mode-search").setValue("核心绑定");
+  expect(wrapper.findAll(".settings-result")).toHaveLength(0);
+});
+
+it("开启 GameMode 后分类按新的能力事实挂载, 当前分类回退到可用分类", async () => {
+  state.bootstrap = bootstrap({
+    capabilities: bootstrapCapabilities.map((fact) =>
+      fact.id.startsWith("oddity.tuning.")
+        ? { ...fact, state: "unsupported" as const }
+        : fact,
+    ),
+  });
+  wrapper = mount(GameModePage, { attachTo: document.body });
+  await flushPromises();
+  expect(wrapper.find('[data-category="cpu"]').exists()).toBe(false);
+  expect(wrapper.find('[data-category="gpu"]').exists()).toBe(false);
+
+  // 写入回传的能力事实到达后, 分类按新事实重新挂载.
+  state.bootstrap!.capabilities = bootstrapCapabilities;
+  await Promise.resolve();
+  await flushPromises();
+  expect(wrapper.find('[data-category="cpu"]').exists()).toBe(true);
+  expect(wrapper.find('[data-category="gpu"]').exists()).toBe(true);
+
+  await wrapper.get('[data-category="gpu"]').trigger("click");
+  state.bootstrap!.capabilities = bootstrapCapabilities.map((fact) =>
+    fact.id.startsWith("oddity.tuning.")
+      ? { ...fact, state: "unsupported" as const }
+      : fact,
+  );
+  await Promise.resolve();
+  await flushPromises();
+  expect(wrapper.find('[data-category="gpu"]').exists()).toBe(false);
+  expect(
+    wrapper.get('[data-category="general"]').attributes("aria-current"),
+  ).toBe("true");
+});
+
 it("按分类浏览, 搜索定位设置并支持键盘清除", async () => {
+  form.gameMode.performance = true;
   wrapper = mount(GameModePage, { attachTo: document.body });
   await flushPromises();
   await wrapper
@@ -129,7 +188,7 @@ it("按分类浏览, 搜索定位设置并支持键盘清除", async () => {
   expect(wrapper.get('[data-category="cpu"]').attributes("aria-current")).toBe(
     "true",
   );
-  expect(document.activeElement).toBe(target);
+  expect(target.contains(document.activeElement)).toBe(true);
   await wrapper.get("#game-mode-search").setValue("不存在的设置");
   expect(wrapper.text()).toContain("未找到相关设置");
   await wrapper.get("#game-mode-search").trigger("keydown", { key: "Escape" });
@@ -157,6 +216,7 @@ it("缺少能力时阻止开启, 仍允许关闭已有配置", async () => {
 });
 
 it("检测失败时重试恢复控件", async () => {
+  form.gameMode.performance = true;
   invoke.mockRejectedValueOnce(new Error("总线断开"));
   wrapper = mount(GameModePage);
   await flushPromises();

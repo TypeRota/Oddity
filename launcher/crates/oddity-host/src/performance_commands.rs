@@ -5,7 +5,6 @@ use std::sync::Mutex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::environment_commands;
 use crate::performance::{Facts, Recording, Store};
 use crate::service::ServiceHandle;
 use crate::settings::Settings;
@@ -24,6 +23,7 @@ impl Performance {
 
     pub fn prepare(
         &self,
+        environment: &crate::environment::RuntimeEnvironment,
         settings: &Settings,
         plan: &LaunchPlan,
         command: &mut std::process::Command,
@@ -33,7 +33,6 @@ impl Performance {
         if !store.recording_enabled() {
             return Ok(None);
         }
-        let environment = environment_commands::selected(settings)?;
         let version = (!plan.game_version.is_empty()).then(|| plan.game_version.clone());
         // 进程名取实际启动计划里的可执行文件, 不再读取宿主内置的安装布局.
         let game_exe = plan
@@ -195,7 +194,6 @@ fn pair(args: &Args) -> Result<(String, String), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::ChannelId;
     use crate::environment::{ProtonPin, RuntimeEnvironment};
     use crate::identity::GameId;
     use crate::service::{block_on, test_service};
@@ -212,12 +210,13 @@ mod tests {
             },
             install_root: "/game".into(),
             game: GameId::from("nte"),
-            distribution: ChannelId::new("cn"),
             created_at: 1,
         };
         let mut settings = app.state.settings.lock().unwrap();
         settings.runtime_environments = vec![make("a")];
-        settings.current_mut().active_environment = Some("a".repeat(32));
+        settings
+            .current_mut()
+            .set_active_environment("cn", Some(&"a".repeat(32)));
         drop(settings);
         app
     }

@@ -53,6 +53,16 @@ function startClock() {
   timer = setTimeout(() => dismissNotification(front.id), front.remaining);
 }
 
+/** 把失败原因整理成一句通知文案: 异常取 message, 空文案有兜底. */
+export function errorText(cause: unknown): string {
+  const message =
+    cause instanceof Error
+      ? cause.message
+      : cause && typeof cause === "object" && "message" in cause
+        ? String(cause.message)
+        : String(cause ?? "");
+  return message.trim() || "操作失败.";
+}
 export function notify(
   message: string,
   kind: NotificationKind = "ok",

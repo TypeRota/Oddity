@@ -152,10 +152,12 @@ fn bootstrap_reports_a_complete_install() {
     write_script(&bin, "umu-run", "#!/bin/sh\nexit 0\n");
     env.set("PATH", &bin);
 
-    let profile = managed_environment(&proton, &install.dir.join("install"), ChannelId::new("cn"));
+    let profile = managed_environment(&proton, &install.dir.join("install"));
     let mut settings = install.settings();
     settings.runtime_environments = vec![profile.clone()];
-    settings.current_mut().active_environment = Some(profile.id.clone());
+    settings
+        .current_mut()
+        .set_active_environment("cn", Some(&profile.id));
     let bootstrap = bootstrap_impl(&crate::testing::packages(), &settings);
 
     assert!(bootstrap.ok);
@@ -308,10 +310,12 @@ Version_=1.4.20
     let bin = install.dir.join("bin");
     write_script(&bin, "umu-run", "#!/bin/sh\nexit 0\n");
     env.set("PATH", &bin);
-    let profile = managed_environment(&proton, &install.dir.join("install"), ChannelId::new("cn"));
+    let profile = managed_environment(&proton, &install.dir.join("install"));
     let mut settings = install.settings();
     settings.runtime_environments = vec![profile.clone()];
-    settings.current_mut().active_environment = Some(profile.id.clone());
+    settings
+        .current_mut()
+        .set_active_environment("cn", Some(&profile.id));
 
     let bootstrap = bootstrap_impl(&crate::testing::packages(), &settings);
     let value = serde_json::to_value(&bootstrap).expect("bootstrap 序列化");
@@ -471,4 +475,55 @@ fn bootstrap_does_not_fall_back_from_a_configured_empty_root() {
     );
     assert!(!detected.ok);
     assert!(detected.error.unwrap().contains("请先"));
+}
+
+#[test]
+fn bootstrap_includes_host_capabilities_before_game_sheet() {
+    let dir = TempDir::new("bootstrap-host-capabilities");
+    let _env = isolated_env(&dir);
+    let mut registry = Registry::new();
+    registry.install_host_capabilities(crate::hardware::CAPABILITIES);
+    registry.install(&CapabilityProbe);
+
+    let settings = Settings {
+        active_game: GameId::from("probe"),
+        ..Settings::default()
+    };
+    let facts = bootstrap_impl(&registry, &settings).capabilities;
+    let ids: Vec<&str> = facts.iter().map(|fact| fact.id).collect();
+    assert_eq!(
+        ids,
+        [
+            "oddity.tuning.cpu",
+            "oddity.tuning.gpu",
+            "oddity.probe.context",
+            "oddity.probe.offline"
+        ]
+    );
+
+    // 未开启 GameMode 时 CPU 与 GPU 调优都不提供.
+    assert_eq!(facts[0].state, CapabilityState::Unsupported);
+    assert_eq!(facts[1].state, CapabilityState::Unsupported);
+
+    // 开启 GameMode 后 CPU 调优立即可用; GPU 还取决于本机是否有可调优显卡.
+    let mut settings = settings;
+    settings.current_mut().game_mode.performance = true;
+    let facts = bootstrap_impl(&registry, &settings).capabilities;
+    assert_eq!(facts[0].state, CapabilityState::Available);
+    assert_eq!(
+        facts[1].state == CapabilityState::Available,
+        crate::game_mode::gpu::has_tunable_device()
+    );
+}
+
+#[test]
+fn host_capabilities_are_absent_from_an_assembly_that_does_not_declare_them() {
+    // 宿主能力由装配表登记; 没有登记时能力事实只含游戏自己的能力.
+    let registry = crate::testing::packages();
+    assert!(registry.host_capabilities().is_empty());
+    let facts =
+        crate::bootstrap::capability_facts(&registry, &Settings::default(), &Default::default());
+    assert!(facts
+        .iter()
+        .all(|fact| !fact.id.starts_with("oddity.tuning.")));
 }

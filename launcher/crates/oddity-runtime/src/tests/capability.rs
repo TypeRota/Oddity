@@ -107,6 +107,7 @@ fn context() -> CapabilityContext {
         account_id: None,
         session_running: false,
         launcher_present: false,
+        hardware: Default::default(),
     }
 }
 
@@ -292,4 +293,107 @@ fn valid_capability_sheet_passes() {
         Some(1)
     );
     assert!(registry.capabilities("missing").is_none());
+}
+
+fn registry_with_host(
+    host: &'static [Capability],
+    provider: &'static [Capability],
+    requires: &'static [CapabilityRequirement],
+) -> Registry {
+    let mut registry = Registry::new();
+    registry.install_host_capabilities(host);
+    registry.install(&CapabilityPackage {
+        id: "test",
+        capabilities: provider,
+        requires,
+    });
+    registry
+}
+
+fn hardware(game_mode: bool, gpu: bool) -> CapabilityContext {
+    use crate::HardwareFacts;
+    CapabilityContext {
+        hardware: HardwareFacts { game_mode, gpu },
+        ..context()
+    }
+}
+
+fn needs_game_mode(context: &CapabilityContext) -> Availability {
+    if context.hardware.game_mode {
+        Availability::Available
+    } else {
+        Availability::Unsupported
+    }
+}
+
+const CPU_TUNING: crate::CapabilityDescriptor = crate::CapabilityDescriptor {
+    id: CapabilityId("oddity.tuning.cpu"),
+    revision: CapabilityRevision(1),
+    scope: Scope::NONE,
+};
+
+static HOST_SHEET: &[Capability] = &[Capability::new(CPU_TUNING, needs_game_mode)];
+
+#[test]
+fn host_capabilities_are_visible_to_every_game() {
+    let registry = registry_with_host(HOST_SHEET, ONE_PROVIDER, REQUIRED_ACCOUNT);
+    assert_eq!(registry.validate_capabilities(), Ok(()));
+    assert_eq!(registry.host_capabilities().len(), 1);
+    // 宿主能力不计入游戏自己的能力表, 由求值处合并.
+    assert_eq!(
+        registry.capabilities("test").map(<[Capability]>::len),
+        Some(1)
+    );
+}
+
+#[test]
+fn host_capabilities_resolve_game_requirements() {
+    static REQUIRED_CPU: &[CapabilityRequirement] = &[CapabilityRequirement::required(CPU_TUNING)];
+    let registry = registry_with_host(HOST_SHEET, &[], REQUIRED_CPU);
+    assert_eq!(registry.validate_capabilities(), Ok(()));
+
+    // 去掉宿主能力后同一个依赖不再有 provider.
+    let mut registry = Registry::new();
+    registry.install(&CapabilityPackage {
+        id: "test",
+        capabilities: &[],
+        requires: REQUIRED_CPU,
+    });
+    assert_eq!(
+        registry.validate_capabilities().unwrap_err(),
+        [CapabilityIssue::MissingProvider {
+            game: "test",
+            consumer: "test",
+            capability: "oddity.tuning.cpu",
+        }]
+    );
+}
+
+#[test]
+fn duplicate_host_capability_is_reported() {
+    static DUPLICATED: &[Capability] = &[
+        Capability::new(CPU_TUNING, needs_game_mode),
+        Capability::new(CPU_TUNING, needs_game_mode),
+    ];
+    let registry = registry_with_host(DUPLICATED, &[], &[]);
+    assert_eq!(
+        registry.validate_capabilities().unwrap_err(),
+        [CapabilityIssue::DuplicateProvider {
+            game: "<host>",
+            capability: "oddity.tuning.cpu",
+        }]
+    );
+}
+
+#[test]
+fn host_capability_availability_reads_hardware_facts() {
+    let capability = &HOST_SHEET[0];
+    assert_eq!(
+        capability.availability(&hardware(false, true)),
+        Availability::Unsupported
+    );
+    assert_eq!(
+        capability.availability(&hardware(true, false)),
+        Availability::Available
+    );
 }

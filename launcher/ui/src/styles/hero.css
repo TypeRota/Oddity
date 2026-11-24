@@ -22,17 +22,19 @@
 .hero__art--official {
   background-position: center;
 }
+.hero__layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
 .hero__video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  opacity: 0;
   pointer-events: none;
 }
-.hero__video.is-visible {
-  opacity: 1;
-}
+/* 可见性由外层视频层统一淡入, 画布本身只标记状态. */
 .hero__fade {
   position: absolute;
   inset: 0;

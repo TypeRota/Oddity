@@ -54,7 +54,7 @@ fn test_service_with_output() -> (ServiceHandle, std::sync::mpsc::Receiver<serde
         settings: Settings::default(),
         data_dir,
         registry: std::sync::Arc::new(registry),
-        events,
+        events: oddity_host::service::EventBus::Channel(events),
         input,
     });
     (service, receiver)
@@ -151,7 +151,7 @@ impl LaunchFixture {
         dir.write("install/NTELauncher/NTEGame.exe", b"MZ");
 
         let proton = fake_proton(&dir.join("tools"), "GE-Proton9-1");
-        let profile = managed_environment(&proton, &dir.join("install"), ChannelId::new("cn"));
+        let profile = managed_environment(&proton, &dir.join("install"));
         let prefix = profile.prefix(&data_dir()).unwrap();
         std::fs::create_dir_all(proton.join("files/bin")).expect("create wine dir");
         let wine_log = dir.join("wine.log");
@@ -189,7 +189,9 @@ impl LaunchFixture {
         let mut settings =
             settings_with_game(ChannelId::new("cn"), Some(self.launcher.clone()), None);
         settings.runtime_environments = vec![self.profile.clone()];
-        settings.current_mut().active_environment = Some(self.profile.id.clone());
+        settings
+            .current_mut()
+            .set_active_environment("cn", Some(&self.profile.id));
         settings.current_mut().launch_mode = mode.to_string();
         settings
     }
@@ -279,14 +281,15 @@ fn managed_environment_launch_uses_its_prefix_proton_and_log_directory() {
         &fixture.dir.join("install"),
         oddity_host::environment::EnvironmentTarget {
             game: oddity_host::identity::GameId::from("nte"),
-            distribution: ChannelId::new("cn"),
             link_name: Some("Program Files (x86)/Neverness To Everness"),
         },
         "新版测试",
     )
     .unwrap();
     let mut settings = fixture.settings("official");
-    settings.current_mut().active_environment = Some(profile.id.clone());
+    settings
+        .current_mut()
+        .set_active_environment("cn", Some(&profile.id));
     settings.runtime_environments.push(profile.clone());
     let invocation = launch(&settings).unwrap();
     let prefix = profile.prefix(&data_dir()).unwrap();
@@ -302,7 +305,7 @@ fn managed_environment_launch_uses_its_prefix_proton_and_log_directory() {
     assert!(oddity_host::environment::lock_prefix(&prefix).is_ok());
     fixture.dir.write("GE-Proton-New/proton", "changed version");
     assert!(expect_launch_error(launch(&settings)).contains("Proton 已变化"));
-    settings.current_mut().active_environment = None;
+    settings.current_mut().set_active_environment("cn", None);
     assert!(
         environment_commands::prefix(&support::packages(), &settings)
             .unwrap_err()
@@ -341,7 +344,10 @@ fn global_launch_handoff_uses_global_client_for_official_and_background_modes() 
             .current_mut()
             .install_roots
             .insert("global".into(), global.display().to_string());
-        settings.runtime_environments[0].distribution = ChannelId::new("global");
+        // 国际服沿用同一个 prefix, 只需把它记到国际服的槽位上.
+        settings
+            .current_mut()
+            .set_active_environment("global", Some(&fixture.profile.id));
         let invocation = launch(&settings).expect("global handoff");
         assert!(invocation.result.exe.ends_with("NTEGlobalGame.exe"));
         let dump = fixture.dump();
@@ -377,7 +383,7 @@ fn launch_requires_the_expected_tools_and_files() {
     without_proton.runtime_environments[0].proton.path = fixture.dir.join("missing");
     assert!(expect_launch_error(launch(&without_proton)).contains("Proton"));
     let mut unselected = settings.clone();
-    unselected.current_mut().active_environment = None;
+    unselected.current_mut().set_active_environment("cn", None);
     assert!(expect_launch_error(launch(&unselected)).contains("请先"));
 
     // 官方启动器目录里没有 NTEGame.exe

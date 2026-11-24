@@ -38,6 +38,7 @@ import SettingGroup from "../components/settings/SettingGroup.vue";
 import SettingRow from "../components/settings/SettingRow.vue";
 import LogExport from "../components/LogExport.vue";
 import EnvironmentSnapshots from "../components/EnvironmentSnapshots.vue";
+import CrossScreenSettings from "../components/CrossScreenSettings.vue";
 import AudioSettings from "../components/AudioSettings.vue";
 import GamepadSettings from "../components/GamepadSettings.vue";
 import BaseDisclosure from "../components/BaseDisclosure.vue";
@@ -142,9 +143,11 @@ async function locate(item: SettingsSearchEntry) {
   visited.add(item.category);
   chooseCategory(item.category);
   await nextTick();
-  const target = root.value!.querySelector<HTMLElement>(
+  // 能力不满足时该行不在 DOM 里, 定位直接结束而不是抛错.
+  const target = root.value?.querySelector<HTMLElement>(
     `[data-setting="${item.id}"]`,
-  )!;
+  );
+  if (!target) return;
   target.scrollIntoView({ block: "center", behavior: "instant" });
   const control = target.querySelector<HTMLElement>(
     "button:not(:disabled), input:not(:disabled):not([hidden])",
@@ -433,8 +436,17 @@ const integritySummary = computed(() => {
               }"
               :transition="surface"
             >
+              <CrossScreenSettings
+                v-if="
+                  visited.has(category.id) && category.id === 'cross-screen'
+                "
+                :active="
+                  navigation.category === 'cross-screen' &&
+                  state.page === 'settings'
+                "
+              />
               <AudioSettings
-                v-if="visited.has(category.id) && category.id === 'audio'"
+                v-else-if="visited.has(category.id) && category.id === 'audio'"
                 :active="
                   navigation.category === 'audio' && state.page === 'settings'
                 "

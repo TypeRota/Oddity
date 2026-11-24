@@ -20,6 +20,7 @@ fn settings_default_matches_the_ui_contract() {
         .contains_key(&crate::identity::GameId::from("nte")));
     assert_eq!(settings.current().launch_mode, "background");
     assert_eq!(settings.language, "zh-CN");
+    assert_eq!(settings.gamepad.keyboard_layout, "qwerty");
     assert!(!settings.reduce_motion);
     assert!(!settings.stack_bulletins);
     assert_eq!(settings.theme, "light");
@@ -96,6 +97,7 @@ fn settings_round_trip_through_the_config_dir() {
     settings.minimize_to_tray_on_close = false;
     settings.show_launcher_after_game_exit = false;
     settings.snapshot_success_minutes = 10;
+    settings.gamepad.keyboard_layout = "alphabetical".into();
     persist_settings(&settings).expect("persist settings");
 
     let text = dir.read_text("oddity/settings.json");
@@ -133,6 +135,7 @@ fn settings_round_trip_through_the_config_dir() {
     assert!(!loaded.pause_hero_on_blur);
     assert!(!loaded.minimize_to_tray_on_close);
     assert_eq!(loaded.snapshot_success_minutes, 10);
+    assert_eq!(loaded.gamepad.keyboard_layout, "alphabetical");
     assert!(!loaded.show_launcher_after_game_exit);
     assert!(!loaded.current().updates.auto_download);
     assert_eq!(
@@ -577,4 +580,75 @@ fn failed_backup_keeps_the_legacy_file_untouched() {
         std::fs::Permissions::from_mode(0o755),
     )
     .ok();
+}
+
+#[test]
+fn gamepad_keyboard_layout_defaults_and_validation() {
+    let mut options: crate::gamepad::Options = serde_json::from_str(r#"{"icons":"xbox"}"#).unwrap();
+    assert_eq!(options.keyboard_layout, "qwerty");
+    assert_eq!(options.icons, "xbox");
+    options.validate().unwrap();
+    options.keyboard_layout = "alphabetical".into();
+    options.validate().unwrap();
+    let saved = serde_json::to_value(&options).unwrap();
+    assert_eq!(saved["keyboardLayout"], "alphabetical");
+    options.keyboard_layout = "invalid".into();
+    assert!(options.validate().is_err());
+}
+
+#[test]
+fn update_settings_section_returns_recomputed_capabilities() {
+    let mut env = EnvGuard::new();
+    let dir = TempDir::new("settings-capabilities");
+    env.set("XDG_CONFIG_HOME", dir.path());
+    let mut registry = oddity_runtime::Registry::new();
+    crate::testing::install(&mut registry);
+    registry.install_host_capabilities(crate::hardware::CAPABILITIES);
+    let (app, _events) = crate::service::test_service_with_registry(std::sync::Arc::new(registry));
+
+    // 关闭 GameMode 时 CPU 与 GPU 调优都不提供.
+    let section = crate::settings::update_settings_section(
+        &app,
+        "game:nte".into(),
+        serde_json::json!({"gameMode": {"performance": false}}),
+    )
+    .expect("更新游戏设置");
+    let state = |id: &str| {
+        section
+            .capabilities
+            .iter()
+            .find(|fact| fact.id == id)
+            .map(|fact| fact.state)
+    };
+    assert_eq!(
+        state("oddity.tuning.cpu"),
+        Some(crate::bootstrap::CapabilityState::Unsupported)
+    );
+    assert_eq!(
+        state("oddity.tuning.gpu"),
+        Some(crate::bootstrap::CapabilityState::Unsupported)
+    );
+
+    // 开启后同一个写入回传的新事实立即可用, 不必等下一次 bootstrap.
+    let section = crate::settings::update_settings_section(
+        &app,
+        "game:nte".into(),
+        serde_json::json!({"gameMode": {"performance": true}}),
+    )
+    .expect("更新游戏设置");
+    let cpu = section
+        .capabilities
+        .iter()
+        .find(|fact| fact.id == "oddity.tuning.cpu")
+        .expect("CPU 调优事实");
+    assert_eq!(cpu.state, crate::bootstrap::CapabilityState::Available);
+    let gpu = section
+        .capabilities
+        .iter()
+        .find(|fact| fact.id == "oddity.tuning.gpu")
+        .expect("GPU 调优事实");
+    assert_eq!(
+        gpu.state == crate::bootstrap::CapabilityState::Available,
+        crate::game_mode::gpu::has_tunable_device()
+    );
 }

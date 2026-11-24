@@ -10,6 +10,21 @@ pub struct InstallLock(File);
 impl InstallLock {
     pub fn acquire(root: &Path) -> Result<Self> {
         fs::create_dir_all(root)?;
+        Self::lock(root)
+    }
+
+    /// 锁定已存在的安装目录; 目录不存在时报错且不创建.
+    pub fn acquire_existing(root: &Path) -> Result<Self> {
+        if !root.is_dir() {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("安装目录不存在: {}", root.display()),
+            )));
+        }
+        Self::lock(root)
+    }
+
+    fn lock(root: &Path) -> Result<Self> {
         // 目录句柄直接加锁, 路径别名指向同一 inode, 也不存在锁文件替换竞态。
         let file = OpenOptions::new().read(true).open(root)?;
         file.try_lock().map_err(|error| match error {
@@ -44,6 +59,29 @@ mod tests {
         let _other = InstallLock::acquire(&dir.join("other")).unwrap();
         drop(lock);
         assert!(InstallLock::acquire(&root).is_ok());
+    }
+
+    #[test]
+    fn existing_lock_does_not_create_a_missing_installation() {
+        let dir = TempDir::new("installation-lock-existing");
+        let root = dir.join("game");
+        assert!(InstallLock::acquire_existing(&root).is_err());
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn existing_and_creating_locks_exclude_each_other() {
+        let dir = TempDir::new("installation-lock-shared");
+        let root = dir.join("game");
+        fs::create_dir_all(&root).unwrap();
+        let lock = InstallLock::acquire_existing(&root).unwrap();
+        assert!(InstallLock::acquire_existing(&root).is_err());
+        assert!(InstallLock::acquire(&root).is_err());
+        drop(lock);
+        let lock = InstallLock::acquire(&root).unwrap();
+        assert!(InstallLock::acquire_existing(&root).is_err());
+        drop(lock);
+        assert!(InstallLock::acquire_existing(&root).is_ok());
     }
 
     #[test]

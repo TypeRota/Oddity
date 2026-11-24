@@ -1,0 +1,21 @@
+name: 复用成功检查
+description: 比对 Gitea 的成功运行与当前检查输入
+inputs:
+  workflow:
+    description: 质量检查工作流名称
+    required: true
+outputs:
+  reused:
+    description: 相同输入是否已经通过检查
+    value: ${{ steps.result.outputs.reused }}
+runs:
+  using: composite
+  steps:
+    - name: 查询成功运行并比对输入
+      id: result
+      continue-on-error: true
+      shell: bash
+      env:
+        CI_WORKFLOW: ${{ inputs.workflow }}
+        GITEA_TOKEN: ${{ github.token }}
+      run: node checkout/scripts/reuse-ci-result.mjs "$CI_WORKFLOW"

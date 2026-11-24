@@ -83,7 +83,7 @@ impl HostContext for TestHost {
     }
 }
 
-fn echo<'a>(host: &'a dyn HostContext, _command: &'a str, payload: Value) -> DispatchFuture<'a> {
+fn echo<'a>(host: Arc<dyn HostContext>, _command: &'a str, payload: Value) -> DispatchFuture<'a> {
     let snapshot = host.settings();
     Box::pin(async move {
         let snapshot = snapshot.map_err(|error| json!(error))?;
@@ -91,7 +91,7 @@ fn echo<'a>(host: &'a dyn HostContext, _command: &'a str, payload: Value) -> Dis
     })
 }
 
-fn fail<'a>(_host: &'a dyn HostContext, _command: &'a str, payload: Value) -> DispatchFuture<'a> {
+fn fail<'a>(_host: Arc<dyn HostContext>, _command: &'a str, payload: Value) -> DispatchFuture<'a> {
     Box::pin(async move { Err(payload) })
 }
 
@@ -230,17 +230,17 @@ fn group_resolution_prefers_the_exact_game_then_any_game() {
 
 #[test]
 fn dispatch_runs_the_group_handler() {
-    let host = TestHost::new();
+    let host = Arc::new(TestHost::new());
 
     let success = CommandGroup::for_game("test", "player", &["game_status"], echo);
     assert_eq!(
-        block_on(success.dispatch(&host, "game_status", json!(1))),
+        block_on(success.dispatch(host.clone(), "game_status", json!(1))),
         Ok(json!({"echo": 1, "game": "test"}))
     );
 
     let failure = CommandGroup::shared("player", &["game_status"], fail);
     assert_eq!(
-        block_on(failure.dispatch(&host, "game_status", json!(7))),
+        block_on(failure.dispatch(host.clone(), "game_status", json!(7))),
         Err(json!(7))
     );
 }

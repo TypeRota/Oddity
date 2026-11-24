@@ -138,7 +138,7 @@ fn runtimes_keep_assembly_order() {
 
     let runtimes: Vec<*const dyn PackageRuntime> = registry
         .runtimes()
-        .map(|runtime| runtime as *const dyn PackageRuntime)
+        .map(|(_, runtime)| runtime as *const dyn PackageRuntime)
         .collect();
     assert_eq!(
         runtimes,

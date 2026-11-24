@@ -6,6 +6,10 @@ import BaseSwitch from "./BaseSwitch.vue";
 import SettingGroup from "./settings/SettingGroup.vue";
 import SettingRow from "./settings/SettingRow.vue";
 import GamepadGlyph from "./GamepadGlyph.vue";
+const keyboardLayoutOptions = [
+  { value: "qwerty", label: "美式键盘" },
+  { value: "alphabetical", label: "字母表 (A-Z)" },
+];
 const iconOptions = [
   { value: "auto", label: "自动识别" },
   { value: "dualsense", label: "DualSense" },
@@ -44,6 +48,14 @@ const iconOptions = [
         ><span><GamepadGlyph button="west" />启动</span
         ><span><GamepadGlyph button="north" />玩家信息</span>
       </div>
+      <SettingRow label="键盘布局" for="set-gamepad-keyboard-layout-trigger"
+        ><BaseSelect
+          id="set-gamepad-keyboard-layout"
+          v-model="form.gamepad.keyboardLayout"
+          :options="keyboardLayoutOptions"
+          label="键盘布局"
+          @change="queueSettingsSave('host', 0)"
+      /></SettingRow>
       <SettingRow label="左摇杆死区" for="set-gamepad-deadzone"
         ><div class="gamepad-strength">
           <input

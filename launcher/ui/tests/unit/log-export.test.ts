@@ -11,7 +11,12 @@ const { open, invoke, isDesktop, notify } = vi.hoisted(() => ({
 }));
 vi.mock("../../src/core/desktop", () => ({ open }));
 vi.mock("../../src/core/api", () => ({ invoke, isDesktop }));
-vi.mock("../../src/core/notifications", () => ({ notify }));
+vi.mock("../../src/core/notifications", async () => {
+  const { errorText } = await import("../../src/core/notifications.ts");
+  return { notify, errorText };
+});
+const errorNotify = () =>
+  notify.mock.calls.filter(([, kind]) => kind === "error").at(-1)?.[0] ?? "";
 
 const preview: LogPreview = {
   id: "1",
@@ -25,6 +30,7 @@ const preview: LogPreview = {
     },
   ],
   normalizedFiles: 1,
+  crashSites: 1,
 };
 let wrapper: ReturnType<typeof mount>;
 function render() {
@@ -137,7 +143,7 @@ describe("日志隐私检查与导出", () => {
     expect(invoke).toHaveBeenCalledTimes(1);
     reject("暂无可导出的日志");
     await flushPromises();
-    expect(wrapper.get('[role="alert"]').text()).toContain("暂无可导出的日志");
+    expect(errorNotify()).toContain("暂无可导出的日志");
     expect(
       wrapper.get("#settings-export-logs").attributes("disabled"),
     ).toBeUndefined();
@@ -150,7 +156,7 @@ describe("日志隐私检查与导出", () => {
     await prepare();
     invoke.mockRejectedValueOnce("权限不足");
     await save();
-    expect(wrapper.get('[role="alert"]').text()).toContain("权限不足");
+    expect(errorNotify()).toContain("权限不足");
     expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
     await save();
     expect(
@@ -163,18 +169,14 @@ describe("日志隐私检查与导出", () => {
     await prepare();
     open.mockRejectedValueOnce(new Error("dialog unavailable"));
     await save();
-    expect(wrapper.get('[role="alert"]').text()).toContain(
-      "dialog unavailable",
-    );
+    expect(errorNotify()).toContain("dialog unavailable");
     invoke.mockImplementation(async (command: string) => {
       if (command === "open_directory") throw new Error("opener failed");
       return "/tmp/logs.zip";
     });
     await save();
     expect(wrapper.get('[role="status"]').text()).toContain("/tmp/logs.zip");
-    expect(wrapper.get('[role="alert"]').text()).toContain(
-      "日志已导出, 但无法打开文件夹",
-    );
+    expect(errorNotify()).toContain("日志已导出, 但无法打开文件夹");
   });
 
   it("没有命中时仍提供明确预览, 取消失败保留状态", async () => {
@@ -191,7 +193,7 @@ describe("日志隐私检查与导出", () => {
       .get(".log-export__actions button:first-child")
       .trigger("click");
     await flushPromises();
-    expect(wrapper.get('[role="alert"]').text()).toContain("取消失败");
+    expect(errorNotify()).toContain("取消失败");
     expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
   });
 
@@ -213,6 +215,6 @@ describe("日志隐私检查与导出", () => {
     await prepare();
     expect(invoke).not.toHaveBeenCalled();
     expect(open).not.toHaveBeenCalled();
-    expect(wrapper.get('[role="alert"]').text()).toContain("桌面应用");
+    expect(errorNotify()).toContain("桌面应用");
   });
 });

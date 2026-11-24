@@ -63,10 +63,14 @@ it("空记录禁用生成海报并可返回主页", async () => {
   expect(c.state.page).toBe("home");
 });
 
-it("加载失败显示错误且重试后显示统计", async () => {
+it("加载失败用通知报告, 重试后显示统计", async () => {
   api.invoke.mockRejectedValueOnce(new Error("读取记录失败"));
   await render();
-  expect(wrapper.get('[role="status"]').text()).toContain("读取记录失败");
+  expect(c.notifications[0]?.message).toBe("读取游玩记录失败: 读取记录失败");
+  expect(c.notifications[0]?.kind).toBe("error");
+  // 页内不重复错误文案, 只保留可重试的空态.
+  expect(wrapper.text()).not.toContain("读取记录失败");
+  expect(wrapper.get(".playtime-empty").text()).toContain("游玩记录读取失败");
   history.sessions = [
     {
       startedAt: now - 3_600_000,
@@ -75,9 +79,9 @@ it("加载失败显示错误且重试后显示统计", async () => {
       distribution: "cn",
     },
   ];
-  await wrapper.get(".playtime-error button").trigger("click");
+  await wrapper.get(".playtime-empty button").trigger("click");
   await flushPromises();
-  expect(wrapper.find(".playtime-error").exists()).toBe(false);
+  expect(wrapper.find(".playtime-empty").exists()).toBe(false);
   expect(wrapper.get(".playtime-summary").text()).toContain("1 小时");
   expect(wrapper.find("playtime-heatmap-stub").exists()).toBe(true);
   await posterButton().trigger("click");

@@ -3,11 +3,45 @@ name: Rust 质量检查
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    paths:
+      - ".gitea/workflows/rust-quality.yml"
+      - ".gitea/actions/ci-result/**"
+      - "scripts/reuse-ci-result.mjs"
+      - ".cargo/**"
+      - "rust-toolchain*"
+      - "launcher/.cargo/**"
+      - "launcher/rust-toolchain*"
+      - "launcher/Cargo.*"
+      - "launcher/deny.toml"
+      - "launcher/crates/**"
+      - "launcher/packages/*/backend/**"
+      - "launcher/helpers/**"
+      - "launcher/tools/**"
+      - "launcher/ui/public/assets/fonts/SpaceGrotesk.ttf"
+      - "launcher/ui/electron/commands.ts"
+      - "launcher/ui/src/core/generated/command-ids.ts"
+      - "launcher/ui/src/types/generated/commands.ts"
+      - "scripts/check-rust-coverage.mjs"
+      - "!**/*.md"
+  schedule:
+    # 北京时间 5:00, 与每日检查汇总同一时刻启动。
+    - cron: "TZ=Asia/Shanghai 0 5 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 concurrency:
-  group: rust-quality-${{ github.event.pull_request.number || github.ref }}
+  group: rust-quality-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+env:
+  # 流水线里没有复用价值的增量缓存。
+  CARGO_INCREMENTAL: "0"
+  # 覆盖率只需要行表，完整调试信息只会把测试二进制撑大。
+  CARGO_PROFILE_DEV_DEBUG: "1"
+  CARGO_PROFILE_TEST_DEBUG: "1"
 
 jobs:
   rust-quality:
@@ -15,17 +49,44 @@ jobs:
     runs-on: heavy
     timeout-minutes: 45
     steps:
+      - name: 回收磁盘空间
+        run: |
+          set -euo pipefail
+          # 上一次运行被打断时 target 可能还留在原地，先收掉。
+          rm -rf "$PWD/checkout/launcher/target" "$PWD/.ci-tmp"
+          mkdir -p "$PWD/.ci-tmp"
+          echo "TMPDIR=$PWD/.ci-tmp" >> "$GITHUB_ENV"
+          df -h "$PWD" /tmp || true
+          avail_kb=$(df -Pk "$PWD" | awk "NR==2{print \$4}")
+          # 还不够连检出一起清掉，后面会重新拉取。
+          if [ "$avail_kb" -lt 10485760 ]; then
+            rm -rf "$PWD/checkout"
+            avail_kb=$(df -Pk "$PWD" | awk "NR==2{print \$4}")
+          fi
+          if [ "$avail_kb" -lt 10485760 ]; then
+            echo "::error::回收后仍不足 10G，当前剩余 $((avail_kb / 1024))MB"
+            exit 1
+          fi
       - name: 检出代码
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
         run: |
           mkdir -p checkout
           cd checkout
           git init -q .
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
-          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
           git fetch --no-tags origin "$GITHUB_REF" || git fetch --no-tags origin "$GITHUB_SHA"
           git checkout -q FETCH_HEAD
           git log --oneline -1
+      - name: 复用成功检查
+        id: previous
+        if: github.event_name == 'pull_request'
+        uses: ./checkout/.gitea/actions/ci-result
+        with:
+          workflow: rust-quality
       - name: 安装 Linux 依赖
+        if: steps.previous.outputs.reused != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
@@ -33,6 +94,7 @@ jobs:
             libssl-dev libgtk-3-dev librsvg2-dev patchelf file desktop-file-utils \
             dpkg-dev rpm libarchive-tools zstd xvfb dbus-x11
       - name: 准备 Rust 工具链
+        if: steps.previous.outputs.reused != 'true'
         run: |
           sudo chown -R "$(id -un):" /opt/rust
           rustup update stable
@@ -40,45 +102,56 @@ jobs:
           rustup component add rustfmt clippy llvm-tools-preview
           rustc -V
           cargo -V
-      - name: 安装并构建前端
-        run: |
-          export PATH=/data/workspace/node24/bin:$PATH
-          cd checkout/launcher/ui
-          pnpm install --frozen-lockfile
-          pnpm run build
-      - name: 检查契约与注册表生成物
-        run: |
-          cd checkout/launcher
-          cargo run --locked -p contract-gen -- --check
-          cargo run --locked -p ui-registry-gen -- --check
       - name: 检查格式与 Clippy
+        if: steps.previous.outputs.reused != 'true'
         run: |
           cd checkout/launcher
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: 运行测试并构建
+      - name: 文档测试与构建
+        if: steps.previous.outputs.reused != 'true'
         run: |
           cd checkout/launcher
-          cargo test --workspace --locked
+          cargo test --workspace --doc --locked
           cargo build --workspace --locked
       - name: 减法装配冒烟
+        if: steps.previous.outputs.reused != 'true'
         run: |
           cd checkout/launcher
           cargo test -p oddity-backend --no-default-features --locked
           cargo test -p oddity-backend --no-default-features --features game-fixture --locked
       - name: 检查覆盖率
+        if: steps.previous.outputs.reused != 'true'
         run: |
+          set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
           cd checkout/launcher
+          rm -rf target/debug
+          df -h "$PWD" | tail -1
           rustup component add llvm-tools-preview
-          if ! command -v cargo-llvm-cov >/dev/null; then cargo install cargo-llvm-cov --locked; fi
+          if ! command -v cargo-llvm-cov >/dev/null; then
+            CARGO_TARGET_DIR="$TMPDIR/install-llvm-cov" cargo install cargo-llvm-cov --locked
+            rm -rf "$TMPDIR/install-llvm-cov"
+          fi
           cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
           cargo llvm-cov report --summary-only | tee coverage-summary.txt
           cd ..
           node scripts/check-rust-coverage.mjs
       - name: 依赖检查策略
+        if: steps.previous.outputs.reused != 'true'
         run: |
+          set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
+          rm -rf checkout/launcher/target/llvm-cov-target
+          df -h "$PWD" | tail -1
           cd checkout/launcher
-          if ! command -v cargo-deny >/dev/null; then cargo install cargo-deny --locked; fi
+          if ! command -v cargo-deny >/dev/null; then
+            CARGO_TARGET_DIR="$TMPDIR/install-deny" cargo install cargo-deny --locked
+            rm -rf "$TMPDIR/install-deny"
+          fi
           cargo deny check
+      - name: 清理构建产物
+        if: always()
+        run: |
+          rm -rf checkout/launcher/target .ci-tmp
+          df -h "$PWD" | tail -1

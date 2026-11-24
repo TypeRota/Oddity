@@ -48,6 +48,7 @@ for (const width of [1180, 640]) {
                 fileCount: 8,
                 redactions: { home: 4, phone: 2, credentials: 3, jwt: 1 },
                 normalizedFiles: 1,
+                crashSites: 1,
                 samples: Array.from({ length: 12 }, (_, index) => ({
                   file: "environments/env-1/nte-app-launch.log",
                   line: index + 1,

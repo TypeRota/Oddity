@@ -5,6 +5,7 @@
     "deadZone": 0.2800000011920929,
     "enabled": true,
     "icons": "auto",
+    "keyboardLayout": "qwerty",
     "profiles": {
       "complete": {
         "channels": [
@@ -276,7 +277,7 @@
   },
   "games": {
     "hsr": {
-      "activeEnvironment": null,
+      "activeEnvironments": {},
       "audio": {
         "device": null,
         "volume": 100
@@ -302,7 +303,7 @@
       "installRoots": {},
       "launchMode": "official",
       "preloadRoot": null,
-      "stableEnvironment": null,
+      "stableEnvironments": {},
       "updates": {
         "autoDownload": true,
         "limitBytesPerSecond": 0,
@@ -311,7 +312,7 @@
       }
     },
     "nte": {
-      "activeEnvironment": null,
+      "activeEnvironments": {},
       "audio": {
         "device": null,
         "volume": 100
@@ -339,7 +340,7 @@
       },
       "launchMode": "background",
       "preloadRoot": null,
-      "stableEnvironment": null,
+      "stableEnvironments": {},
       "updates": {
         "autoDownload": false,
         "limitBytesPerSecond": 0,

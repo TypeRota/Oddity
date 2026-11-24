@@ -133,6 +133,13 @@ pub trait HostContext: Send + Sync + 'static {
     /// 游戏没有官方启动器时返回 None.
     fn official_launcher_root(&self) -> Option<PathBuf>;
 
+    /// 宿主的数据目录, 供包保存可重建的本地数据.
+    ///
+    /// 未提供时包应放弃这类写入, 而不是自己拼路径.
+    fn data_dir(&self) -> Option<PathBuf> {
+        None
+    }
+
     /// 发送契约里声明的事件; 未声明的事件返回错误.
     fn emit(&self, id: &'static str, payload: Value) -> Result<(), String>;
 
@@ -160,6 +167,8 @@ pub trait HostContext: Send + Sync + 'static {
                 || activity.game_running
                 || activity.game_closing,
             launcher_present: self.official_launcher_root().is_some(),
+            // 硬件事实由宿主实现在边界探测; 默认实现不假设机器具备调优能力.
+            hardware: crate::HardwareFacts::default(),
         })
     }
 }

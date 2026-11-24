@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { form, state } from "../core/controller";
 import { invoke } from "../core/api";
-import { notify } from "../core/notifications";
+import { notify, errorText } from "../core/notifications";
 import type { GameModeTuning } from "../types/launcher";
 import BaseButton from "./BaseButton.vue";
 import BaseModal from "./BaseModal.vue";
@@ -10,7 +10,6 @@ import BaseSelect from "./BaseSelect.vue";
 import SettingGroup from "./settings/SettingGroup.vue";
 import SettingRow from "./settings/SettingRow.vue";
 
-const props = defineProps<{ available: boolean }>();
 const config = ref<GameModeTuning | null>(null);
 const saved = ref("");
 const loading = ref(false);
@@ -19,7 +18,6 @@ const confirming = ref(false);
 let disposed = false;
 const editable = computed(
   () =>
-    props.available &&
     form.gameMode.performance &&
     config.value &&
     !loading.value &&
@@ -82,12 +80,7 @@ async function reload() {
     },
     (cause: unknown) => {
       if (!disposed)
-        notify(
-          cause instanceof Error ? cause.message : String(cause),
-          "error",
-          6500,
-          { key: "game-mode-tuning" },
-        );
+        notify(errorText(cause), "error", 6500, { key: "game-mode-tuning" });
     },
   );
   loading.value = false;
@@ -111,12 +104,7 @@ async function apply() {
     },
     (cause: unknown) => {
       if (!disposed)
-        notify(
-          cause instanceof Error ? cause.message : String(cause),
-          "error",
-          6500,
-          { key: "game-mode-tuning" },
-        );
+        notify(errorText(cause), "error", 6500, { key: "game-mode-tuning" });
     },
   );
   applying.value = false;
@@ -136,10 +124,7 @@ defineExpose({ reload });
 
 <template>
   <SettingGroup title="CPU 与优先级">
-    <div
-      class="game-mode-system game-mode-details"
-      :class="{ 'is-unavailable': !available || !form.gameMode.performance }"
-    >
+    <div class="game-mode-system game-mode-details">
       <fieldset class="game-mode-fields" :disabled="!editable">
         <template v-for="core in cores" :key="core.key">
           <SettingRow

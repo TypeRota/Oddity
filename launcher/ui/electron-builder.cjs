@@ -98,6 +98,7 @@ module.exports = async () => {
         "pkexec",
         "python3",
       ],
+      recommends: ["wireshark-common"],
       fpm: extra,
     },
     rpm: {
@@ -119,7 +120,15 @@ module.exports = async () => {
         "polkit",
         "python3",
       ],
-      fpm: ["--version", rpm.version, "--iteration", rpm.release, ...extra],
+      fpm: [
+        "--version",
+        rpm.version,
+        "--iteration",
+        rpm.release,
+        "--rpm-tag",
+        "Recommends: wireshark-cli",
+        ...extra,
+      ],
     },
     appImage: { artifactName: `oddity-${version}-x86_64.AppImage` },
   };

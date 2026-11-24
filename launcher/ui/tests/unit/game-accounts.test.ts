@@ -1,10 +1,14 @@
 import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-const api = vi.hoisted(() => ({ invoke: vi.fn() }));
+const api = vi.hoisted(() => ({ invoke: vi.fn(), notify: vi.fn() }));
 vi.mock("../../src/core/api", () => ({
   invoke: api.invoke,
   isDesktop: () => false,
 }));
+vi.mock("../../src/core/notifications", async () => {
+  const { errorText } = await import("../../src/core/notifications.ts");
+  return { notify: api.notify, errorText };
+});
 import Dialog from "../../src/components/GameAccountDialog.vue";
 let wrapper: VueWrapper;
 beforeEach(() => {
@@ -13,6 +17,7 @@ beforeEach(() => {
     .mockImplementation(async (command) =>
       command === "game_accounts" ? [] : "b".repeat(32),
     );
+  api.notify.mockReset();
 });
 afterEach(() => {
   wrapper?.unmount();
@@ -101,7 +106,11 @@ it("移除失败时保留账号和选择, 允许取消确认", async () => {
   await click("移除");
   api.invoke.mockRejectedValueOnce(new Error("密钥环暂时不可用."));
   await click("确认移除");
-  expect(wrapper.get('[role="alert"]').text()).toBe("密钥环暂时不可用.");
+  // 命令失败只走全局通知, 弹窗内不再重复提示.
+  expect(api.notify).toHaveBeenCalledWith("密钥环暂时不可用.", "error", 6500, {
+    key: "game-account",
+  });
+  expect(wrapper.find('[role="alert"]').exists()).toBe(false);
   expect(wrapper.text()).toContain("138****8000");
   expect(wrapper.emitted("select")).toBeUndefined();
   await click("取消");
@@ -133,7 +142,11 @@ it("短信验证码绑定取码时的手机号, 修改号码后不能直接提�
   await wrapper.get('input[autocomplete="one-time-code"]').setValue("123456");
   await wrapper.get("form").trigger("submit");
   await flushPromises();
-  expect(wrapper.text()).toContain("请先为当前手机号获取验证码");
+  // 本地校验留在弹窗内, 不触发通知.
+  expect(wrapper.get('[role="alert"]').text()).toBe(
+    "请先为当前手机号获取验证码.",
+  );
+  expect(api.notify).not.toHaveBeenCalled();
   expect(api.invoke.mock.calls.some(([name]) => name === "game_login")).toBe(
     false,
   );
@@ -152,7 +165,13 @@ it("服务端要求短信时切换表单并清空密码, 不自动发送短信",
   expect(
     wrapper.get('input[autocomplete="one-time-code"]').element,
   ).toHaveProperty("value", "");
-  expect(wrapper.text()).toContain("服务端要求使用短信验证码登录");
+  expect(api.notify).toHaveBeenCalledWith(
+    "为保障账号安全, 服务端要求使用短信验证码登录.",
+    "error",
+    6500,
+    { key: "game-account" },
+  );
+  expect(wrapper.find('[role="alert"]').exists()).toBe(false);
   expect(
     api.invoke.mock.calls.filter(([name]) => name === "game_send_code"),
   ).toHaveLength(0);

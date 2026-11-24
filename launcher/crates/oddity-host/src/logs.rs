@@ -1,8 +1,15 @@
 //! 检查并脱敏 Oddity 日志, 保留会话目录结构.
 
+mod crash;
 mod redact;
 
 use anyhow::{bail, Context, Result};
+#[cfg(test)]
+pub(crate) use crash::MAX_TEXT_BYTES;
+pub(crate) use crash::{
+    collect as collect_crashes, crash_sites, modified as site_modified, read_context_text,
+    CrashData, CrashExport,
+};
 use encoding_rs_io::DecodeReaderBytesBuilder;
 pub use redact::Redactions;
 use redact::Redactor;
@@ -25,6 +32,8 @@ pub struct LogPreview {
     pub redactions: Redactions,
     pub samples: Vec<LogSample>,
     pub normalized_files: usize,
+    /// 一并带走的 UE 崩溃目录数量.
+    pub crash_sites: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -57,10 +66,34 @@ fn collect_logs(root: &Path, relative: &Path, files: &mut Vec<PathBuf>) -> Resul
 
 impl PreparedLogs {
     pub fn prepare(source: &Path, report: Option<&str>) -> Result<Self> {
-        Self::with_home(source, report, std::env::var("HOME").ok().as_deref())
+        Self::build(source, report, std::env::var("HOME").ok().as_deref(), None)
     }
 
+    /// 一并带走 UE 崩溃现场; 现场缺失或读取失败只影响这一部分.
+    pub(crate) fn prepare_with_crashes(
+        source: &Path,
+        report: Option<&str>,
+        crashes: Option<CrashExport>,
+    ) -> Result<Self> {
+        Self::build(
+            source,
+            report,
+            std::env::var("HOME").ok().as_deref(),
+            crashes,
+        )
+    }
+
+    #[cfg(test)]
     fn with_home(source: &Path, report: Option<&str>, home: Option<&str>) -> Result<Self> {
+        Self::build(source, report, home, None)
+    }
+
+    fn build(
+        source: &Path,
+        report: Option<&str>,
+        home: Option<&str>,
+        crashes: Option<CrashExport>,
+    ) -> Result<Self> {
         let mut files = Vec::new();
         match fs::symlink_metadata(source) {
             Ok(metadata) if metadata.is_dir() => collect_logs(source, Path::new(""), &mut files)?,
@@ -68,7 +101,8 @@ impl PreparedLogs {
             Err(error) => return Err(error).context("读取日志目录失败"),
             _ => bail!("日志路径不是普通目录"),
         }
-        if files.is_empty() && report.is_none() {
+        let crashes = crashes.filter(|crashes| !crashes.is_empty());
+        if files.is_empty() && report.is_none() && crashes.is_none() {
             bail!("暂无可导出的日志, 请先运行游戏后重试");
         }
         files.sort();
@@ -107,6 +141,36 @@ impl PreparedLogs {
                 &mut preview,
             )
             .with_context(|| format!("检查日志失败: {name}"))?;
+        }
+        if let Some(crashes) = crashes {
+            // 崩溃现场单独计数, 不混入启动器日志的文件统计.
+            let logs = preview.file_count;
+            let normalized = preview.normalized_files;
+            for file in crashes.files {
+                // 崩溃现场路径里含 Wine 用户名, 和日志文件名一样过脱敏.
+                let name = redactor.text(&file.name);
+                if !names.insert(name.clone()) {
+                    bail!("脱敏后的日志文件名重复, 无法生成压缩包");
+                }
+                archive.start_file(&name, options)?;
+                match file.data {
+                    CrashData::Text(bytes) => write_redacted(
+                        bytes.as_slice(),
+                        &name,
+                        &mut archive,
+                        &mut redactor,
+                        &mut preview,
+                    )
+                    .with_context(|| format!("检查日志失败: {name}"))?,
+                    // 转储原样写入, 不经过按行解码的文本通道.
+                    CrashData::Binary(bytes) => archive
+                        .write_all(&bytes)
+                        .with_context(|| format!("写入转储失败: {name}"))?,
+                }
+            }
+            preview.file_count = logs;
+            preview.normalized_files = normalized;
+            preview.crash_sites = crashes.sites;
         }
         preview.redactions = redactor.counts;
         let mut archive = archive.finish().context("生成脱敏日志快照失败")?;
@@ -537,5 +601,92 @@ mod tests {
         assert!(!serde_json::to_string(&prepared.preview)
             .unwrap()
             .contains("secret"));
+    }
+
+    #[test]
+    fn crash_sites_share_the_redaction_channel_and_dumps_stay_binary() {
+        use crate::logs::crash::collect_prefix;
+
+        let dir = TempDir::new("crash-export");
+        dir.write("logs/test.log", "启动日志\n");
+        let site =
+            dir.join("prefix/drive_c/users/player/AppData/Local/HT/Saved/Crashes/UECC-1_0000");
+        let redacted = "token=crash-secret phone=13800138000\n";
+        dir.write(
+            "prefix/drive_c/users/player/AppData/Local/HT/Saved/Crashes/UECC-1_0000/CrashContext.runtime-xml",
+            format!("<CrashContext><CommandLine>{redacted}</CommandLine></CrashContext>"),
+        );
+        let dump = b"MDMP\0\0\0\x93\xa7\xff";
+        dir.write(
+            "prefix/drive_c/users/player/AppData/Local/HT/Saved/Crashes/UECC-1_0000/UEMinidump.dmp",
+            dump,
+        );
+        assert!(site.is_dir());
+        let crashes = collect_prefix(&dir.join("prefix"), true);
+        assert_eq!(crashes.sites, 1);
+        let mut prepared =
+            PreparedLogs::prepare_with_crashes(&dir.join("logs"), None, Some(crashes)).unwrap();
+        assert_eq!(prepared.preview.crash_sites, 1);
+        let output = prepared.save(dir.path()).unwrap();
+        let mut archive = zip::ZipArchive::new(File::open(output).unwrap()).unwrap();
+        let mut text = String::new();
+        archive
+            .by_name("crashes/player/Crashes/UECC-1_0000/CrashContext.runtime-xml")
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert!(!text.contains("crash-secret"), "崩溃上下文未脱敏");
+        assert!(!text.contains("13800138000"), "崩溃上下文残留手机号");
+        // 转储按原字节写入, 不经过按行解码的文本通道.
+        let mut bytes = Vec::new();
+        archive
+            .by_name("crashes/player/Crashes/UECC-1_0000/UEMinidump.dmp")
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert_eq!(bytes, dump);
+        let mut manifest = String::new();
+        archive
+            .by_name("crashes/manifest.txt")
+            .unwrap()
+            .read_to_string(&mut manifest)
+            .unwrap();
+        assert!(manifest.contains("UEMinidump.dmp"));
+        assert!(manifest.contains("已包含"));
+        assert!(!serde_json::to_string(&prepared.preview)
+            .unwrap()
+            .contains("crash-secret"));
+    }
+
+    #[test]
+    fn crash_sites_alone_are_exportable_when_no_logs_exist() {
+        let dir = TempDir::new("crash-only");
+        let site =
+            dir.join("prefix/drive_c/users/player/AppData/Local/HT/Saved/Crashes/UECC-2_0000");
+        dir.write(
+            "prefix/drive_c/users/player/AppData/Local/HT/Saved/Crashes/UECC-2_0000/CrashContext.runtime-xml",
+            "<CrashContext><CrashType>Hang</CrashType></CrashContext>",
+        );
+        assert!(site.is_dir());
+        let crashes = crate::logs::crash::collect_prefix(&dir.join("prefix"), false);
+        let mut prepared =
+            PreparedLogs::prepare_with_crashes(&dir.join("logs"), None, Some(crashes)).unwrap();
+        let output = prepared.save(dir.path()).unwrap();
+        let archive = zip::ZipArchive::new(File::open(output).unwrap()).unwrap();
+        assert_eq!(archive.len(), 2);
+    }
+
+    #[test]
+    fn absent_crashes_keep_the_quiet_degradation_message() {
+        let dir = TempDir::new("crash-absent");
+        assert!(
+            PreparedLogs::prepare_with_crashes(&dir.join("logs"), None, None)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("暂无")
+        );
+        let empty = crate::logs::crash::collect_prefix(&dir.join("missing"), false);
+        assert!(PreparedLogs::prepare_with_crashes(&dir.join("logs"), None, Some(empty)).is_err());
     }
 }

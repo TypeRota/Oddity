@@ -232,6 +232,9 @@ struct GroupRef {
     index: usize,
 }
 
+/// 宿主能力表的校验标记; 与任何游戏 id 都不冲突.
+const HOST_SHEET: &str = "<host>";
+
 /// 宿主收集的命令组.
 pub struct Registry {
     packages: Vec<PackageDescriptor>,
@@ -245,6 +248,8 @@ pub struct Registry {
     runtimes: Vec<(&'static str, &'static dyn PackageRuntime)>,
     /// game -> 能力 sheet; 键是包 id, 与 descriptor.id 一致.
     capabilities: HashMap<&'static str, &'static [Capability]>,
+    /// 宿主自身提供的能力; 与游戏无关, 对每个游戏都可见.
+    host_capabilities: &'static [Capability],
     /// game -> 包级能力依赖.
     requires: HashMap<&'static str, &'static [CapabilityRequirement]>,
     /// game -> 包声明的发行渠道.
@@ -264,6 +269,7 @@ impl Registry {
             headless_clis: HashMap::new(),
             runtimes: Vec::new(),
             capabilities: HashMap::new(),
+            host_capabilities: &[],
             requires: HashMap::new(),
             channels: HashMap::new(),
             settings: HashMap::new(),
@@ -350,6 +356,16 @@ impl Registry {
         self.packages.iter().find(|package| package.id == id)
     }
 
+    /// 登记宿主自身提供的能力; 装配期调用一次, 对每个游戏可见.
+    pub fn install_host_capabilities(&mut self, capabilities: &'static [Capability]) {
+        self.host_capabilities = capabilities;
+    }
+
+    /// 宿主自身提供的能力.
+    pub fn host_capabilities(&self) -> &'static [Capability] {
+        self.host_capabilities
+    }
+
     /// 某游戏的能力 sheet; 未装配该游戏时 None.
     pub fn capabilities(&self, game: &str) -> Option<&'static [Capability]> {
         self.capabilities.get(game).copied()
@@ -412,8 +428,10 @@ impl Registry {
     }
 
     /// 已装配包的长驻域, 顺序与装配表一致.
-    pub fn runtimes(&self) -> impl Iterator<Item = &'static dyn PackageRuntime> + '_ {
-        self.runtimes.iter().map(|(_, runtime)| *runtime)
+    pub fn runtimes(
+        &self,
+    ) -> impl Iterator<Item = (&'static str, &'static dyn PackageRuntime)> + '_ {
+        self.runtimes.iter().copied()
     }
 
     /// 按游戏 id 查找长驻域.
@@ -581,11 +599,29 @@ impl Registry {
     /// revision 精确相等, provider.scope 必须覆盖 requirement.scope.
     pub fn validate_capabilities(&self) -> Result<(), Vec<CapabilityIssue>> {
         let mut issues = Vec::new();
+        // 宿主能力对每个游戏都可见, 先在自己的声明里查 id 与重复.
+        let mut host_sheet: HashMap<&'static str, CapabilityDescriptor> = HashMap::new();
+        for capability in self.host_capabilities {
+            let descriptor = capability.descriptor;
+            if !descriptor.id.is_well_formed() {
+                issues.push(CapabilityIssue::InvalidId {
+                    capability: descriptor.id.0,
+                });
+            }
+            if host_sheet.contains_key(descriptor.id.0) {
+                issues.push(CapabilityIssue::DuplicateProvider {
+                    game: HOST_SHEET,
+                    capability: descriptor.id.0,
+                });
+            } else {
+                host_sheet.insert(descriptor.id.0, descriptor);
+            }
+        }
         for game in self.game_order() {
             let providers = self.capabilities.get(game).copied().unwrap_or(&[]);
             let requirements = self.requires.get(game).copied().unwrap_or(&[]);
 
-            let mut sheet: HashMap<&'static str, CapabilityDescriptor> = HashMap::new();
+            let mut sheet = host_sheet.clone();
             for capability in providers {
                 let descriptor = capability.descriptor;
                 if !descriptor.id.is_well_formed() {

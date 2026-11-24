@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { motion } from "motion-v";
 import { gamepad } from "../core/gamepad";
+import { form } from "../core/controller";
 import { gamepadActions } from "../core/gamepadActions";
 import {
   loadPinyinEngine,
@@ -9,6 +10,7 @@ import {
   type PinyinEngine,
 } from "../core/pinyin";
 import { useControlMotion } from "../composables/useControlMotion";
+import { notify, errorText } from "../core/notifications";
 import BaseButton from "./BaseButton.vue";
 
 const PAGE_SIZE = 5;
@@ -20,13 +22,14 @@ const composition = ref("");
 const candidates = ref<PinyinCandidate[]>([]);
 const candidatePage = ref(0);
 const loading = ref(false);
-const error = ref("");
+// 时间格式校验留在键盘内, 词库等运行环境失败走全局通知.
+const timeError = ref("");
 let engine: PinyinEngine | null = null;
 let engineFailed = false;
 let searchVersion = 0;
 const { surface, control } = useControlMotion();
 watch([draft, composition], () => {
-  error.value = "";
+  timeError.value = "";
 });
 watch(
   () => gamepad.editing,
@@ -39,7 +42,7 @@ watch(
       composition.value = "";
       candidates.value = [];
       candidatePage.value = 0;
-      error.value = "";
+      timeError.value = "";
       engineFailed = false;
       gamepadActions.keyboard = {
         cycle: cycleLayout,
@@ -86,14 +89,19 @@ const visibleCandidates = computed(() =>
     (candidatePage.value + 1) * PAGE_SIZE,
   ),
 );
+const letterRows = computed(() =>
+  form.gamepad.keyboardLayout === "alphabetical"
+    ? ["abcdefghij", "klmnopqrst", "uvwxyz,.;/"]
+    : ["qwertyuiop", "asdfghjkl;", "zxcvbnm,./"],
+);
 const rows = computed(() =>
   numeric.value
     ? ["123", "456", "789", time.value ? "0:" : "0.-"]
     : pinyin.value
-      ? ["qwertyuiop", "asdfghjkl", "zxcvbnm"]
+      ? letterRows.value
       : symbols.value
-        ? ["!@#$%^&*()", "_-+=[]{}", ":;\"'/?\\", ".,<>|~`"]
-        : ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"],
+        ? ["!@#$%^&*", "()_-+=[]", "{}:;\"'/?", "\\.,<>|~`"]
+        : ["1234567890", ...letterRows.value],
 );
 const display = computed(() => {
   if (password.value) return "•".repeat(draft.value.length);
@@ -110,7 +118,7 @@ function ensureEngine(): Promise<PinyinEngine | null> {
     })
     .catch((cause) => {
       engineFailed = true;
-      error.value = `拼音词库加载失败: ${String(cause)}`;
+      notify(`拼音词库加载失败: ${errorText(cause)}`, "error", 6500);
       return null;
     })
     .finally(() => {
@@ -137,7 +145,6 @@ function enterPinyin() {
   candidates.value = [];
   candidatePage.value = 0;
   engineFailed = false;
-  error.value = "";
   void ensureEngine();
 }
 function togglePinyin() {
@@ -185,12 +192,12 @@ function cycleLayout() {
   shift.value = true;
 }
 function typeKey(key: string) {
-  if (pinyin.value) {
-    if (!/^[a-z]$/.test(key)) return;
+  if (pinyin.value && /^[a-z]$/.test(key)) {
     composition.value = (composition.value + key).slice(0, 32);
     void refreshCandidates();
     return;
   }
+  if (pinyin.value) commitRaw();
   draft.value += shift.value ? key.toUpperCase() : key;
 }
 function space() {
@@ -240,14 +247,14 @@ function clear() {
   composition.value = "";
   candidates.value = [];
   candidatePage.value = 0;
-  error.value = "";
+  timeError.value = "";
 }
 function commit() {
   const field = gamepad.editing;
   if (!field) return;
   if (composition.value) commitRaw();
   if (time.value && !/^([01]\d|2[0-3]):[0-5]\d$/.test(draft.value)) {
-    error.value = "请输入 24 小时时间 (HH:mm).";
+    timeError.value = "请输入 24 小时时间 (HH:mm).";
     return;
   }
   field.value = draft.value;
@@ -280,6 +287,7 @@ function commit() {
           icon-only
           size="sm"
           data-pad-close
+          :pad-keys="['back']"
           aria-label="关闭屏幕键盘"
           @click="gamepad.editing = null"
         />
@@ -325,6 +333,7 @@ function commit() {
           <BaseButton
             variant="ghost"
             size="sm"
+            :pad-keys="['lt']"
             :disabled="candidatePage === 0"
             @click="pageCandidates(-1)"
             >上一页</BaseButton
@@ -333,13 +342,14 @@ function commit() {
           <BaseButton
             variant="ghost"
             size="sm"
+            :pad-keys="['rt']"
             :disabled="candidatePage >= pageCount - 1"
             @click="pageCandidates(1)"
             >下一页</BaseButton
           >
         </span>
       </div>
-      <p v-if="error" class="field__hint" role="alert">{{ error }}</p>
+      <p v-if="timeError" class="field__hint" role="alert">{{ timeError }}</p>
       <div class="pad-keyboard__keys">
         <div
           v-for="(row, index) in rows"
@@ -357,19 +367,18 @@ function commit() {
           >
         </div>
         <div class="pad-keyboard__row pad-keyboard__actions">
-          <BaseButton v-if="!numeric && !pinyin" @click="shift = !shift">{{
-            shift ? "小写" : "大写"
-          }}</BaseButton
-          ><BaseButton v-if="!numeric && !pinyin" @click="symbols = !symbols">{{
-            symbols ? "字母" : "符号"
-          }}</BaseButton
-          ><BaseButton v-if="pinyinAllowed" @click="togglePinyin">{{
-            pinyin ? "字母" : "拼音"
-          }}</BaseButton
+          <BaseButton
+            v-if="!numeric"
+            :pad-keys="['select']"
+            @click="cycleLayout"
+            >键盘</BaseButton
           ><BaseButton v-if="!numeric" @click="space">空格</BaseButton
-          ><BaseButton v-if="time" @click="clear">清空</BaseButton
-          ><BaseButton @click="backspace">删除</BaseButton
-          ><BaseButton variant="primary" @click="commit">完成</BaseButton>
+          ><BaseButton v-if="time" :pad-keys="['l3', 'r3']" @click="clear"
+            >清空</BaseButton
+          ><BaseButton :pad-keys="['north']" @click="backspace">删除</BaseButton
+          ><BaseButton variant="primary" :pad-keys="['start']" @click="commit"
+            >完成</BaseButton
+          >
         </div>
       </div>
     </motion.section>

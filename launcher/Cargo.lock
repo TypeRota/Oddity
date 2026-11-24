@@ -435,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "contract-gen"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "oddity-contract",
 ]
@@ -1440,7 +1440,7 @@ dependencies = [
 
 [[package]]
 name = "oddity-backend"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "oddity-contract",
  "oddity-game-fixture",
@@ -1453,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "oddity-cli"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "anyhow",
  "oddity-backend",
@@ -1463,11 +1463,11 @@ dependencies = [
 
 [[package]]
 name = "oddity-contract"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 
 [[package]]
 name = "oddity-game-fixture"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "oddity-contract",
  "oddity-runtime",
@@ -1478,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "oddity-game-nte"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "aes",
  "anyhow",
@@ -1504,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "oddity-host"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "anyhow",
  "base64",
@@ -1534,7 +1534,7 @@ dependencies = [
 
 [[package]]
 name = "oddity-platform"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "anyhow",
  "base64",
@@ -1554,7 +1554,7 @@ dependencies = [
 
 [[package]]
 name = "oddity-recovery"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "anyhow",
  "gtk",
@@ -1563,7 +1563,7 @@ dependencies = [
 
 [[package]]
 name = "oddity-runtime"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "oddity-contract",
  "serde",
@@ -2573,7 +2573,10 @@ dependencies = [
 
 [[package]]
 name = "ui-registry-gen"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
+dependencies = [
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "unicode-bidi"

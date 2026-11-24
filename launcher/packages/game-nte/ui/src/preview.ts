@@ -4,6 +4,7 @@ import type {
   CommandArgs,
   PreviewContribution,
   PreviewHandlers,
+  PlayerStateStatus,
 } from "@host/api";
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -91,14 +92,90 @@ async function fetchBulletins(
   return clone(previewBulletins);
 }
 
+const previewPlayerState: PlayerStateStatus = {
+  observation: null,
+  enabled: false,
+  state: "disabled",
+  message: null,
+  record: null,
+};
+const initialPlayerState = new URLSearchParams(window.location.search).get(
+  "playerState",
+);
+if (initialPlayerState === "waiting") {
+  previewPlayerState.enabled = true;
+  previewPlayerState.state = "waiting";
+  previewPlayerState.message = "请通过 Oddity 启动异环.";
+} else if (initialPlayerState === "error") {
+  previewPlayerState.enabled = true;
+  previewPlayerState.state = "error";
+  previewPlayerState.message =
+    "无法以当前用户权限开启游戏内同步, 已使用社区数据.";
+} else if (initialPlayerState === "capturing") startPlayerState();
+else if (
+  initialPlayerState === "unidentified" ||
+  initialPlayerState === "quiet"
+) {
+  startPlayerState();
+  if (initialPlayerState === "unidentified") {
+    previewPlayerState.observation = {
+      ...previewPlayerState.record!,
+      roleId: "",
+      roleName: "",
+      weeklyRemaining: null,
+    };
+    previewPlayerState.record = null;
+    previewPlayerState.state = "unidentified";
+    previewPlayerState.message = "已读取当前游戏资源, 正在等待角色身份.";
+  } else {
+    previewPlayerState.state = "reading";
+    previewPlayerState.message =
+      "尚未读取到新的游戏资源, 已有读数继续按时间计算.";
+  }
+}
+
+function startPlayerState(): PlayerStateStatus {
+  previewPlayerState.observation = null;
+  previewPlayerState.enabled = true;
+  previewPlayerState.state = "capturing";
+  previewPlayerState.message = null;
+  previewPlayerState.record = {
+    roleId: "100000001",
+    roleName: "鉴定师",
+    serverName: "国服",
+    stamina: 127,
+    staminaMax: 360,
+    staminaBackup: 169,
+    cityStaminaBackup: 0,
+    cityStamina: 190,
+    cityStaminaMax: 700,
+    weeklyRemaining: 2,
+    activity: 40,
+    incentiveObtained: 350000,
+    incentiveMaximum: 1150000,
+    incentivePeriodDays: 14,
+    incentiveRemaining: 1149516049,
+    updatedAt: Math.floor(Date.now() / 1000),
+  };
+  return clone(previewPlayerState);
+}
+function stopPlayerState(): PlayerStateStatus {
+  previewPlayerState.enabled = false;
+  previewPlayerState.state = "disabled";
+  previewPlayerState.message = null;
+  return clone(previewPlayerState);
+}
+
 function refreshGameRecords(): AttendanceStatus {
   previewAttendance.accounts.forEach((account, index) => {
     account.gameRecord = {
-      roleId: String(100000001 + index),
-      roleName: index ? `预览角色 ${index + 1}` : "海特洛调查员",
+      roleId: account.gameRecord?.roleId ?? String(100000001 + index),
+      roleName:
+        account.gameRecord?.roleName ||
+        (index ? `预览角色 ${index + 1}` : "鉴定师"),
       serverName: "预览服务器",
       stamina: index ? 240 : 168,
-      staminaMax: 240,
+      staminaMax: 360,
       cityStamina: index ? 180 : 420,
       cityStaminaMax: 700,
       activity: index ? 100 : 60,
@@ -249,6 +326,9 @@ function logout(args: CommandArgs["attendance_logout"]): AttendanceStatus {
  */
 export const previewCommands = {
   fetch_bulletins: fetchBulletins,
+  game_state_status: () => clone(previewPlayerState),
+  game_state_start: startPlayerState,
+  game_state_stop: stopPlayerState,
   attendance_status: () => clone(previewAttendance),
   attendance_refresh_game_records: refreshGameRecords,
   attendance_keyring_check: () => undefined,

@@ -28,7 +28,7 @@ pub use config::GameUpdateConfig;
 pub use download::{apply_plan, ApplyReport, ApplyResult};
 pub use manifest::{DiffManifest, GameManifest, LocalManifest, RemoteConfig};
 
-pub use commands::{cancel_download, download_status, set_auto_waiting_reason, start_download};
+pub use commands::{cancel_download, download_status, set_auto_waiting_reason};
 pub use state::{
     bind_host, blocks_changes, busy, is_busy, settings_gate, snapshot, DownloadStatus,
     ResourceCatalog, ResourceTask,

@@ -1,5 +1,9 @@
 #!/bin/sh
 appdir=$(dirname "$(readlink -f "$0")")
+if [ "$1" = "--cross-screen" ]; then
+  shift
+  exec "$appdir/resources/bin/nte-cli" cross-screen "$@"
+fi
 headless=0
 recovery=0
 launch=0

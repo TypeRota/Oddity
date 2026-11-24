@@ -10,7 +10,7 @@ export interface HomeCardContribution {
   readonly order: number;
   readonly component: Component;
   /** 卡片所需能力; required 不满足时卡片不挂载. */
-  readonly requires?: readonly CapabilityRequirement[];
+  readonly requires: readonly CapabilityRequirement[];
   /** 卡片可见条件; 条件不成立的卡片不挂载. */
   readonly visible: (facts: HostFacts) => boolean;
 }

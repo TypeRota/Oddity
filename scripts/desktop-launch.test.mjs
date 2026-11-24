@@ -13,6 +13,13 @@ import { test } from "node:test";
 
 for (const scenario of [
   {
+    name: "跨屏入口进入前台会话命令并保留参数",
+    args: ["--cross-screen", "run", "--game", "nte"],
+    target: "cli",
+    wayland: "wayland-test",
+    expected: ["cross-screen", "run", "--game", "nte"],
+  },
+  {
     name: "普通入口保留显示环境",
     args: [],
     target: "shell",
@@ -57,6 +64,7 @@ for (const scenario of [
       for (const [path, target] of [
         ["oddity-shell", "shell"],
         ["resources/bin/oddity-backend", "backend"],
+        ["resources/bin/nte-cli", "cli"],
         ["resources/bin/oddity-recovery", "recovery"],
       ]) {
         writeFileSync(

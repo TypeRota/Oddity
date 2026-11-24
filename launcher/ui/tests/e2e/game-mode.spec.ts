@@ -29,7 +29,17 @@ test("游戏模式分类、搜索、禁用状态与设置页布局一致", async
   const title = await panel.locator("h2").boundingBox();
   const search = await panel.getByRole("searchbox").boundingBox();
   await page.screenshot({ path: "test-results/game-mode-light.png" });
-  for (const category of ["general", "cpu", "gpu", "gamescope"]) {
+  // CPU 与 GPU 只在启用 GameMode 后生效; 预览里没有服务, 两块整分类卸载.
+  expect(
+    await panel
+      .locator("[data-category]")
+      .evaluateAll((items) =>
+        items.map((item) => (item as HTMLElement).dataset.category),
+      ),
+  ).toEqual(["general", "records", "gamescope"]);
+  await expect(panel.locator("#game-mode-panel-cpu")).toHaveCount(0);
+  await expect(panel.locator("#game-mode-panel-gpu")).toHaveCount(0);
+  for (const category of ["general", "gamescope"]) {
     await panel.locator(`[data-category="${category}"]`).click();
     const content = panel.locator(`#game-mode-panel-${category}`);
     await expect(content).toBeVisible();
@@ -38,9 +48,7 @@ test("游戏模式分类、搜索、禁用状态与设置页布局一致", async
       panel.locator(`[data-category="${category}"]`),
     ).toHaveAttribute("aria-current", "true");
     for (const control of await content
-      .locator(
-        'input[type="checkbox"], .select-trigger, .game-mode-gpu-actions .btn',
-      )
+      .locator('input[type="checkbox"], .select-trigger')
       .all())
       await expect(control).toBeDisabled();
     for (const row of await content.locator(".setting-row").all()) {
@@ -56,18 +64,13 @@ test("游戏模式分类、搜索、禁用状态与设置页布局一致", async
       });
       expect(opacity).toBeCloseTo(0.45);
     }
-    if (category === "cpu")
-      await page.screenshot({ path: "test-results/game-mode-cpu.png" });
   }
-  await panel.getByRole("searchbox").fill("显存");
-  await panel
-    .locator(".settings-result")
-    .filter({ hasText: "GPU 超频" })
-    .click();
-  await expect(panel.locator('[data-category="gpu"]')).toHaveAttribute(
-    "aria-current",
-    "true",
+  // 卸载的分类也不进入搜索索引.
+  await panel.getByRole("searchbox").fill("超频");
+  await expect(panel.locator("#game-mode-results")).toContainText(
+    "未找到相关设置",
   );
+  await panel.getByRole("searchbox").fill("");
   await expect(panel.getByRole("searchbox")).toHaveValue("");
   await panel.getByRole("searchbox").fill("不存在的设置");
   await expect(panel.locator("#game-mode-results")).toContainText(
@@ -76,11 +79,11 @@ test("游戏模式分类、搜索、禁用状态与设置页布局一致", async
   await panel.getByRole("searchbox").press("Escape");
   await expect(panel).toBeVisible();
   await expect(panel.getByRole("searchbox")).toHaveValue("");
-  await panel.locator('[data-category="gpu"]').focus();
+  await panel.locator('[data-category="gamescope"]').focus();
   await page.keyboard.press("Home");
   await expect(panel.locator('[data-category="general"]')).toBeFocused();
   await page.keyboard.press("ArrowDown");
-  await expect(panel.locator('[data-category="cpu"]')).toBeFocused();
+  await expect(panel.locator('[data-category="records"]')).toBeFocused();
   await page.keyboard.press("Control+6");
   const settings = page.locator("#page-settings");
   await expect(settings).toBeVisible();
@@ -109,12 +112,12 @@ test("游戏模式分类、搜索、禁用状态与设置页布局一致", async
   await page.screenshot({ path: "test-results/game-mode-compact.png" });
   await page.setViewportSize({ width: 900, height: 420 });
   const headingTop = (await panel.locator("h2").boundingBox())!.y;
-  await panel.locator("#game-mode-panel-cpu").hover();
+  await panel.locator("#game-mode-panel-records").hover();
   await page.mouse.wheel(0, 600);
   await expect
     .poll(() =>
       panel
-        .locator("#game-mode-panel-cpu")
+        .locator("#game-mode-panel-records")
         .evaluate((element) => element.scrollTop),
     )
     .toBeGreaterThan(0);

@@ -2,9 +2,10 @@
 import { motion, AnimatePresence, useDomRef } from "motion-v";
 import { computed, useAttrs, type Ref } from "vue";
 import { gamepad, gamepadTarget } from "../core/gamepad";
+import type { GamepadButton } from "../types/gamepad";
 import GamepadGlyph from "./GamepadGlyph.vue";
 import { useControlMotion } from "../composables/useControlMotion";
-withDefaults(
+const props = withDefaults(
   defineProps<{
     variant?: "primary" | "secondary" | "ghost" | "danger";
     size?: "sm" | "md";
@@ -13,6 +14,8 @@ withDefaults(
     busy?: boolean;
     disabled?: boolean;
     type?: "button" | "submit" | "reset";
+    /** 固定显示的快捷键, 用于随时可用而不随焦点出现的操作. */
+    padKeys?: GamepadButton[];
   }>(),
   { variant: "secondary", size: "md", type: "button" },
 );
@@ -21,6 +24,15 @@ const button = useDomRef() as Ref<HTMLButtonElement | null>;
 const attrs = useAttrs();
 const primary = computed(() => attrs["data-pad-primary"] !== undefined);
 const selected = computed(() => gamepadTarget.value === button.value);
+const keys = computed<GamepadButton[]>(
+  () => props.padKeys ?? [primary.value ? "r3" : "confirm"],
+);
+const hintVisible = computed(
+  () =>
+    (selected.value || primary.value || !!props.padKeys) &&
+    !props.disabled &&
+    !props.busy,
+);
 </script>
 <template>
   <motion.button
@@ -78,12 +90,12 @@ const selected = computed(() => gamepadTarget.value === button.value);
       v-if="gamepad.active"
       class="gamepad-button-hint"
       :animate="{
-        opacity: selected || primary ? 1 : 0,
-        scale: selected || primary ? 1 : 0.8,
+        opacity: hintVisible ? 1 : 0,
+        scale: hintVisible ? 1 : 0.8,
       }"
       :transition="control"
       aria-hidden="true"
-      ><GamepadGlyph :button="primary ? 'r3' : 'confirm'"
+      ><GamepadGlyph v-for="key in keys" :key="key" :button="key"
     /></motion.span>
   </motion.button>
 </template>

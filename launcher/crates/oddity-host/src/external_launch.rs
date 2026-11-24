@@ -23,6 +23,12 @@ pub(crate) async fn start_external_launch(
             install::display_name(&app.state.packages, &request.game)
         ));
     }
+    let stream = request
+        .cross_screen_socket
+        .as_deref()
+        .map(crate::cross_screen::connect)
+        .transpose()
+        .map_err(|e| e.to_string())?;
     let selected_app = app.clone();
     let game = request.game.clone();
     let region = request.region.clone();
@@ -43,7 +49,14 @@ pub(crate) async fn start_external_launch(
     .map_err(|e| e.to_string())??;
     let mut settings = selection.settings;
     settings.current_mut().launch_mode = request.mode.as_str().to_string();
+    if let Some((_, client)) = &stream {
+        client.apply(&mut settings);
+    }
     let result = session::start_launch(app.clone(), settings).await?;
+    if let Some((stream, _)) = stream {
+        let id = app.state.game.lock().map_err(|e| e.to_string())?.next_id;
+        crate::cross_screen::watch(app.clone(), stream, id);
+    }
     let _ = app.emit("host-hide", ());
     Ok(result)
 }
@@ -86,13 +99,22 @@ pub(crate) fn launch_failure_summary(app: &ServiceHandle, request: &cli::LaunchR
         let state = &app.state;
         let settings = state.settings.lock().ok()?;
         if let Some(value) = request.environment.as_deref() {
-            if let Some(environment) = settings
+            let environment = settings
                 .runtime_environments
                 .iter()
                 .find(|entry| entry.id == value || entry.name == value)
-                .filter(|entry| entry.game == request.game)
-            {
-                return Some(environment.distribution.clone());
+                .filter(|entry| entry.game == request.game);
+            if let Some(environment) = environment {
+                // 环境本身不带区服, 用记住它的那条渠道反推.
+                let current = settings.game(request.game.clone());
+                if let Some(channel) = channel::channels(registry, request.game.as_str())
+                    .iter()
+                    .find(|channel| {
+                        current.active_environment(channel.id) == Some(environment.id.as_str())
+                    })
+                {
+                    return Some(channel::ChannelId::new(channel.id));
+                }
             }
         }
         settings.game(request.game.clone()).distribution.clone()

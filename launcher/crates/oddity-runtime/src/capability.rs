@@ -163,6 +163,17 @@ impl CapabilityRequirement {
     }
 }
 
+/// 宿主机硬件与桌面服务事实.
+///
+/// 与具体游戏无关; 由宿主在边界探测后填入, 能力可用性只读这里, 不再自行探测.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HardwareFacts {
+    /// 系统 GameMode 调优已启用; CPU 与 GPU 调优都通过它下发.
+    pub game_mode: bool,
+    /// 存在可调优的 GPU.
+    pub gpu: bool,
+}
+
 /// 宿主/包在边界构造的只读快照; 只在装配与命令边界构造, 不长期持有.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityContext {
@@ -171,6 +182,7 @@ pub struct CapabilityContext {
     pub account_id: Option<String>,
     pub session_running: bool,
     pub launcher_present: bool,
+    pub hardware: HardwareFacts,
 }
 
 /// 可用性三态.

@@ -1,4 +1,5 @@
 import type { GameContribution, HostFacts } from "@host/api";
+import { accountGame } from "./requirements";
 
 /**
  * 异环的展示声明.
@@ -16,6 +17,8 @@ export const game = {
       ? "~/Games/Neverness To Everness Global"
       : "~/Games/Neverness To Everness",
   playtimePosterPrefix: () => "异环游玩记录",
+  // 直接启动依赖官方客户端账号能力; 求值由宿主按同一份声明完成.
+  launchModeRequires: { direct: [accountGame] },
 } as const satisfies GameContribution;
 
 /** 包公共出口; 宿主装配从生成注册表取表, 不直接引用本模块. */

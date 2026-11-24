@@ -32,10 +32,22 @@ pub struct Service<V: Vault> {
     dir: PathBuf,
     vault: V,
     client: Client,
+    /// 诊断日志目录; 没有宿主数据目录时为空, 日志随之放弃.
+    logs: PathBuf,
 }
 impl Service<KeyringVault> {
     pub fn new(dir: impl AsRef<Path>) -> Self {
+        Self::with_data_dir(dir, None)
+    }
+    /// 宿主提供数据目录时用宿主的日志目录, 否则按用户目录推导.
+    pub fn with_data_dir(dir: impl AsRef<Path>, data: Option<&Path>) -> Self {
         let dir = dir.as_ref().to_path_buf();
+        Self::with_logs(
+            dir,
+            data.map_or_else(diagnostic::logs_dir, |data| data.join("logs")),
+        )
+    }
+    fn with_logs(dir: PathBuf, logs: PathBuf) -> Self {
         let scope: String = Md5::digest(dir.as_os_str().as_encoded_bytes())
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -44,6 +56,7 @@ impl Service<KeyringVault> {
             dir,
             vault: KeyringVault::new(scope),
             client: Client::default(),
+            logs,
         }
     }
 }
@@ -294,22 +307,46 @@ impl<V: Vault> Service<V> {
         self.write(&status)?;
         Ok(status)
     }
-    fn session(&self, account: &Account) -> Result<Session> {
-        match self.client.refresh(account) {
-            Ok(s) => return Ok(s),
-            Err(e) if e.kind == FailureKind::Auth => {}
-            Err(e) => return Err(e),
+    /// 依次尝试刷新令牌、老虎会话与密码登录, 并记录每一段的结局.
+    ///
+    /// 只有会话接口自己的拒绝才继续下一段; 网络或存储故障直接返回,
+    /// 避免把临时故障当成掉登录。
+    fn session(&self, account: &Account, trigger: &str) -> Result<Session> {
+        let mut stages: Vec<(&'static str, Option<Failure>)> = Vec::new();
+        let refreshed = self.client.refresh(account);
+        match refreshed {
+            Ok(session) => {
+                self.record_session(trigger, &account.phone, &[("refresh", None)]);
+                return Ok(session);
+            }
+            Err(error) if error.kind == FailureKind::Auth => {
+                stages.push(("refresh", Some(error)));
+            }
+            Err(error) => {
+                self.record_session(trigger, &account.phone, &[("refresh", Some(error.clone()))]);
+                return Err(error);
+            }
         }
-        match self.client.user_center(
+        let centered = self.client.user_center(
             &account.laohu_token,
             &account.laohu_user_id,
             &account.device_id,
-        ) {
-            Ok(s) => return Ok(s),
-            Err(e) if e.kind == FailureKind::Auth => {}
-            Err(e) => return Err(e),
+        );
+        match centered {
+            Ok(session) => {
+                self.record_session(trigger, &account.phone, &stages);
+                return Ok(session);
+            }
+            Err(error) if error.kind == FailureKind::Auth => {
+                stages.push(("user_center", Some(error)));
+            }
+            Err(error) => {
+                stages.push(("user_center", Some(error.clone())));
+                self.record_session(trigger, &account.phone, &stages);
+                return Err(error);
+            }
         }
-        match &account.password {
+        let relogin = match &account.password {
             Some(password) => self
                 .client
                 .login(&account.phone, password, &account.device_id),
@@ -317,9 +354,23 @@ impl<V: Vault> Service<V> {
                 FailureKind::Auth,
                 "登录已失效, 请使用手机号和密码重新登录",
             )),
-        }
+        };
+        stages.push(("password", relogin.as_ref().err().cloned()));
+        self.record_session(trigger, &account.phone, &stages);
+        relogin
     }
-    fn prepare_session(&self, id: &str) -> Result<(Account, Session)> {
+    fn record_session(
+        &self,
+        trigger: &str,
+        phone: &str,
+        stages: &[(&'static str, Option<Failure>)],
+    ) {
+        diagnostic::write(
+            &self.logs,
+            &diagnostic::session_line(trigger, &mask_phone(phone), stages),
+        );
+    }
+    fn prepare_session(&self, id: &str, trigger: &str) -> Result<(Account, Session)> {
         let _lock = self.lock(true)?;
         let mut account = self
             .vault
@@ -327,7 +378,7 @@ impl<V: Vault> Service<V> {
             .into_iter()
             .find(|a| account_id(&a.phone) == id)
             .ok_or_else(|| Failure::new(FailureKind::Auth, "账号凭据不存在, 请重新登录"))?;
-        let session = self.session(&account)?;
+        let session = self.session(&account, trigger)?;
         account.uid = session.uid.clone();
         account.refresh_token = session.refresh.clone();
         account.laohu_token = session.laohu_token.clone();
@@ -382,7 +433,7 @@ impl<V: Vault> Service<V> {
         };
         for current in accounts {
             let result = self
-                .prepare_session(&current.id)
+                .prepare_session(&current.id, "records")
                 .and_then(|(account, session)| self.client.game_record(&account, &session.access));
             let _lock = self.lock(true)?;
             let mut status = self.status_locked()?;
@@ -413,22 +464,31 @@ impl<V: Vault> Service<V> {
         automatic: Option<Trigger>,
         progress: &mut dyn FnMut(TaskProgress),
     ) -> Result<Status> {
+        let trigger = automatic.map_or("manual", Trigger::name);
         let _accounts_lock = self.lock_named("accounts.lock", automatic.is_some(), true)?;
         let _task_lock = self.lock_named("attendance.lock", automatic.is_some(), false)?;
         let status = {
             let _lock = self.lock(automatic.is_some())?;
             let mut status = self.status_locked()?;
             if !status.preferences.tasks.any() {
+                self.record_skip(trigger, "no_tasks");
                 return Ok(status);
             }
-            if let Some(trigger) = automatic {
-                if matches!(trigger, Trigger::Off | Trigger::Manual)
-                    || status.preferences.trigger != trigger
-                    || status
-                        .accounts
-                        .iter()
-                        .all(|a| a.tasks_complete(&status.preferences.tasks))
+            if let Some(automatic) = automatic {
+                if matches!(automatic, Trigger::Off | Trigger::Manual) {
+                    self.record_skip(trigger, "trigger_off");
+                    return Ok(status);
+                }
+                if status.preferences.trigger != automatic {
+                    self.record_skip(trigger, "trigger_changed");
+                    return Ok(status);
+                }
+                if status
+                    .accounts
+                    .iter()
+                    .all(|a| a.tasks_complete(&status.preferences.tasks))
                 {
+                    self.record_skip(trigger, "already_complete");
                     return Ok(status);
                 }
             } else if status.accounts.is_empty() {
@@ -460,6 +520,7 @@ impl<V: Vault> Service<V> {
             })
             .count() as u64;
         let mut done = 0;
+        let mut processed = 0u64;
         for current in &status.accounts {
             if current.tasks_complete(tasks)
                 || current.attention.as_ref().is_some_and(Failure::needs_login)
@@ -467,6 +528,7 @@ impl<V: Vault> Service<V> {
                 continue;
             }
             done += 1;
+            processed += 1;
             progress(TaskProgress::new(done, total));
             let previous = current
                 .last_report
@@ -479,7 +541,7 @@ impl<V: Vault> Service<V> {
             let coin_complete = previous.as_ref().is_some_and(|r| r.coin_complete(tasks));
             let cloud_complete = previous.as_ref().is_some_and(Report::cloud_complete);
             let result = (|| -> Result<Vec<Step>> {
-                let (mut account, session) = self.prepare_session(&current.id)?;
+                let (mut account, session) = self.prepare_session(&current.id, trigger)?;
                 // 当天已成功的任务保留结果, 金币剩余次数仍以服务端为准。
                 let mut steps: Vec<Step> = if signed {
                     previous
@@ -583,13 +645,34 @@ impl<V: Vault> Service<V> {
             current.attention = report.steps.iter().filter(|s| !s.optional).find_map(|s| {
                 s.kind
                     .filter(|k| matches!(k, FailureKind::Auth | FailureKind::Verification))
-                    .map(|k| Failure::new(k, s.message.clone()))
+                    .map(|k| {
+                        let mut failure = Failure::new(k, s.message.clone());
+                        failure.business = s.business;
+                        failure.status = s.status;
+                        failure
+                    })
             });
+            diagnostic::write(
+                &self.logs,
+                &diagnostic::run_line(
+                    trigger,
+                    &current.masked_phone,
+                    &report,
+                    current.attention.as_ref(),
+                ),
+            );
             current.last_report = Some(report);
             current.refresh_day();
             self.write(&latest)?;
         }
+        diagnostic::write(
+            &self.logs,
+            &diagnostic::summary_line(trigger, status.accounts.len(), processed),
+        );
         self.status()
+    }
+    fn record_skip(&self, trigger: &str, reason: &str) {
+        diagnostic::write(&self.logs, &diagnostic::skip_line(trigger, reason));
     }
 }
 
@@ -603,10 +686,14 @@ fn validate_phone(phone: &str) -> Result<()> {
 #[cfg(test)]
 impl<V: Vault> Service<V> {
     pub(super) fn testing(dir: &Path, vault: V, base: &str) -> Self {
+        Self::testing_with_logs(dir, vault, base, dir.join("logs"))
+    }
+    pub(super) fn testing_with_logs(dir: &Path, vault: V, base: &str, logs: PathBuf) -> Self {
         Self {
             dir: dir.into(),
             vault,
             client: Client::new(base, base).without_delays(),
+            logs,
         }
     }
     pub(super) fn set_tasks(&self, tasks: TaskPermissions) {

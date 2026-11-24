@@ -1,15 +1,21 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
 import {
+  CapabilityGate,
   form,
   hostFacts,
+  playerFacts,
+  playerActions,
   migrationBusy,
   queueSettingsSave,
   runtimeEnvironmentBusy,
   runtimePathsLocked,
   settingsPathsLocked,
+  useCapabilityActive,
   type MeteredPolicy,
 } from "@host/api";
+import { accountGame, playerProfile } from "../../requirements";
+import BackgroundLibrary from "./BackgroundLibrary.vue";
 import {
   BaseButton,
   BaseInput,
@@ -22,7 +28,31 @@ import {
   SettingRow,
 } from "@host/ui-kit";
 
+const live = playerFacts.live;
+const syncEnabled = computed({
+  get: () => live.value.enabled,
+  set: (enabled: boolean) => {
+    void (enabled ? playerActions.startLive() : playerActions.stopLive());
+  },
+});
+const syncDescription = computed(() => {
+  return live.value.message || "读取游戏内状态, 并计算体力恢复与每周刷新.";
+});
+let liveTimer: ReturnType<typeof setInterval>;
+const playerProfileActive = useCapabilityActive([playerProfile]);
+onMounted(() => {
+  if (!playerProfileActive.value) return;
+  void playerActions.refreshLive();
+  liveTimer = setInterval(() => {
+    if (live.value.enabled) void playerActions.refreshLive();
+  }, 1000);
+});
+onBeforeUnmount(() => clearInterval(liveTimer));
+watch(playerProfileActive, (active) => {
+  if (active) void playerActions.refreshLive();
+});
 const gameAccountsOpen = ref(false);
+const backgroundOpen = ref(false);
 const distributionOptions = computed(() =>
   hostFacts.channels.value.map((channel) => ({
     label: channel.label,
@@ -57,9 +87,8 @@ const distributionModel = computed({
     form.distribution = value;
   },
 });
-const directSupported = computed(
-  () => form.distribution === "cn" && hostFacts.game.value === "nte",
-);
+// 直接启动依赖官方客户端账号能力; 选项是数据而非挂载点, 用同一份声明求值.
+const accountActive = useCapabilityActive([accountGame]);
 const launchOptions = computed(() => [
   {
     label: "后台启动 (推荐)",
@@ -71,13 +100,18 @@ const launchOptions = computed(() => [
     value: "official",
     hint: "显示官方窗口, 请从该窗口点击启动游戏.",
   },
-  {
-    label: "直接启动",
-    value: "direct",
-    hint: "使用所选游戏账号登录并直接启动游戏. 目前仅支持国服.",
-    disabled: !directSupported.value,
-  },
+  ...(accountActive.value
+    ? [
+        {
+          label: "直接启动",
+          value: "direct",
+          hint: "使用所选游戏账号登录并直接启动游戏.",
+          disabled: false,
+        },
+      ]
+    : []),
 ]);
+
 const launchModeHint = computed(
   () =>
     launchOptions.value.find((option) => option.value === form.launchMode)
@@ -244,20 +278,44 @@ const meteredPolicy = computed({
         @change="queueSettingsSave('game', 0)"
     /></SettingRow>
     <SettingRow
-      data-setting="game-account"
+      data-setting="background"
       tabindex="-1"
-      label="游戏账号"
-      :description="
-        directSupported
-          ? '用于下次直接启动, 与塔吉多账号分别保存.'
-          : '游戏账号登录目前仅支持《异环》国服.'
-      "
+      label="背景素材"
+      description="归档并切换启动页背景视频与壁纸."
     >
-      <BaseButton :disabled="!directSupported" @click="gameAccountsOpen = true"
-        >管理游戏账号</BaseButton
-      >
+      <BaseButton @click="backgroundOpen = true">管理背景素材</BaseButton>
     </SettingRow>
+    <CapabilityGate :requires="[accountGame]">
+      <SettingRow
+        data-setting="game-account"
+        tabindex="-1"
+        label="游戏账号"
+        description="用于下次直接启动, 与塔吉多账号分别保存."
+      >
+        <BaseButton @click="gameAccountsOpen = true">管理游戏账号</BaseButton>
+      </SettingRow>
+    </CapabilityGate>
   </SettingGroup>
+  <CapabilityGate :requires="[playerProfile]">
+    <SettingGroup title="玩家信息">
+      <SettingRow
+        data-setting="player-state"
+        tabindex="-1"
+        label="游戏内同步"
+        for="set-player-state-sync"
+        :description="syncDescription"
+        v-slot="{ describedby }"
+      >
+        <BaseSwitch
+          id="set-player-state-sync"
+          v-model="syncEnabled"
+          label="游戏内同步"
+          :describedby="describedby"
+          :disabled="playerFacts.liveBusy.value"
+        />
+      </SettingRow>
+    </SettingGroup>
+  </CapabilityGate>
   <SettingGroup title="资源更新">
     <div class="settings-path" data-setting="preload-dir" tabindex="-1">
       <DirectoryField
@@ -358,6 +416,7 @@ const meteredPolicy = computed({
       />
     </SettingRow>
   </SettingGroup>
+  <BackgroundLibrary v-model:open="backgroundOpen" />
   <GameAccountDialog
     v-model:open="gameAccountsOpen"
     :selected="form.gameAccountId"

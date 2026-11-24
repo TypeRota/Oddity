@@ -72,7 +72,7 @@ export function contributionActive(
  */
 export function contributionVisible<F extends CapabilityFacts>(
   contribution: {
-    readonly requires?: readonly CapabilityRequirement[];
+    readonly requires: readonly CapabilityRequirement[];
     readonly visible: (facts: F) => boolean;
   },
   facts: F,

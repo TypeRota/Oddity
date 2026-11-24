@@ -60,6 +60,7 @@ src_install() {
 }
 
 pkg_postinst() {
+	optfeature "sync in-game player state with dumpcap" net-analyzer/wireshark
 	optfeature "run the game through Proton" games-util/umu-launcher
 	xdg_pkg_postinst
 }

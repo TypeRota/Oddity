@@ -72,6 +72,11 @@ fn launcher_root_is_absent_when_the_game_is_not_installed() {
 }
 
 #[test]
+fn data_dir_is_absent_unless_the_host_provides_one() {
+    assert_eq!(TestHost::new().data_dir(), None);
+}
+
+#[test]
 fn events_carry_declared_ids_and_payloads() {
     let host = TestHost::new();
     host.emit("game-download-state", json!({"phase": "ready"}))

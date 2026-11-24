@@ -8,6 +8,7 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{ErrorKind, Write};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// 单个游戏的设置. 渠道与安装目录随游戏走, 其余偏好保持全局.
@@ -25,8 +26,10 @@ pub struct GameSettings {
     pub game_account_id: Option<String>,
     pub game_mode: crate::game_mode::Options,
     pub updates: crate::updates::Options,
-    pub active_environment: Option<String>,
-    pub stable_environment: Option<String>,
+    /// 按区服记住的当前运行环境; 键是渠道 id.
+    pub active_environments: BTreeMap<String, String>,
+    /// 按区服记住的稳定运行环境.
+    pub stable_environments: BTreeMap<String, String>,
 }
 
 impl Default for GameSettings {
@@ -40,8 +43,8 @@ impl Default for GameSettings {
             game_account_id: None,
             game_mode: crate::game_mode::Options::default(),
             updates: crate::updates::Options::default(),
-            active_environment: None,
-            stable_environment: None,
+            active_environments: BTreeMap::new(),
+            stable_environments: BTreeMap::new(),
         }
     }
 }
@@ -56,6 +59,41 @@ impl GameSettings {
     /// 指定安装根键对应的安装目录.
     pub fn install_root_for_key(&self, key: &str) -> Option<&str> {
         self.install_roots.get(key).map(String::as_str)
+    }
+
+    /// 该区服记住的当前运行环境.
+    pub fn active_environment(&self, channel: &str) -> Option<&str> {
+        self.active_environments.get(channel).map(String::as_str)
+    }
+
+    /// 该区服记住的稳定运行环境.
+    pub fn stable_environment(&self, channel: &str) -> Option<&str> {
+        self.stable_environments.get(channel).map(String::as_str)
+    }
+
+    /// 记住该区服的当前运行环境; 传 None 表示该区服不再选择环境.
+    pub fn set_active_environment(&mut self, channel: &str, id: Option<&str>) {
+        match id {
+            Some(id) => {
+                self.active_environments
+                    .insert(channel.to_string(), id.to_string());
+            }
+            None => {
+                self.active_environments.remove(channel);
+            }
+        }
+    }
+
+    pub fn set_stable_environment(&mut self, channel: &str, id: Option<&str>) {
+        match id {
+            Some(id) => {
+                self.stable_environments
+                    .insert(channel.to_string(), id.to_string());
+            }
+            None => {
+                self.stable_environments.remove(channel);
+            }
+        }
     }
 }
 
@@ -129,6 +167,20 @@ impl Settings {
     /// 指定游戏的设置; 尚未写入时使用默认值.
     pub fn game(&self, game: GameId) -> &GameSettings {
         self.games.get(&game).unwrap_or(GameSettings::fallback())
+    }
+
+    pub(crate) fn game_pairs<'a>(
+        &'a self,
+        next: &'a Self,
+    ) -> impl Iterator<Item = (&'a GameSettings, &'a GameSettings)> {
+        self.games
+            .keys()
+            .chain(
+                next.games
+                    .keys()
+                    .filter(|game| !self.games.contains_key(*game)),
+            )
+            .map(|game| (self.game(game.clone()), next.game(game.clone())))
     }
 
     pub fn game_mut(&mut self, game: GameId) -> &mut GameSettings {
@@ -271,7 +323,7 @@ const LEGACY_KEYS: [&str; 9] = [
     "stableEnvironment",
 ];
 
-/// 把旧形状的设置值迁移到当前字段; 返回是否发生改动.
+/// 顶层迁移只处理 0.1 的字段; 0.2 的单值环境选择由 [migrate_environments] 处理.
 ///
 /// 0.1 的顶层游戏字段移入 `games.nte`, 每个游戏的 `installRoot` /
 /// `globalInstallRoot` 移入按安装根键保存的 `installRoots`, 渠道 id 去空白
@@ -280,7 +332,86 @@ pub(crate) fn migrate_value(value: &mut Value) -> bool {
     let top_level = migrate_top_level(value);
     let install_roots = migrate_install_roots(value);
     let distributions = normalize_distributions(value);
-    top_level || install_roots || distributions
+    let environments = migrate_environments(value);
+    top_level || install_roots || distributions || environments
+}
+
+/// 把按区服记的运行环境选择拆成映射, 并从环境记录里去掉已解绑的区服.
+///
+/// 旧数据只有单个当前/稳定环境, 按环境当时绑定的区服归位.
+fn migrate_environments(value: &mut Value) -> bool {
+    let mut channels = std::collections::HashMap::new();
+    let mut environments = Vec::new();
+    if let Some(entries) = value.get("runtimeEnvironments").and_then(Value::as_array) {
+        for entry in entries {
+            let Some(object) = entry.as_object() else {
+                continue;
+            };
+            let Some(id) = object.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let channel = object
+                .get("distribution")
+                .and_then(Value::as_str)
+                .map(|channel| channel.trim().to_ascii_lowercase());
+            if let Some(channel) = channel {
+                channels.insert(id.to_string(), channel);
+            }
+            environments.push(id.to_string());
+        }
+    }
+    let mut changed = false;
+    if let Some(entries) = value
+        .get_mut("runtimeEnvironments")
+        .and_then(Value::as_array_mut)
+    {
+        for entry in entries {
+            if let Some(object) = entry.as_object_mut() {
+                if object.remove("distribution").is_some() {
+                    changed = true;
+                }
+            }
+        }
+    }
+    if let Some(games) = value.get_mut("games").and_then(Value::as_object_mut) {
+        for settings in games.values_mut() {
+            let Some(object) = settings.as_object_mut() else {
+                continue;
+            };
+            let stored = object
+                .get("distribution")
+                .and_then(Value::as_str)
+                .map(|channel| channel.trim().to_ascii_lowercase());
+            for (legacy, current) in [
+                ("activeEnvironment", "activeEnvironments"),
+                ("stableEnvironment", "stableEnvironments"),
+            ] {
+                let Some(raw) = object.remove(legacy) else {
+                    continue;
+                };
+                changed = true;
+                let Some(id) = raw.as_str() else {
+                    continue;
+                };
+                if !environments.iter().any(|entry| entry == id) {
+                    continue;
+                }
+                let Some(channel) = channels.get(id).cloned().or_else(|| stored.clone()) else {
+                    continue;
+                };
+                let map = object
+                    .entry(current.to_string())
+                    .or_insert_with(|| Value::Object(Default::default()));
+                if !map.is_object() {
+                    *map = Value::Object(Default::default());
+                }
+                if let Some(map) = map.as_object_mut() {
+                    map.insert(channel, Value::String(id.to_string()));
+                }
+            }
+        }
+    }
+    changed
 }
 
 /// 把 0.1 的顶层游戏字段移入 `games.nte`. 已有的 `games` 数据优先.
@@ -414,13 +545,27 @@ fn has_legacy_shape(value: &Value) -> bool {
     if LEGACY_KEYS.iter().any(|key| object.contains_key(*key)) {
         return true;
     }
+    if object
+        .get("runtimeEnvironments")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry.get("distribution").is_some())
+        })
+    {
+        return true;
+    }
     object
         .get("games")
         .and_then(Value::as_object)
         .is_some_and(|games| {
             games.values().any(|game| {
                 game.as_object().is_some_and(|game| {
-                    game.contains_key("installRoot") || game.contains_key("globalInstallRoot")
+                    game.contains_key("installRoot")
+                        || game.contains_key("globalInstallRoot")
+                        || game.contains_key("activeEnvironment")
+                        || game.contains_key("stableEnvironment")
                 })
             })
         })
@@ -488,11 +633,15 @@ pub enum SettingsOwner {
 }
 
 /// 一个 owner 更新后的视图.
+///
+/// 设置改动可能改变上下文, 因此一并回传重新求值的能力事实, 让界面按同一份
+/// 数据决定挂载, 不必等下一次 bootstrap.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsSection {
     pub owner: String,
     pub fields: Value,
+    pub capabilities: Vec<crate::bootstrap::CapabilityFact>,
 }
 
 /// 宿主 owner 可以写的字段; `games` 属于游戏 owner.
@@ -523,8 +672,8 @@ const GAME_FIELDS: [&str; 10] = [
     "gameAccountId",
     "gameMode",
     "updates",
-    "activeEnvironment",
-    "stableEnvironment",
+    "activeEnvironments",
+    "stableEnvironments",
 ];
 
 impl SettingsOwner {
@@ -568,6 +717,7 @@ impl SettingsOwner {
             return Ok(SettingsSection {
                 owner: self.id(),
                 fields: Value::Object(values),
+                capabilities: Vec::new(),
             });
         }
         let fields = match self {
@@ -592,6 +742,7 @@ impl SettingsOwner {
         Ok(SettingsSection {
             owner: self.id(),
             fields,
+            capabilities: Vec::new(),
         })
     }
 
@@ -761,28 +912,108 @@ pub(crate) fn load_with_schemas(registry: &Registry) -> Settings {
 }
 
 pub(crate) fn persist(settings: &Settings) -> Result<(), String> {
+    persist_from(settings, "settings")
+}
+
+/// 保存设置; `source` 只用于历史快照文件名, 便于追溯改动来源.
+pub(crate) fn persist_from(settings: &Settings, source: &str) -> Result<(), String> {
     let dir = crate::paths::config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let path = crate::paths::settings_path();
     // 迁移写盘失败后第一次保存会覆盖旧文件, 这里先把原始内容补备份.
     backup_legacy(&path).map_err(|error| format!("备份旧设置失败: {error}"))?;
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    let tmp = dir.join("settings.json.tmp");
-    fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    fs::rename(&tmp, &path).map_err(|e| format!("rename settings: {e}"))?;
+    if let Ok(previous) = fs::read(&path) {
+        if previous != text.as_bytes() {
+            // 历史快照失败不影响主设置保存.
+            if let Err(error) = write_history(&dir, &previous, source) {
+                eprintln!("保存设置历史失败: {error}");
+            }
+        }
+    }
+    let mut temp = oddity_platform::paths::TemporaryFile::with_mode(&path, 0o600)
+        .map_err(|error| format!("write {}: {error}", path.display()))?;
+    temp.file
+        .write_all(text.as_bytes())
+        .map_err(|error| format!("write {}: {error}", path.display()))?;
+    temp.commit(&path, &|| false)
+        .map_err(|error| format!("rename settings: {error}"))?;
     Ok(())
 }
 
-/// 下载任务只依赖当前游戏的渠道和各安装根键下的目录.
-pub(crate) fn download_paths_changed(current: &Settings, next: &Settings) -> bool {
-    if current.active_game != next.active_game {
-        return true;
+/// 历史目录保留的快照份数.
+const HISTORY_LIMIT: usize = 10;
+
+/// 把改动前的设置写入历史快照并清理过期文件.
+fn write_history(dir: &Path, previous: &[u8], source: &str) -> Result<(), String> {
+    let history = dir.join("settings-history");
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .recursive(true)
+        .create(&history)
+        .map_err(|error| format!("create {}: {error}", history.display()))?;
+    // 历史快照只对当前用户开放.
+    fs::set_permissions(&history, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("chmod {}: {error}", history.display()))?;
+    let source: String = source
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect();
+    let mut stamp = crate::now_millis();
+    let snapshot = loop {
+        let candidate = history.join(format!("settings-{stamp}-{source}.json"));
+        if !candidate
+            .try_exists()
+            .map_err(|error| format!("check {}: {error}", candidate.display()))?
+        {
+            break candidate;
+        }
+        stamp = stamp.saturating_add(1);
+    };
+    let mut temp = oddity_platform::paths::TemporaryFile::with_mode(&snapshot, 0o600)
+        .map_err(|error| format!("write {}: {error}", snapshot.display()))?;
+    temp.file
+        .write_all(previous)
+        .map_err(|error| format!("write {}: {error}", snapshot.display()))?;
+    temp.commit(&snapshot, &|| false)
+        .map_err(|error| format!("rename settings: {error}"))?;
+    rotate_history(&history);
+    Ok(())
+}
+
+fn rotate_history(history: &Path) {
+    let Ok(entries) = fs::read_dir(history) else {
+        return;
+    };
+    let mut snapshots: Vec<(std::time::SystemTime, String)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            if !name.starts_with("settings-") || !name.ends_with(".json") {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, name))
+        })
+        .collect();
+    // 按写入时间判断新旧, 文件名里的时间戳只作为同一时刻的次级顺序.
+    snapshots.sort();
+    let excess = snapshots.len().saturating_sub(HISTORY_LIMIT);
+    for (_, name) in &snapshots[..excess] {
+        let path = history.join(name);
+        if let Err(error) = fs::remove_file(&path) {
+            eprintln!("清理设置历史失败: {}: {error}", path.display());
+        }
     }
-    let current = current.current();
-    let next = next.current();
-    current.distribution != next.distribution
-        || current.install_roots != next.install_roots
-        || current.preload_root != next.preload_root
+}
+
+/// 比较每个游戏的下载目标, 不受浏览选择影响.
+pub(crate) fn download_paths_changed(current: &Settings, next: &Settings) -> bool {
+    current.game_pairs(next).any(|(before, after)| {
+        before.distribution != after.distribution
+            || before.install_roots != after.install_roots
+            || before.preload_root != after.preload_root
+    })
 }
 
 /// 校验设置边界并把越界值收敛到默认值.
@@ -838,7 +1069,6 @@ pub(crate) fn update_settings_section(
     let mut current = state.settings.lock().map_err(|error| error.to_string())?;
     let mut next = current.clone();
     owner.merge(&mut next, &patch, &schemas)?;
-    normalize_settings(&mut next, &state.packages)?;
     let game = state.game.lock().map_err(|error| error.to_string())?;
     let busy = game.migration_busy
         || crate::migration_commands::repair_pending()
@@ -848,19 +1078,33 @@ pub(crate) fn update_settings_section(
             .session
             .as_ref()
             .is_some_and(|session| session.closing || crate::session::session_alive(session));
+    if busy && current.active_game != next.active_game {
+        return Err("游戏或运行环境任务正在进行, 暂时无法切换游戏".into());
+    }
     crate::environment_commands::validate_settings_change(&current, &next, busy)?;
     if download_gates.iter().any(|gate| gate.blocks_changes())
         && download_paths_changed(&current, &next)
     {
         return Err("游戏资源任务正在进行, 暂时无法修改游戏地区或安装目录".into());
     }
-    let section = owner.view(&next, &schemas)?;
+    normalize_settings(&mut next, &state.packages)?;
+    let mut section = owner.view(&next, &schemas)?;
     // 先落盘再更新内存: 写入失败时原文件与内存中的设置都保持原样.
-    persist(&next)?;
+    persist_from(&next, &format!("update-{}", owner.id()))?;
     app.audio.preferences(next.current().audio.clone());
     *current = next;
     drop(game);
     drop(current);
+    // 写入后再求值: 这一次改动可能改变了 GameMode 开关等上下文.
+    if let Ok(activity) = crate::host::activity_snapshot(app) {
+        let settings = state
+            .settings
+            .lock()
+            .map(|settings| settings.clone())
+            .unwrap_or_default();
+        section.capabilities =
+            crate::bootstrap::capability_facts(&state.packages, &settings, &activity);
+    }
     Ok(section)
 }
 
@@ -941,21 +1185,27 @@ mod tests {
         settings.current_mut().launch_mode = "direct".into();
         settings.current_mut().game_mode.performance = true;
         settings.current_mut().updates.auto_download = true;
-        settings.current_mut().active_environment = Some("a".repeat(32));
-        settings.current_mut().stable_environment = Some("b".repeat(32));
+        settings
+            .current_mut()
+            .set_active_environment("cn", Some("a".repeat(32).as_str()));
+        settings
+            .current_mut()
+            .set_stable_environment("cn", Some("b".repeat(32).as_str()));
         let nte = settings.current().clone();
 
         settings.active_game = GameId::from("hsr");
         assert_eq!(settings.current().launch_mode, "background");
         assert!(!settings.current().game_mode.performance);
         assert!(!settings.current().updates.auto_download);
-        assert!(settings.current().active_environment.is_none());
-        assert!(settings.current().stable_environment.is_none());
+        assert!(settings.current().active_environment("cn").is_none());
+        assert!(settings.current().stable_environment("cn").is_none());
 
         settings.current_mut().launch_mode = "official".into();
         settings.current_mut().game_mode.inhibit = true;
         settings.current_mut().updates.auto_download = false;
-        settings.current_mut().active_environment = Some("c".repeat(32));
+        settings
+            .current_mut()
+            .set_active_environment("cn", Some("c".repeat(32).as_str()));
         settings.active_game = GameId::from("nte");
         assert_eq!(settings.current(), &nte);
     }
@@ -990,14 +1240,9 @@ mod tests {
         assert!(game.game_mode.inhibit);
         assert!(game.updates.auto_download);
         assert_eq!(game.updates.metered, crate::updates::MeteredPolicy::Allow);
-        assert_eq!(
-            game.active_environment.as_deref(),
-            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-        );
-        assert_eq!(
-            game.stable_environment.as_deref(),
-            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-        );
+        // 旧文件没有对应的环境记录, 悬空的选择不能带进映射.
+        assert!(game.active_environment("global").is_none());
+        assert!(game.stable_environment("global").is_none());
 
         // 迁移前备份原始字节, 迁移后保留未知字段并移除旧键.
         assert_eq!(fs::read(dir.join("settings.json.bak")).unwrap(), original);
@@ -1011,6 +1256,8 @@ mod tests {
         assert!(value.get("updates").is_none());
         assert!(value.get("activeEnvironment").is_none());
         assert!(value.get("stableEnvironment").is_none());
+        assert!(value["games"]["nte"]["activeEnvironment"].is_null());
+        assert!(value["games"]["nte"]["stableEnvironment"].is_null());
         assert_eq!(value["games"]["nte"]["launchMode"], "direct");
         assert_eq!(value["games"]["nte"]["gameMode"]["inhibit"], true);
         assert_eq!(value["futureOption"], 7);
@@ -1041,6 +1288,62 @@ mod tests {
             "/games/global"
         );
         assert_eq!(value["games"]["nte"]["distribution"], "global");
+    }
+
+    #[test]
+    fn recorded_selections_migrate_to_the_channel_their_environment_used() {
+        let dir = TempDir::new("settings-environments-migrate");
+        let original: &[u8] = br#"{
+            "games": {
+                "nte": {
+                    "distribution": "cn",
+                    "activeEnvironment": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "stableEnvironment": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                }
+            },
+            "runtimeEnvironments": [
+                {
+                    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "name": "cn environment",
+                    "proton": {"path": "/proton/a", "identity": "a"},
+                    "installRoot": "/games/cn",
+                    "distribution": "cn",
+                    "createdAt": 1
+                },
+                {
+                    "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "name": "global environment",
+                    "proton": {"path": "/proton/b", "identity": "b"},
+                    "installRoot": "/games/global",
+                    "distribution": "global",
+                    "createdAt": 1
+                }
+            ]
+        }"#;
+        let path = write_settings(&dir, std::str::from_utf8(original).unwrap());
+
+        let settings = Settings::load(&path).unwrap();
+        let game = settings.current();
+        assert_eq!(
+            game.active_environment("cn"),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            game.stable_environment("global"),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+        assert!(game.active_environment("global").is_none());
+        assert!(game.stable_environment("cn").is_none());
+        assert_eq!(fs::read(dir.join("settings.json.bak")).unwrap(), original);
+        let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(value["runtimeEnvironments"][0]
+            .get("distribution")
+            .is_none());
+        assert!(value["games"]["nte"].get("activeEnvironment").is_none());
+        assert_eq!(
+            value["games"]["nte"]["activeEnvironments"]["cn"],
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
     }
 
     #[test]
@@ -1356,6 +1659,65 @@ mod tests {
         let expected: Value =
             serde_json::from_str(include_str!("tests/data/settings_multi_game.json")).unwrap();
         assert_eq!(serde_json::to_value(settings).unwrap(), expected);
+    }
+
+    #[test]
+    fn saving_settings_keeps_changed_content_in_bounded_history() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut env = crate::tests::EnvGuard::new();
+        let dir = TempDir::new("settings-history");
+        env.set("XDG_CONFIG_HOME", dir.path());
+        let history = dir.join("oddity").join("settings-history");
+        let path = dir.join("oddity").join("settings.json");
+
+        let mut settings = Settings::default();
+        persist_from(&settings, "update-host").unwrap();
+        assert!(!history.exists());
+
+        settings.theme = "dark".into();
+        persist_from(&settings, "update-game:nte").unwrap();
+        let names: Vec<String> = fs::read_dir(&history)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names.len(), 1);
+        assert!(names[0].starts_with("settings-"), "{}", names[0]);
+        assert!(names[0].ends_with("-update-game-nte.json"), "{}", names[0]);
+        // 历史目录只对当前用户开放.
+        let mode = fs::metadata(&history).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        let previous: Value =
+            serde_json::from_slice(&fs::read(history.join(&names[0])).unwrap()).unwrap();
+        assert_eq!(previous["theme"], "light");
+
+        // 内容不变时不追加快照.
+        persist_from(&settings, "update-game:nte").unwrap();
+        assert_eq!(fs::read_dir(&history).unwrap().count(), 1);
+
+        // 每次内容变化留一份快照, 只保留最近 10 份.
+        let mut themes = Vec::new();
+        for index in 0..12 {
+            themes.push(settings.theme.clone());
+            settings.theme = if index % 2 == 0 { "light" } else { "dark" }.into();
+            persist_from(&settings, "migration").unwrap();
+        }
+        let mut names: Vec<String> = fs::read_dir(&history)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), HISTORY_LIMIT);
+        let newest: Value =
+            serde_json::from_slice(&fs::read(history.join(names.last().unwrap())).unwrap())
+                .unwrap();
+        assert_eq!(newest["theme"], themes[11]);
+
+        // 设置主文件与历史快照都不对组内其他用户开放.
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let snapshot = fs::metadata(history.join(names.last().unwrap())).unwrap();
+        assert_eq!(snapshot.permissions().mode() & 0o777, 0o600);
     }
 }
 

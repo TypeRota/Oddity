@@ -12,6 +12,7 @@ export const pages = [
     slot: "drawer",
     order: 8,
     nav: { label: "测试页", icon: "terminal-window" },
+    requires: [],
     visible: (facts: HostFacts) => facts.activeGame === "fixture",
   },
 ] as const satisfies readonly PageEntry[];

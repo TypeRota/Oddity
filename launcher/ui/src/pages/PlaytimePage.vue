@@ -44,8 +44,12 @@ const hasRecords = computed(() => stats.value.sessionCount > 0);
 const posterPrefix = computed(() =>
   playtimePosterPrefix(factsFrom(state.bootstrap)),
 );
+// 读取失败且没有历史数据时同样落在这个空态, 由文案与按钮区分.
 const empty = computed(
-  () => playtime.loaded && !playtime.loading && !hasRecords.value,
+  () =>
+    !playtime.loading &&
+    !hasRecords.value &&
+    (playtime.loaded || Boolean(playtime.error)),
 );
 const summary = computed(() => [
   { label: "累计游玩", value: formatPlaytime(stats.value.totalMs) },
@@ -135,13 +139,6 @@ const isActive = computed(() => state.page === "records");
 
     <template v-if="rendered">
       <div class="playtime-content">
-        <div v-if="playtime.error" class="playtime-error" role="status">
-          <span>{{ playtime.error }}</span>
-          <BaseButton variant="ghost" size="sm" @click="refresh"
-            >重试</BaseButton
-          >
-        </div>
-
         <PlaytimeActive
           v-if="stats.active && state.game === 'running'"
           :active="stats.active"
@@ -188,10 +185,13 @@ const isActive = computed(() => state.page === "records");
 
         <section v-else-if="empty" class="playtime-empty panel">
           <svg class="icon" aria-hidden="true"><use href="#i-clock" /></svg>
-          <h3>还没有游玩记录</h3>
-          <p>通过 Oddity 启动游戏后, 这里会记录每次游玩时间.</p>
-          <BaseButton variant="ghost" @click="showPage('home')"
-            >返回启动页</BaseButton
+          <h3>{{ playtime.error ? "游玩记录读取失败" : "还没有游玩记录" }}</h3>
+          <p v-if="playtime.error">原因已显示在通知中, 可以重试读取.</p>
+          <p v-else>通过 Oddity 启动游戏后, 这里会记录每次游玩时间.</p>
+          <BaseButton
+            :variant="playtime.error ? 'primary' : 'ghost'"
+            @click="playtime.error ? refresh() : showPage('home')"
+            >{{ playtime.error ? "重试" : "返回启动页" }}</BaseButton
           >
         </section>
       </div>
@@ -224,18 +224,6 @@ const isActive = computed(() => state.page === "records");
   flex-direction: column;
   gap: 16px;
   padding-bottom: 24px;
-}
-.playtime-error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  border: 1px solid var(--danger-line);
-  border-radius: var(--r-control);
-  background: var(--danger-fill);
-  color: var(--danger);
-  font-size: var(--text-sm);
 }
 .playtime-summary {
   display: grid;

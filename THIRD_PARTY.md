@@ -16,11 +16,25 @@ Oddity 的代码使用 [GPL-3.0-or-later](LICENSE). 下列组件保留各自许�
 
 Rust 依赖见 [Cargo.lock](launcher/Cargo.lock), 许可证检查配置见 [deny.toml](launcher/deny.toml).
 
+UI 注册表生成器使用 [Syn](https://github.com/dtolnay/syn) 读取 Rust 能力声明, 许可证为 MIT / Apache-2.0.
+
 游戏差分补丁使用 [hdiffpatch-rs](https://github.com/TwintailTeam/hdiffpatch-rs), 许可证为 MIT.
 
 音频设备与游戏播放流控制使用 [libpulse-binding](https://github.com/jnqnfe/pulse-binding-rust), 许可证为 MIT / Apache-2.0; 通过系统 libpulse 连接 PulseAudio 或 pipewire-pulse. 设备和播放流分别管理的设计参考 [pulsemixer](https://github.com/GeorgeFilipkin/pulsemixer) (MIT), 未复制其代码.
 
 音频启动环境中的 `target.object` 属性用于让 Easy Effects 保留游戏的独立路由, 依据其 [播放流目标识别逻辑](https://github.com/wwmm/easyeffects/blob/master/src/pw_node_manager.cpp); 未复制其代码.
+
+## 手柄支持
+
+| 组件                                                                                      | 用途                                                                 | 许可证                                                                                          |
+| ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [SDL3](https://github.com/libsdl-org/SDL) 3.4.18                                          | 手柄识别, 事件泵, 振动与自适应扳机报文, 音圈触觉播流; 构建时静态链接 | [zlib](https://github.com/libsdl-org/SDL/blob/release-3.4.18/LICENSE.txt)                       |
+| [sdl3-rs](https://github.com/vhspace/sdl3-rs) 0.20.0                                      | SDL3 的 Rust 绑定                                                    | [MIT](https://github.com/vhspace/sdl3-rs/blob/master/LICENSE)                                   |
+| [HIDAPI](https://github.com/libusb/hidapi)                                                | SDL3 源码内置的 HID 驱动, 用于 DualSense 的 hidraw 读写              | [BSD-3-Clause](https://github.com/libusb/hidapi/blob/master/LICENSE-bsd.txt) 或 HIDAPI 原版许可 |
+| [DualSense 扳机效果研究](https://gist.github.com/Nielk1/6d54cc2c00d2201ccb8c2720ad7538db) | `Trigger::bytes` 的 11 字节扳机分区, 频率与强度编码                  | [MIT](launcher/ui/public/assets/gamepad/LICENSE.txt)                                            |
+| [Kenney Input Prompts](https://kenney.nl/assets/input-prompts)                            | 按键图标精灵 `launcher/ui/public/assets/gamepad/prompts.svg`         | [CC0 1.0](launcher/ui/public/assets/gamepad/LICENSE.txt)                                        |
+
+设备识别与事件泵位于 `launcher/crates/oddity-host/src/gamepad_commands.rs`. 资产与参考来源同见 [gamepad/LICENSE.txt](launcher/ui/public/assets/gamepad/LICENSE.txt).
 
 ## 拼音词库
 
@@ -60,6 +74,15 @@ Rust 依赖见 [Cargo.lock](launcher/Cargo.lock), 许可证检查配置见 [deny
 
 只参考阶段划分和交互边界, 未引入其 Sophon 依赖, 也未复制代码.
 
+## 只读网络解析参考
+
+| 用途 | 来源与参考提交 | 许可证 |
+| --- | --- | --- |
+| Unreal Bunch, 分片与名字序列化 | [FortniteReplayDecompressor](https://github.com/Shiqan/FortniteReplayDecompressor/tree/76f74c1f640069afdba71b6468e2f819327893c2) | [MIT](https://github.com/Shiqan/FortniteReplayDecompressor/blob/76f74c1f640069afdba71b6468e2f819327893c2/LICENSE) |
+| 通知头与可选 packet-info | [utcp](https://github.com/dpull/utcp/tree/12c17d05f782a956a05aeac7534c6918e9a6c128) | [MIT](https://github.com/dpull/utcp/blob/12c17d05f782a956a05aeac7534c6918e9a6c128/LICENSE) |
+
+用于核对协议边界, 未引入运行时依赖. 游戏专属字段由被动捕获样本核对.
+
 ## Electron 运行时
 
 图形界面使用 Electron 44 (MIT), 其中的 Chromium、Node.js 与 FFmpeg 使用各自许可. 发行目录保留 Electron 的 `LICENSE` 与完整 `LICENSES.chromium.html`; Oddity 的 GPL-3.0-or-later 许可证位于 `LICENSE.oddity`.
@@ -87,3 +110,11 @@ SVG 转 PNG 使用 [resvg](https://github.com/linebender/resvg) (MIT / Apache-2.
 resvg 的 tiny-skia 依赖 [arrayref](https://github.com/droundy/arrayref) 0.3.9 (BSD-2-Clause), 许可证文本随该 crate 发布; `deny.toml` 为此版本设置限定许可.
 
 GPU 进程分类参考 [gpustat](https://github.com/wookayin/gpustat) (MIT) 区分图形与计算上下文的方式; 使用系统 `nvidia-smi` XML, 未复制代码或引入 NVML 绑定.
+
+## CI 检查复用
+
+检查复用参考 [skip-duplicate-actions](https://github.com/fkirc/skip-duplicate-actions) (MIT) 按成功运行和输入内容判定的方式, 未复制代码. 运行记录通过 Gitea API 查询.
+
+## 串流接入
+
+Sunshine 应用注册与会话命令参考 [SunSync](https://github.com/OscarTienda/SunSync) (MIT) 的接口使用方式; 未复制代码. 串流应用协议依据 [Sunshine](https://github.com/LizardByte/Sunshine) (GPL-3.0) 的公开接口实现.

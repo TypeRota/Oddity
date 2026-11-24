@@ -4,6 +4,18 @@ import { nextTick } from "vue";
 import type { PinyinCandidate } from "../../src/core/pinyin";
 
 const loadPinyinEngine = vi.hoisted(() => vi.fn());
+const notify = vi.hoisted(() => vi.fn());
+
+vi.mock("../../src/core/notifications", async () => {
+  const { errorText } = await import("../../src/core/notifications.ts");
+  return { notify, errorText };
+});
+
+vi.mock("../../src/core/controller", async () => {
+  const { reactive } = await import("vue");
+  const { defaultGamepadOptions } = await import("../../src/types/gamepad");
+  return { form: reactive({ gamepad: defaultGamepadOptions() }) };
+});
 
 vi.mock("../../src/core/pinyin", () => ({ loadPinyinEngine }));
 
@@ -16,12 +28,13 @@ vi.mock("../../src/core/gamepad", async () => {
       pressing: false,
     }),
     gamepadTarget: shallowRef(null),
-    gamepadGlyph: () => "xbox-a",
+    gamepadGlyph: (button: string) => `xbox-${button}`,
   };
 });
 
 import GamepadKeyboard from "../../src/components/GamepadKeyboard.vue";
 import { gamepad } from "../../src/core/gamepad";
+import { form } from "../../src/core/controller";
 import { gamepadActions } from "../../src/core/gamepadActions";
 
 let wrappers: VueWrapper[] = [];
@@ -61,8 +74,17 @@ async function type(wrapper: VueWrapper, letters: string[]) {
   await flushPromises();
 }
 
+// 小写 -> 大写 -> 符号 -> 拼音 -> 小写.
+async function cycle(wrapper: VueWrapper, times = 1) {
+  for (let index = 0; index < times; index++)
+    await button(wrapper, "键盘").trigger("click");
+  await nextTick();
+}
+
 beforeEach(() => {
+  form.gamepad.keyboardLayout = "qwerty";
   loadPinyinEngine.mockReset();
+  notify.mockReset();
   loadPinyinEngine.mockResolvedValue(
     engineFor((input) => {
       if (input === "nihao")
@@ -83,6 +105,7 @@ beforeEach(() => {
     }),
   );
   gamepad.editing = null;
+  gamepad.active = false;
   gamepadActions.keyboard = null;
 });
 
@@ -94,7 +117,7 @@ afterEach(() => {
 describe("手柄拼音键盘", () => {
   it("输入拼音、选择候选并写入字段", async () => {
     const { wrapper, input } = await openKeyboard();
-    await button(wrapper, "拼音").trigger("click");
+    await cycle(wrapper, 3);
     expect(gamepadActions.keyboard?.pinyin).toBe(true);
     await type(wrapper, ["n", "i", "h", "a", "o"]);
     expect(wrapper.get(".pad-keyboard__display").text()).toContain("nihao");
@@ -111,7 +134,7 @@ describe("手柄拼音键盘", () => {
 
   it("候选超过一页时翻页", async () => {
     const { wrapper } = await openKeyboard();
-    await button(wrapper, "拼音").trigger("click");
+    await cycle(wrapper, 3);
     await type(wrapper, ["n", "i"]);
     expect(
       wrapper
@@ -138,7 +161,7 @@ describe("手柄拼音键盘", () => {
 
   it("选词只消耗匹配的拼音", async () => {
     const { wrapper } = await openKeyboard();
-    await button(wrapper, "拼音").trigger("click");
+    await cycle(wrapper, 3);
     await type(wrapper, ["n", "i", "h", "a", "o"]);
     const partial = wrapper
       .findAll(".pad-keyboard__candidates button")
@@ -152,7 +175,7 @@ describe("手柄拼音键盘", () => {
 
   it("空格选择第一个候选", async () => {
     const { wrapper } = await openKeyboard();
-    await button(wrapper, "拼音").trigger("click");
+    await cycle(wrapper, 3);
     await type(wrapper, ["n", "i"]);
     await button(wrapper, "空格").trigger("click");
     expect(wrapper.get(".pad-keyboard__display").text()).toContain("你");
@@ -161,7 +184,7 @@ describe("手柄拼音键盘", () => {
 
   it("没有候选时可以原样上屏", async () => {
     const { wrapper, input } = await openKeyboard();
-    await button(wrapper, "拼音").trigger("click");
+    await cycle(wrapper, 3);
     await type(wrapper, ["z", "z"]);
     await button(wrapper, "原样上屏").trigger("click");
     expect(wrapper.get(".pad-keyboard__display").text()).toContain("zz");
@@ -171,7 +194,7 @@ describe("手柄拼音键盘", () => {
 
   it("退格优先删除拼音, 清空会收起候选", async () => {
     const { wrapper } = await openKeyboard();
-    await button(wrapper, "拼音").trigger("click");
+    await cycle(wrapper, 3);
     await type(wrapper, ["n", "i"]);
     await button(wrapper, "删除").trigger("click");
     await flushPromises();
@@ -182,21 +205,18 @@ describe("手柄拼音键盘", () => {
     expect(wrapper.get(".pad-keyboard__display").text()).not.toContain("n");
   });
 
-  it("密码字段不提供拼音入口", async () => {
+  it("密码字段不进入拼音", async () => {
     const { wrapper } = await openKeyboard("password");
-    expect(
-      wrapper.findAll("button").some((item) => item.text() === "拼音"),
-    ).toBe(false);
-    expect(
-      wrapper.findAll("button").some((item) => item.text() === "大写"),
-    ).toBe(true);
+    await cycle(wrapper, 3);
+    expect(gamepadActions.keyboard?.pinyin).toBe(false);
+    expect(button(wrapper, "键盘").exists()).toBe(true);
     expect(wrapper.get(".pad-keyboard__display").text()).toBe("输入密码");
   });
 
   it("拼音模式不显示数字键", async () => {
     const { wrapper } = await openKeyboard();
     expect(key(wrapper, "1").exists()).toBe(true);
-    await button(wrapper, "拼音").trigger("click");
+    await cycle(wrapper, 3);
     expect(
       wrapper
         .findAll(".pad-keyboard__row:not(.pad-keyboard__actions) > button")
@@ -204,17 +224,147 @@ describe("手柄拼音键盘", () => {
     ).not.toContain("1");
     await type(wrapper, ["n", "i"]);
     expect(wrapper.get(".pad-keyboard__display").text()).toContain("ni");
-    await button(wrapper, "字母").trigger("click");
+    await cycle(wrapper);
     expect(key(wrapper, "1").exists()).toBe(true);
   });
 
   it("切回字母模式会收起候选", async () => {
     const { wrapper } = await openKeyboard();
-    await button(wrapper, "拼音").trigger("click");
+    await cycle(wrapper, 3);
     await type(wrapper, ["n", "i"]);
     expect(wrapper.find(".pad-keyboard__candidates").exists()).toBe(true);
-    await button(wrapper, "字母").trigger("click");
+    await cycle(wrapper);
     expect(wrapper.find(".pad-keyboard__candidates").exists()).toBe(false);
     expect(gamepadActions.keyboard?.pinyin).toBe(false);
+  });
+
+  it("词库加载失败通过通知报告, 键盘内不再显示", async () => {
+    loadPinyinEngine.mockRejectedValueOnce(new Error("HTTP 503"));
+    const { wrapper } = await openKeyboard();
+    await cycle(wrapper, 3);
+    await flushPromises();
+    expect(notify).toHaveBeenCalledWith(
+      "拼音词库加载失败: HTTP 503",
+      "error",
+      6500,
+    );
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    // 失败后仍可继续输入, 只是没有候选.
+    await type(wrapper, ["z"]);
+    expect(wrapper.get(".pad-keyboard__display").text()).toContain("z");
+  });
+});
+
+describe("手柄键盘快捷键提示", () => {
+  async function glyphs(wrapper: VueWrapper, label: string) {
+    gamepad.active = true;
+    await nextTick();
+    return button(wrapper, label)
+      .findAll(".gamepad-button-hint use")
+      .map((glyph) => glyph.attributes("href")?.split("#")[1]);
+  }
+
+  it("动作按钮在右侧标明对应按键", async () => {
+    const { wrapper } = await openKeyboard();
+    expect(await glyphs(wrapper, "键盘")).toEqual(["xbox-select"]);
+    expect(await glyphs(wrapper, "删除")).toEqual(["xbox-north"]);
+    expect(await glyphs(wrapper, "完成")).toEqual(["xbox-start"]);
+    await button(wrapper, "键盘").trigger("click");
+    expect(await glyphs(wrapper, "键盘")).toEqual(["xbox-select"]);
+  });
+
+  it("候选翻页与时间键盘显示各自按键", async () => {
+    const { wrapper } = await openKeyboard();
+    await cycle(wrapper, 3);
+    await type(wrapper, ["n", "i"]);
+    expect(await glyphs(wrapper, "下一页")).toEqual(["xbox-rt"]);
+    await button(wrapper, "下一页").trigger("click");
+    expect(await glyphs(wrapper, "上一页")).toEqual(["xbox-lt"]);
+    const time = await openKeyboard("time");
+    expect(await glyphs(time.wrapper, "清空")).toEqual(["xbox-l3", "xbox-r3"]);
+  });
+});
+
+describe("手柄键盘布局", () => {
+  it.each(["qwerty", "alphabetical"] as const)(
+    "%s 布局的字母、大小写和符号键区均为矩形",
+    async (layout) => {
+      form.gamepad.keyboardLayout = layout;
+      const { wrapper, input } = await openKeyboard();
+      const rows = () =>
+        wrapper
+          .findAll(".pad-keyboard__row:not(.pad-keyboard__actions)")
+          .map((row) =>
+            row
+              .findAll("button")
+              .map((item) => item.text())
+              .join(""),
+          );
+      const letters =
+        layout === "qwerty"
+          ? ["qwertyuiop", "asdfghjkl;", "zxcvbnm,./"]
+          : ["abcdefghij", "klmnopqrst", "uvwxyz,.;/"];
+      expect(rows()).toEqual(["1234567890", ...letters]);
+      await type(wrapper, ["a", ";", "/"]);
+      await cycle(wrapper);
+      expect(rows()).toEqual([
+        "1234567890",
+        ...letters.map((row) => row.toUpperCase()),
+      ]);
+      await key(wrapper, "Z").trigger("click");
+      await cycle(wrapper);
+      expect(rows().map((row) => row.length)).toEqual([8, 8, 8, 8]);
+      await key(wrapper, "@").trigger("click");
+      await button(wrapper, "完成").trigger("click");
+      expect(input.value).toBe("a;/Z@");
+    },
+  );
+
+  it("拼音使用所选布局, 标点将当前拼音上屏", async () => {
+    form.gamepad.keyboardLayout = "alphabetical";
+    const { wrapper, input } = await openKeyboard();
+    await cycle(wrapper, 3);
+    expect(
+      wrapper
+        .findAll(".pad-keyboard__row:not(.pad-keyboard__actions) button")
+        .slice(0, 10)
+        .map((item) => item.text())
+        .join(""),
+    ).toBe("abcdefghij");
+    await type(wrapper, ["n", "i", ","]);
+    expect(wrapper.get(".pad-keyboard__display").text()).toBe("ni,");
+    expect(wrapper.find(".pad-keyboard__candidates").exists()).toBe(false);
+    await button(wrapper, "完成").trigger("click");
+    expect(input.value).toBe("ni,");
+  });
+
+  it("时间格式错误留在键盘内, 不弹通知", async () => {
+    const { wrapper, input } = await openKeyboard("time");
+    await button(wrapper, "完成").trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toBe(
+      "请输入 24 小时时间 (HH:mm).",
+    );
+    expect(notify).not.toHaveBeenCalled();
+    expect(gamepad.editing).not.toBeNull();
+    for (const label of ["2", "1", ":", "3", "0"])
+      await key(wrapper, label).trigger("click");
+    await button(wrapper, "完成").trigger("click");
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(input.value).toBe("21:30");
+  });
+
+  it.each(["number", "tel", "time"])("%s 字段使用数字键盘", async (type) => {
+    form.gamepad.keyboardLayout = "alphabetical";
+    const { wrapper } = await openKeyboard(type);
+    const rows = wrapper.findAll(
+      ".pad-keyboard__row:not(.pad-keyboard__actions)",
+    );
+    expect(rows.map((row) => row.text())).toEqual([
+      "123",
+      "456",
+      "789",
+      type === "time" ? "0:" : "0.-",
+    ]);
   });
 });

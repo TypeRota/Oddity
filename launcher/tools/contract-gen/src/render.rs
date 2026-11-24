@@ -244,7 +244,7 @@ mod tests {
     const PLAN_FIELDS: &[OddityField] = &[
         OddityField::new("allUsers", TsType::BOOLEAN),
         OddityField::new("proton", TsType::union(STRING_OR_NULL)),
-        OddityField::new("createEnvironment", TsType::BOOLEAN),
+        OddityField::new("environmentName", TsType::union(STRING_OR_NULL)),
     ];
     const CN_OR_GLOBAL: TsType = TsType::union(&[TsType::literal("cn"), TsType::literal("global")]);
 
@@ -267,7 +267,7 @@ mod tests {
         write_member(&mut text, 2, "runtime_setup_plan", &ty);
         assert_eq!(
             text,
-            "  runtime_setup_plan: {\n    allUsers: boolean;\n    proton: string | null;\n    createEnvironment: boolean;\n  };\n"
+            "  runtime_setup_plan: {\n    allUsers: boolean;\n    proton: string | null;\n    environmentName: string | null;\n  };\n"
         );
     }
 

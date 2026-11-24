@@ -14,8 +14,9 @@ use oddity_runtime::{
     HostContext, MeteredPolicy, SettingsSnapshot, UpdatePreferences, UpdateWindow,
 };
 
+use super::commands::start_download;
 use super::state::DownloadStatus;
-use super::{busy, cancel_download, download_status, set_auto_waiting_reason, start_download};
+use super::{busy, cancel_download, download_status, set_auto_waiting_reason};
 use crate::install;
 use crate::update::region::{self, Region};
 
@@ -229,7 +230,7 @@ fn run(host: Arc<dyn HostContext>, stop: &AtomicBool) {
             status
         } else {
             eprintln!("自动下载: 开始检查资源更新");
-            if let Err(error) = start_download("check", false, "auto") {
+            if let Err(error) = start_download(host.clone(), "check", false, "auto") {
                 // 已有任务在进行, 下一轮再试.
                 eprintln!("自动下载: 检查未启动: {error}");
                 continue;
@@ -284,7 +285,7 @@ fn run(host: Arc<dyn HostContext>, stop: &AtomicBool) {
 
         snooze_until = 0;
         eprintln!("自动下载: 发现待下载资源, 开始下载");
-        let started = match start_download("apply", false, "auto") {
+        let started = match start_download(host.clone(), "apply", false, "auto") {
             Ok(status) => status,
             Err(error) => {
                 eprintln!("自动下载: 无法开始下载: {error}");
@@ -534,6 +535,43 @@ mod tests {
             assert!(status.auto_waiting.is_empty());
         }
         halt(&stop);
+    }
+
+    #[test]
+    fn scheduled_apply_uses_the_scheduler_host_and_respects_the_install_lock() {
+        let _serial = serial();
+        reset();
+        let dir = TempDir::new("scheduled-apply");
+        let root = installed_root(&dir);
+        let host = test_host(test_settings(&root));
+        let mut bound_settings = test_settings(&root);
+        bound_settings.game = "other".into();
+        let bound_host = test_host(bound_settings);
+        crate::update::testing::bind(&bound_host);
+        ready_status(&host, &root);
+        set_status(&host, |status| status.phase = "needs-update".into());
+        let _install_lock = oddity_platform::install_lock::InstallLock::acquire_existing(&root)
+            .expect("锁定安装目录");
+
+        let stop = start(&host);
+        let failed = wait_until(
+            || download_status().phase == "failed",
+            Duration::from_secs(2),
+        );
+        halt(&stop);
+        let status = download_status();
+        let request_events = host.download_events();
+        reset();
+
+        assert!(failed, "{status:?}");
+        assert_eq!(status.origin, "auto");
+        assert!(
+            status.error.contains("安装目录正在被其他任务使用"),
+            "{status:?}"
+        );
+        assert!(request_events
+            .iter()
+            .any(|event| event["phase"] == "checking"));
     }
 
     #[test]

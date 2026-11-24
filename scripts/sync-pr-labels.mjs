@@ -1,87 +1,78 @@
-import { matchesGlob } from "node:path";
-
 const pathRules = {
-  "area: ui": ["launcher/ui/**"],
-  "area: cli": ["launcher/crates/oddity-cli/**"],
-  "area: launcher": [
-    "launcher/crates/oddity-host/**",
-    "launcher/crates/oddity-backend/**",
+  "area: ui": [
+    /^launcher\/(ui|tools\/ui-registry-gen)\//,
+    /^launcher\/packages\/[^/]+\/ui\//,
   ],
+  "area: backend": [/^launcher\/crates\/oddity-backend\//],
+  "area: cli": [/^launcher\/crates\/oddity-cli\//],
+  "area: contract": [
+    /^launcher\/(crates\/oddity-contract|tools\/contract-gen)\//,
+    /^launcher\/CONTRACTS\.md$/,
+    /^launcher\/ui\/(electron\/commands|src\/core\/generated\/command-ids|src\/types\/generated\/commands)\.ts$/,
+  ],
+  "area: host": [/^launcher\/crates\/oddity-host\//],
+  "area: platform": [/^launcher\/crates\/oddity-platform\//],
+  "area: recovery": [/^launcher\/crates\/oddity-recovery\//],
+  "area: runtime": [
+    /^launcher\/crates\/oddity-runtime\//,
+    /^launcher\/packages\/game-fixture\/backend\//,
+  ],
+  "area: nte": [/^launcher\/packages\/game-nte\//, /^launcher\/helpers\/nte-/],
+  "area: arknights": [/^launcher\/packages\/game-arknights\//],
+  "area: azurpromilia": [/^launcher\/packages\/game-azurpromilia\//],
+  "area: hsr": [/^launcher\/packages\/game-hsr\//],
   "area: packaging": [
-    "launcher/packaging/**",
-    "launcher/scripts/install-desktop.sh",
-    "launcher/ui/electron-builder.cjs",
-    "packaging/**",
-    "scripts/release-version.mjs",
-    "scripts/stage-release.mjs",
-    "scripts/render-pkgbuild.mjs",
-    "scripts/write-checksums.mjs",
-    "scripts/check-release-assets.mjs",
-    "scripts/build-arch-package.sh",
-    "scripts/render-ebuild.mjs",
-    "flake.nix",
-    "flake.lock",
-    "nix/**",
+    /^(launcher\/packaging|packaging|nix)\//,
+    /^launcher\/scripts\/install-desktop\.sh$/,
+    /^launcher\/ui\/(electron-builder\.cjs|electron\/after-pack\.cjs)$/,
+    /^scripts\/(build-arch-package|check-(gentoo-upgrade|packaging|release-(assets|version))|release-version|render-(ebuild|pkgbuild)|stage-release|write-checksums)\./,
+    /^flake\.(nix|lock)$/,
   ],
-  "area: updater": [
-    "launcher/packages/game-nte/backend/src/update/**",
-  ],
+  "area: updater": [/^launcher\/packages\/[^/]+\/backend\/src\/update\//],
   "area: proton": [
-    "launcher/crates/oddity-host/src/environment.rs",
-    "launcher/crates/oddity-host/src/runtime_setup.rs",
+    /^launcher\/crates\/oddity-host\/src\/(environment|runtime_setup)([_.][^/]*)?\.rs$/,
   ],
-  ci: [".github/**", "scripts/**"],
+  "area: login": [/^launcher\/packages\/[^/]+\/backend\/src\/auth\//],
+  ci: [/^\.(gitea|github)\/workflows\//, /^scripts\//],
+  docs: [/^docs\//, /\.md$/],
 };
 
-const typeLabels = {
-  feat: "feature", fix: "bug", perf: "performance", security: "security",
-  docs: "docs", refactor: "refactor", ci: "ci", release: "ci", build: "ci",
-  chore: "chore", test: "chore", style: "chore", deps: "dependencies",
-};
-const areas = new Set(["ui", "cli", "launcher", "updater", "proton", "login", "packaging"]);
-const managed = new Set([...Object.keys(pathRules), "area: login", "docs", "breaking"]);
-
-export function calculateLabels(title, files, current) {
-  const desired = new Set();
-  for (const [label, patterns] of Object.entries(pathRules)) {
-    if (files.some((file) => patterns.some((pattern) => matchesGlob(file, pattern)))) {
-      desired.add(label);
-    }
-  }
-  if (files.length > 0 && files.every((file) => matchesGlob(file, "{docs/**,**/*.md}"))) {
-    desired.add("docs");
-  }
-
-  const match = /^([a-zA-Z]+)(?:\(([^)]+)\))?(!)?:/.exec(title);
-  if (match) {
-    const [, rawType, rawScope, breaking] = match;
-    const type = rawType.toLowerCase();
-    const scope = rawScope?.toLowerCase();
-    if (typeLabels[type]) desired.add(typeLabels[type]);
-    for (const area of [type, scope]) {
-      if (area === "app") desired.add("area: launcher");
-      else if (areas.has(area)) desired.add(`area: ${area}`);
-    }
-    if (breaking) desired.add("breaking");
-  }
-
-  // 类型标签保留，范围标签按标题和路径的并集同步。
-  for (const label of current) {
-    if (!managed.has(label)) desired.add(label);
-  }
-  return [...desired].sort();
+export function calculateLabels(files) {
+  return Object.entries(pathRules)
+    .filter(([, patterns]) =>
+      files.some((file) => patterns.some((pattern) => pattern.test(file))),
+    )
+    .map(([label]) => label)
+    .sort();
 }
 
-export async function syncPrLabels({ github, context }) {
-  const repo = { ...context.repo, pull_number: context.payload.pull_request.number };
-  const { data: pr } = await github.rest.pulls.get(repo);
-  const files = await github.paginate(github.rest.pulls.listFiles, { ...repo, per_page: 100 });
-  const current = pr.labels.map((label) => label.name).sort();
-  const labels = calculateLabels(pr.title, files.map((file) => file.filename), current);
-  if (JSON.stringify(current) === JSON.stringify(labels)) return;
-  await github.rest.issues.setLabels({
-    ...context.repo,
-    issue_number: repo.pull_number,
-    labels,
-  });
+export async function syncPrLabels({ request, list }, number) {
+  const issueLabels = `/issues/${number}/labels`;
+  const [files, current] = await Promise.all([
+    list(`/pulls/${number}/files`),
+    request("GET", issueLabels),
+  ]);
+  const paths = files.flatMap(({ filename, previous_filename }) =>
+    previous_filename ? [filename, previous_filename] : [filename],
+  );
+  const desired = new Set(calculateLabels(paths));
+  const currentNames = new Set(current.map(({ name }) => name));
+  const missing = [...desired].filter((name) => !currentNames.has(name));
+
+  if (missing.length > 0) {
+    const available = new Map(
+      (await list("/labels")).map(({ name, id }) => [name, id]),
+    );
+    const labels = missing.map((name) => {
+      const id = available.get(name);
+      if (!id) throw new Error(`仓库缺少标签: ${name}`);
+      return id;
+    });
+    await request("POST", issueLabels, { labels });
+  }
+  for (const { id, name } of current) {
+    if (Object.hasOwn(pathRules, name) && !desired.has(name)) {
+      await request("DELETE", `${issueLabels}/${id}`);
+    }
+  }
 }

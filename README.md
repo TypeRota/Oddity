@@ -111,6 +111,7 @@ Oddity 针对官方启动器的部分行为进行了改进，重点在于下载�
 - [启动器安全验证](docs/integrity.md) — 文件校验、状态说明与重装建议。
 - [Proton 运行环境](docs/runtime-environments.md) — A/B 环境、prefix 与快照。
 - [外部启动](docs/external-launch.md) — 应用菜单、Steam 与命令行。
+- [跨屏游玩](docs/cross-screen.md) — Sunshine 与 Moonlight 串流。
 - [塔吉多指南](docs/taygedo.md) — 账号登录、自动签到与游戏数据查询。
 - [浏览器演示](docs/demo.md) — 在线体验界面与部署说明。
 

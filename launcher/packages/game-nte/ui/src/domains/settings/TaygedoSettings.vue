@@ -198,10 +198,7 @@ onBeforeUnmount(() => clearInterval(poll));
         ><span class="btn__text">{{ primary.label }}</span>
       </BaseButton>
     </div>
-    <p v-if="attendance.error" class="attendance__error" role="alert">
-      {{ attendance.error }}
-    </p>
-    <p v-else-if="failure" class="attendance__error" role="status">
+    <p v-if="failure" class="attendance__error" role="status">
       {{ failure }}
       <BaseButton
         id="attendance-failure-details"

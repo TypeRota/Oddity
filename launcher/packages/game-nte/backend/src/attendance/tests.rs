@@ -1006,18 +1006,20 @@ fn empty_recommendations_do_not_claim_coin_actions_succeeded() {
 }
 
 #[test]
-fn optional_authentication_failures_do_not_pause_core_or_other_accounts() {
+fn folded_task_rejections_do_not_pause_core_or_other_accounts() {
     let (dir, server, _vault, service) = fixture();
     service.login("13800138000", "secret", true).unwrap();
     service.login("13900139000", "secret", false).unwrap();
+    // 附加任务的业务拒绝即使文案提到失效也只是这次操作没完成, 不是掉登录.
     server.route(
         "/apihub/api/getUserTasks",
         r#"{"code":1,"msg":"token 已过期 private-value"}"#,
     );
     server.route(
         "/cloud/game/getUserInfo",
-        r#"{"code":7,"message":"需要人工验证 private-token"}"#,
+        r#"{"code":1,"msg":"分享已失效 private-value"}"#,
     );
+    let logins = server.hits("/openApi/secureLogin");
     let status = service.run(None).unwrap();
     assert!(status
         .accounts
@@ -1026,15 +1028,14 @@ fn optional_authentication_failures_do_not_pause_core_or_other_accounts() {
     assert_eq!(server.hits("/apihub/awapi/sign"), 4);
     assert_eq!(server.hits("/apihub/api/getUserCoinTaskState"), 2);
     assert_eq!(server.hits("/cloud/game/getUserInfo"), 2);
-    assert_eq!(server.hits("/openApi/secureLogin"), 2);
+    // 附加任务不再是认证失败, 因此不需要重新登录.
+    assert_eq!(server.hits("/openApi/secureLogin"), logins);
     for account in &status.accounts {
         let steps = &account.last_report.as_ref().unwrap().steps;
         assert!(steps
             .iter()
-            .any(|s| !s.ok && s.optional && s.kind == Some(FailureKind::Auth)));
-        assert!(steps
-            .iter()
-            .any(|s| !s.ok && s.optional && s.kind == Some(FailureKind::Verification)));
+            .any(|s| !s.ok && s.optional && s.kind == Some(FailureKind::Protocol)));
+        assert!(steps.iter().all(|s| s.kind != Some(FailureKind::Auth)));
     }
     assert!(!dir.read_text("state.json").contains("private-"));
 }
@@ -1700,6 +1701,8 @@ fn signed_account() -> AccountStatus {
                 ok: true,
                 message: "签到完成或今日已签到".into(),
                 kind: None,
+                business: None,
+                status: None,
                 optional: false,
             }],
         }),
@@ -1740,4 +1743,262 @@ fn manual_sign_in_formats_each_account_and_requires_all_signed_in() {
 fn manual_sign_in_reports_missing_accounts() {
     let error = print_status(Status::default()).expect_err("没有账号应提示登录");
     assert_eq!(error.to_string(), "请先登录塔吉多账号");
+}
+
+/// 诊断日志内容; 目录由测试指定, 不依赖用户环境.
+fn read_log(dir: &TempDir) -> String {
+    let path = dir.path().join("logs/attendance.log");
+    std::fs::read_to_string(&path).unwrap_or_default()
+}
+
+/// 启动线程异步写日志, 等到该次 run 的收尾记录出现.
+fn wait_for_log(dir: &TempDir, needle: &str) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let text = read_log(dir);
+        if text.contains(needle) || std::time::Instant::now() > deadline {
+            return text;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+fn service_with_logs(
+    dir: &TempDir,
+    vault: &MemoryVault,
+    server: &HttpServer,
+) -> Service<MemoryVault> {
+    Service::testing_with_logs(dir.path(), vault.clone(), &server.base(), dir.join("logs"))
+}
+
+#[test]
+fn automatic_entry_writes_one_readable_line_per_account_without_credentials() {
+    let (dir, server, vault, _service) = fixture();
+    let service = service_with_logs(&dir, &vault, &server);
+    service.login("13800138000", "test-password", true).unwrap();
+    service.set_trigger(Trigger::Launch);
+    service.run(Some(Trigger::Launch)).unwrap();
+    let text = read_log(&dir);
+    assert!(text.contains("run trigger=launch"), "{text}");
+    assert!(text.contains("account=138****8000"), "{text}");
+    assert!(text.contains("steps="), "{text}");
+    assert!(text.contains("社区签到=ok"), "{text}");
+    assert!(text.contains("attention=-"), "{text}");
+    assert!(text.contains("session trigger=launch"), "{text}");
+    assert!(!text.contains("\nrun"), "每条记录必须单行");
+    for secret in [
+        "13800138000",
+        "test-password",
+        "launch-secret",
+        "access-secret",
+        "refresh-secret",
+        "new-access",
+        "new-refresh",
+        "9007199254740993",
+        "uid",
+    ] {
+        assert!(!text.contains(secret), "{secret} 不应写入诊断日志");
+    }
+}
+
+#[test]
+fn launch_trigger_writes_a_run_line_for_each_account() {
+    let (dir, server, vault, _service) = fixture();
+    let service = service_with_logs(&dir, &vault, &server);
+    service
+        .login("13800138000", "test-password", false)
+        .unwrap();
+    service.set_trigger(Trigger::Launch);
+    // 与启动器打开时的自动入口同一条路径, 线程内完成签到并落盘.
+    lifecycle::launch(service);
+    let text = wait_for_log(&dir, "run trigger=launch accounts=");
+    assert!(text.contains("run trigger=launch"), "{text}");
+    assert!(text.contains("account=138****8000"), "{text}");
+    assert!(text.contains("ok=true"), "{text}");
+}
+
+#[test]
+fn headless_execution_writes_next_to_the_host_logs() {
+    let (dir, server, vault, _service) = fixture();
+    let data = TempDir::new("headless-data");
+    let mut env = EnvGuard::new();
+    env.set("XDG_DATA_HOME", data.path());
+    // 无头入口没有宿主上下文, 按用户数据目录推导, 与宿主导出的日志目录同一个.
+    let logs = crate::attendance::diagnostic::logs_dir();
+    assert_eq!(logs, data.path().join("oddity/logs"));
+    let automatic = Service::<MemoryVault>::testing_with_logs(
+        dir.path(),
+        vault.clone(),
+        &server.base(),
+        logs.clone(),
+    );
+    automatic
+        .login("13800138000", "test-password", false)
+        .unwrap();
+    automatic.set_trigger(Trigger::Boot);
+    lifecycle::execute(automatic).unwrap();
+    let text = std::fs::read_to_string(logs.join("attendance.log")).unwrap();
+    assert!(text.contains("run trigger=boot"), "{text}");
+    assert!(text.contains("account=138****8000"), "{text}");
+}
+
+#[test]
+fn skipped_automatic_runs_are_recorded_with_their_reason() {
+    let (dir, server, vault, _service) = fixture();
+    let service = service_with_logs(&dir, &vault, &server);
+    service
+        .login("13800138000", "test-password", false)
+        .unwrap();
+    // 偏好不是 launch 时自动入口直接返回, 也要留下可读的跳过原因.
+    service.run(Some(Trigger::Launch)).unwrap();
+    let text = read_log(&dir);
+    assert!(
+        text.contains("run trigger=launch skipped reason=trigger_changed"),
+        "{text}"
+    );
+    service.set_tasks(TaskPermissions {
+        community_sign: false,
+        role_sign: false,
+        browse_posts: false,
+        like_posts: false,
+        share_posts: false,
+        cloud_duration: false,
+    });
+    service.set_trigger(Trigger::Launch);
+    service.run(Some(Trigger::Launch)).unwrap();
+    assert!(
+        read_log(&dir).contains("skipped reason=no_tasks"),
+        "{}",
+        read_log(&dir)
+    );
+}
+
+#[test]
+fn session_refresh_stages_are_distinguishable() {
+    for (route, expected) in [
+        (r#"{"code":1,"msg":"token 已失效"}"#, "refresh=fail(auth"),
+        (
+            r#"{"code":7,"msg":"需要人机验证"}"#,
+            "refresh=fail(verification",
+        ),
+    ] {
+        let (dir, server, vault, _service) = fixture();
+        let service = service_with_logs(&dir, &vault, &server);
+        service
+            .login("13800138000", "test-password", false)
+            .unwrap();
+        server.route("/usercenter/api/refreshToken", route);
+        service.run(None).unwrap();
+        let text = read_log(&dir);
+        assert!(text.contains(expected), "{route}: {text}");
+        assert!(text.contains("code="), "{route}: {text}");
+    }
+
+    // 刷新成功时只记录一段成功, 不写后续回退.
+    let (dir, server, vault, _service) = fixture();
+    let service = service_with_logs(&dir, &vault, &server);
+    service
+        .login("13800138000", "test-password", false)
+        .unwrap();
+    service.run(None).unwrap();
+    let text = read_log(&dir);
+    assert!(text.contains("refresh=ok"), "{text}");
+    assert!(!text.contains("user_center="), "{text}");
+    assert!(!text.contains("password="), "{text}");
+}
+
+#[test]
+fn failed_refresh_records_every_fallback_stage() {
+    let (dir, server, vault, _service) = fixture();
+    let service = service_with_logs(&dir, &vault, &server);
+    service.login("13800138000", "test-password", true).unwrap();
+    server.route(
+        "/usercenter/api/refreshToken",
+        r#"{"code":1,"msg":"token 已失效"}"#,
+    );
+    server.route("/usercenter/api/login", r#"{"code":1,"msg":"登录失效"}"#);
+    server.route("/openApi/secureLogin", r#"{"code":9,"msg":"人机验证"}"#);
+    service.run(None).unwrap();
+    let text = read_log(&dir);
+    for stage in [
+        "refresh=fail(auth",
+        "user_center=fail(auth",
+        "password=fail(verification",
+    ] {
+        assert!(text.contains(stage), "{stage}: {text}");
+    }
+    assert!(!text.contains("test-password"), "{text}");
+}
+
+#[test]
+fn rotation_caps_the_exported_log_size() {
+    let dir = TempDir::new("rotation-cap");
+    let record = "z".repeat(4096);
+    for _ in 0..2048 {
+        crate::attendance::diagnostic::write(&dir.join("logs"), &record);
+    }
+    let logs = dir.join("logs");
+    let files: Vec<_> = std::fs::read_dir(&logs)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .collect();
+    assert!(files.len() <= 4, "轮转后仍保留 {} 个文件", files.len());
+    let total: u64 = files
+        .iter()
+        .map(|file| file.metadata().unwrap().len())
+        .sum();
+    assert!(total <= 4 * 1024 * 1024, "日志总量 {total} 超出上限");
+}
+
+#[test]
+fn business_rejection_on_a_core_step_does_not_freeze_the_account() {
+    let (dir, server, vault, _service) = fixture();
+    let service = service_with_logs(&dir, &vault, &server);
+    service
+        .login("13800138000", "test-password", false)
+        .unwrap();
+    // 社区签到的正常业务拒绝: 旧判据按文案里的"失效"当成掉登录, 之后每次
+    // 运行都会跳过该账号, 只能靠重新登录恢复.
+    server.route("/apihub/api/signin", r#"{"code":1001,"msg":"活动已失效"}"#);
+    let first = service.run(None).unwrap();
+    assert!(
+        first.accounts[0].attention.is_none(),
+        "{:?}",
+        first.accounts[0].attention
+    );
+    assert!(!first.accounts[0].signed_today);
+    let steps = &first.accounts[0].last_report.as_ref().unwrap().steps;
+    assert!(steps
+        .iter()
+        .any(|s| s.label == "社区签到" && !s.ok && s.kind == Some(FailureKind::Protocol)));
+    assert!(
+        read_log(&dir).contains("社区签到=fail(protocol code=1001"),
+        "{}",
+        read_log(&dir)
+    );
+
+    // 服务恢复后下一次运行照常重试并成功.
+    server.route("/apihub/api/signin", r#"{"code":0}"#);
+    let second = service.run(None).unwrap();
+    assert!(second.accounts[0].signed_today);
+    assert!(second.accounts[0].attention.is_none());
+}
+
+#[test]
+fn task_rejection_mentioning_expiry_is_not_reported_as_login_loss() {
+    let (dir, server, vault, _service) = fixture();
+    let service = service_with_logs(&dir, &vault, &server);
+    service.login("13800138000", "test-password", true).unwrap();
+    // 金币任务列表的业务拒绝: 文案含"过期", 但不是登录失效.
+    server.route(
+        "/apihub/api/getUserTasks",
+        r#"{"code":500,"msg":"任务已过期"}"#,
+    );
+    let status = service.run(None).unwrap();
+    let account = &status.accounts[0];
+    assert!(account.signed_today, "核心签到不应被附加任务拖累");
+    assert!(account.attention.is_none(), "{:?}", account.attention);
+    let text = read_log(&dir);
+    assert!(text.contains("code=500"), "{text}");
+    assert!(!text.contains("attention=auth"), "{text}");
 }

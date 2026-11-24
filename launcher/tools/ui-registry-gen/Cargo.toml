@@ -10,3 +10,4 @@ name = "ui-registry-gen"
 path = "src/main.rs"
 
 [dependencies]
+syn = { version = "2", default-features = false, features = ["full", "parsing"] }

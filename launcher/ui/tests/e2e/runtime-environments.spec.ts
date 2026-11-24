@@ -24,18 +24,6 @@ test("先创建环境再启动, A/B 副本、稳定标记及删除弹窗", async
     exact: true,
   });
   await expect(createDialog).toBeVisible();
-  const region = createDialog.locator(
-    "#runtime-environment-distribution-trigger",
-  );
-  await region.click();
-  const unavailable = createDialog.getByRole("option", {
-    name: "国际服 (未安装)",
-    exact: true,
-  });
-  await expect(unavailable).toBeDisabled();
-  await expect(unavailable).toHaveCSS("opacity", "0.4");
-  await createDialog.getByRole("option", { name: "国服", exact: true }).click();
-
   await page.keyboard.press("Escape");
   await expect(createDialog).toHaveCount(0);
   await expect(
@@ -108,7 +96,7 @@ test("先创建环境再启动, A/B 副本、稳定标记及删除弹窗", async
       .first(),
   ).toHaveText("创建环境或副本");
   await expect(section.locator(".field__hint").first()).toContainText(
-    "绑定的游戏目录: ~/Games/Neverness To Everness",
+    "上次使用的游戏目录: ~/Games/Neverness To Everness",
   );
   await expect(
     section.getByRole("button", { name: "删除环境", exact: true }),
@@ -198,20 +186,19 @@ test("先创建环境再启动, A/B 副本、稳定标记及删除弹窗", async
   await page.keyboard.press("Escape");
   await section.getByRole("button", { name: "保留为稳定环境" }).click();
   await expect(select).toHaveText("实验 B · 当前 · 稳定");
+  const maintenance = page.locator("section.setting-group", {
+    has: page.getByRole("heading", { name: "环境数据维护", exact: true }),
+  });
+  await expect(maintenance).toContainText("未发现未登记的环境目录或日志.");
+  await expect(
+    maintenance.getByRole("button", { name: "未登记的环境与日志" }),
+  ).toHaveAttribute("aria-expanded", "true");
   await page.screenshot({ path: "test-results/runtime-environments.png" });
   expect(errors).toEqual([]);
 });
 
-test("创建时可选择任一已安装区服, 创建副本保持当前区服并在切换环境时同步区服", async ({
-  page,
-}) => {
+test("安装目录变更后提示旧绑定, 可以更新绑定", async ({ page }) => {
   await page.goto("/#settings");
-  await settingsCategory(page, "nte-game");
-  await page.locator("#set-global-install").fill("/tmp/NTEGlobal");
-  await expect(page.locator("#settings-form")).toHaveAttribute(
-    "data-save-state",
-    "saved",
-  );
   await settingsCategory(page, "runtime");
   const section = page
     .locator("section", { has: page.locator("#runtime-environments-title") })
@@ -223,35 +210,105 @@ test("创建时可选择任一已安装区服, 创建副本保持当前区服并
     name: "创建运行环境",
     exact: true,
   });
-  await dialog.locator("#runtime-environment-distribution-trigger").click();
-  const global = dialog.getByRole("option", { name: "国际服", exact: true });
-  await expect(global).toBeEnabled();
-  await global.click();
-  await expect(dialog).toContainText("绑定的游戏目录: /tmp/NTEGlobal");
-  await dialog.locator("#runtime-environment-name").fill("国际服环境");
+  await dialog.locator("#runtime-environment-name").fill("旧目录环境");
+  await dialog.locator("#runtime-environment-proton").fill("/opt/Proton");
+  await dialog.getByRole("button", { name: "创建环境", exact: true }).click();
+  const select = page.locator("#runtime-environment-trigger");
+  await expect(select).toHaveText("旧目录环境 · 当前 · 稳定");
+  await expect(section).toContainText(
+    "上次使用的游戏目录: ~/Games/Neverness To Everness",
+  );
+  // 修改安装目录后, 环境仍指向旧目录, 界面提示并允许更新绑定.
+  await settingsCategory(page, "nte-game");
+  await page.locator("#set-install").fill("/tmp/NTECn");
+  await page.locator("#set-install").press("Tab");
+  await expect(page.locator("#settings-form")).toHaveAttribute(
+    "data-save-state",
+    "saved",
+  );
+  await settingsCategory(page, "runtime");
+  await expect(section).toContainText("上次使用的游戏目录与当前安装目录不同.");
+  await section.getByRole("button", { name: "更新绑定" }).click();
+  await expect(section).not.toContainText(
+    "上次使用的游戏目录与当前安装目录不同.",
+  );
+  await expect(section).toContainText("上次使用的游戏目录: /tmp/NTECn");
+});
+
+test("环境绑定当前地区, 切换环境不改地区, 各地区的选择分别记住", async ({
+  page,
+}) => {
+  await page.goto("/#settings");
+  await settingsCategory(page, "nte-game");
+  await page.locator("#set-install").fill("/tmp/NTECn");
+  await page.locator("#set-global-install").fill("/tmp/NTEGlobal");
+  await expect(page.locator("#settings-form")).toHaveAttribute(
+    "data-save-state",
+    "saved",
+  );
+  await settingsCategory(page, "runtime");
+  const section = page
+    .locator("section", { has: page.locator("#runtime-environments-title") })
+    .last();
+  const select = page.locator("#runtime-environment-trigger");
+  const dialog = page.getByRole("dialog", {
+    name: "创建运行环境",
+    exact: true,
+  });
+  /** 在创建弹窗里填名称与 Proton 并提交. */
+  const create = async (name: string, proton: string) => {
+    await section
+      .getByRole("button", { name: /创建运行环境|创建环境或副本/ })
+      .click();
+    await expect(dialog).toBeVisible();
+    await dialog.locator("#runtime-environment-name").fill(name);
+    await dialog.locator("#runtime-environment-proton").fill(proton);
+    await dialog.getByRole("button", { name: /创建环境|创建副本/ }).click();
+    await expect(dialog).toHaveCount(0);
+  };
+
+  // 创建环境只需要名称与 Proton, 绑定当前地区的游戏目录.
+  await section
+    .getByRole("button", { name: "创建运行环境", exact: true })
+    .click();
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.locator("#runtime-environment-distribution-trigger"),
+  ).toHaveCount(0);
+  await dialog.locator("#runtime-environment-name").fill("国服环境");
   await dialog.locator("#runtime-environment-proton").fill("/opt/Proton");
   await dialog.getByRole("button", { name: "创建环境", exact: true }).click();
   await expect(dialog).toHaveCount(0);
+  await expect(select).toHaveText("国服环境 · 当前 · 稳定");
+  await expect(section).toContainText("上次使用的游戏目录: /tmp/NTECn");
+  await expect(page.locator("#set-distribution")).toHaveValue("cn");
+
+  // 切换到另一个地区后, 该地区还没有记住任何环境.
+  await settingsCategory(page, "nte-game");
+  await page.locator("#set-distribution-trigger").click();
+  await page.getByRole("option", { name: "国际服", exact: true }).click();
   await expect(page.locator("#set-distribution")).toHaveValue("global");
-  await expect(section).toContainText(
-    "绑定的游戏目录: /tmp/NTEGlobal (国际服)",
-  );
-  await section
-    .getByRole("button", { name: "创建环境或副本", exact: true })
-    .click();
-  await dialog.locator("#runtime-environment-distribution-trigger").click();
-  await dialog.getByRole("option", { name: "国服", exact: true }).click();
-  await dialog.locator("#runtime-environment-name").fill("国服副本");
-  await dialog.getByRole("button", { name: "创建副本", exact: true }).click();
-  await expect(dialog).toHaveCount(0);
-  await expect(page.locator("#set-distribution")).toHaveValue("global");
-  await page.locator("#runtime-environment-trigger").click();
-  await page.getByRole("option", { name: "国服副本", exact: true }).click();
+  await settingsCategory(page, "runtime");
+  await expect(select).toHaveText("请选择运行环境");
+
+  await create("国际服环境", "/opt/Proton-Global");
+  await expect(select).toHaveText("国际服环境 · 当前 · 稳定");
+  await expect(section).toContainText("上次使用的游戏目录: /tmp/NTEGlobal");
+
+  // 切回原地区, 该地区记住的环境重新生效.
+  await settingsCategory(page, "nte-game");
+  await page.locator("#set-distribution-trigger").click();
+  await page.getByRole("option", { name: "国服", exact: true }).click();
+  await expect(page.locator("#set-distribution")).toHaveValue("cn");
+  await settingsCategory(page, "runtime");
+  await expect(select).toHaveText("国服环境 · 当前 · 稳定");
+
+  // 切换环境只更新当前地区的选择, 不改游戏地区.
+  await select.click();
+  await page.getByRole("option", { name: "国际服环境", exact: true }).click();
   await section
     .getByRole("button", { name: "切换到此环境", exact: true })
     .click();
+  await expect(select).toHaveText("国际服环境 · 当前");
   await expect(page.locator("#set-distribution")).toHaveValue("cn");
-  await expect(section).toContainText(
-    "绑定的游戏目录: ~/Games/Neverness To Everness (国服)",
-  );
 });

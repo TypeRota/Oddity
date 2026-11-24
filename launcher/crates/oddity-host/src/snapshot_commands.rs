@@ -249,16 +249,7 @@ pub fn current_inputs(
     let launcher_root = crate::install::launcher_root(registry, settings);
     let install_root =
         crate::install::effective_install_root(registry, settings, launcher_root.as_deref());
-    let environment = settings
-        .current()
-        .active_environment
-        .as_ref()
-        .and_then(|id| {
-            settings
-                .runtime_environments
-                .iter()
-                .find(|environment| &environment.id == id)
-        });
+    let environment = environment_commands::selected(registry, settings).ok();
     let proton_name = environment
         .and_then(|environment| environment.proton.path.file_name())
         .map(|name| name.to_string_lossy().into_owned());

@@ -1,7 +1,11 @@
 import type { Component } from "vue";
 // 页面登记表只取游戏包的元数据, 不把包内组件拉进控制器的依赖图.
 import { packageGames, packagePages } from "./generated/page-entries";
-import { contributionVisible, type CapabilityRequirement } from "./capability";
+import {
+  contributionActive,
+  contributionVisible,
+  type CapabilityRequirement,
+} from "./capability";
 import type { HostFacts } from "./facts";
 
 /** 页面挂载的宿主区域: home 常驻, drawer 随导航抽屉切换. */
@@ -20,7 +24,7 @@ export interface PageEntry {
   /** false 表示页面只由流程进入, 不进入主导航. */
   readonly nav: PageNavItem | false;
   /** 页面所需能力; required 不满足时页面不挂载. */
-  readonly requires?: readonly CapabilityRequirement[];
+  readonly requires: readonly CapabilityRequirement[];
   /** 页面可见条件; 条件不成立的页面不挂载, 也不进入导航与页面白名单. */
   readonly visible: (facts: HostFacts) => boolean;
 }
@@ -31,10 +35,10 @@ export interface PageContribution extends PageEntry {
 }
 
 /**
- * 游戏展示声明: 首页标题、安装目录提示与游玩海报文件名等宿主通用位置使用的
- * 展示信息由游戏包提供.
+ * 游戏声明: 宿主通用位置需要、且只有该游戏知道的取值.
  *
- * 宿主不按发行渠道拼游戏名, 也不枚举具体游戏; 没有声明的游戏回退到
+ * 包含展示文案 (首页标题, 安装目录提示, 游玩海报文件名) 与启动方式各自依赖的
+ * 能力. 宿主不按发行渠道拼游戏名, 也不枚举具体游戏; 没有声明的游戏回退到
  * activeGame 本身或通用文案.
  */
 export interface GameContribution {
@@ -44,6 +48,15 @@ export interface GameContribution {
   readonly installRootHint: (facts: HostFacts) => string;
   /** 游玩记录海报的文件名前缀, 宿主追加日期. */
   readonly playtimePosterPrefix: (facts: HostFacts) => string;
+  /**
+   * 每种启动方式依赖的能力; 未列出的方式在任何上下文都可用.
+   *
+   * 宿主用与贡献挂载相同的求值函数判断, 不在持久化数据里留下当前上下文
+   * 用不了的取值.
+   */
+  readonly launchModeRequires?: Readonly<
+    Record<string, readonly CapabilityRequirement[]>
+  >;
 }
 
 // 宿主页面; 由游戏包提供内容的页面在包内声明.
@@ -53,6 +66,7 @@ export const hostPageEntries = [
     slot: "home",
     order: 1,
     nav: { label: "启动", icon: "play" },
+    requires: [],
     visible: () => true,
   },
   {
@@ -60,6 +74,7 @@ export const hostPageEntries = [
     slot: "drawer",
     order: 3,
     nav: { label: "游戏模式", icon: "game-controller" },
+    requires: [],
     visible: () => true,
   },
   {
@@ -67,6 +82,7 @@ export const hostPageEntries = [
     slot: "drawer",
     order: 5,
     nav: { label: "记录", icon: "clock" },
+    requires: [],
     visible: () => true,
   },
   {
@@ -74,6 +90,7 @@ export const hostPageEntries = [
     slot: "drawer",
     order: 6,
     nav: { label: "设置", icon: "gear-six" },
+    requires: [],
     visible: () => true,
   },
   {
@@ -82,6 +99,7 @@ export const hostPageEntries = [
     slot: "drawer",
     order: 7,
     nav: false,
+    requires: [],
     visible: () => true,
   },
 ] as const satisfies readonly PageEntry[];
@@ -140,6 +158,13 @@ export function gameInstallRootHint(facts: HostFacts): string {
 /** 游玩记录海报的文件名前缀; 没有声明时用通用名. */
 export function playtimePosterPrefix(facts: HostFacts): string {
   return gameContribution(facts)?.playtimePosterPrefix(facts) ?? "游玩记录";
+}
+
+/** 当前上下文可用的启动方式; 该方式没有声明要求时始终可用. */
+export function launchModeAvailable(mode: string, facts: HostFacts): boolean {
+  const requires = gameContribution(facts)?.launchModeRequires?.[mode];
+  if (!requires) return true;
+  return contributionActive(requires, facts);
 }
 
 export interface NavigationItem<

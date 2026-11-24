@@ -12,6 +12,7 @@ game-nte/
 │       ├── bulletin/    公告抓取, 解析, 命令分发与测试
 │       ├── background/  官方背景扫描, 解析, 命令分发与测试
 │       ├── attendance/  塔吉多签到, 账号与游戏状态, 命令分发与测试
+│       ├── player_state/ 游戏内状态同步: 进程外只读抓包, 协议解析与资源恢复计算
 │       ├── auth/        国服游戏账号, 登录, 会话与密钥环存储
 │       ├── install/     官方启动器与游戏文件探测
 │       └── update/      更新域: 区服与路径常量, 游戏资源引擎, 启动器自更新
@@ -33,8 +34,13 @@ game-nte/
 - 包 id 为 `nte`, 显示名为 "异环".
 - 公告域声明 `fetch_bulletins`, 参数只有区服 (`cn` / `global`);
   每个来源独立失败, 返回 `BulletinFeed.errors`.
-- 背景域声明 `launcher_background`, 无参数; 官方启动器根目录由宿主提供.
+- 背景域声明 `launcher_background` 与归档用的 `launcher_background_archive` /
+  `launcher_background_select` / `launcher_background_configure`; 官方启动器根目录与
+  数据目录由宿主提供.
 - 签到域声明 `attendance_*`; 凭据进平台密钥环, 区服来自宿主只读设置快照.
+- 玩家状态域声明 `game_state_status` / `game_state_start` / `game_state_stop`;
+  经 dumpcap 只读解析游戏自身的 UDP 同步, 读取体力, 活跃度与激励金并计算恢复,
+  原始包不落盘.
 - 账号域声明 `game_accounts` / `game_send_code` / `game_login` /
   `game_account_remove`; 认证配置来自官方启动器, 账号进平台密钥环, 国服能力门
   同时供宿主直接启动使用.
@@ -54,11 +60,15 @@ game-nte/
 - `contribution.ts` 声明 "游戏与启动" 与 "账号与签到" 两个设置分区, 连同
   检索项、顺序与可见条件; 宿主设置页按贡献表装配.
 - `domains/player-info` 的 `PlayerInfoCard` 由 `contribution.ts` 挂到首页.
+- 页面、首页卡片、设置分区和设置项必须显式声明 `requires`. 无能力依赖时填写
+  `requires: []`. 能力要求可以写成对象字面量, 或引用同文件或相对路径导入的
+  对象常量. 生成器根据宿主和当前游戏包的后端能力表校验 `id`、`revision` 与
+  `necessity`.
 - `game.ts` 同时给出安装目录提示与游玩海报文件名, 更新页与海报组件只读这份
   声明; 没有声明时宿主用通用文案.
 - `preview.ts` 用 `PreviewContribution` 声明公告与塔吉多签到命令的浏览器演示;
   生成物把它汇总进宿主预览表, 模拟数据不再留在宿主.
-- 修改 `pages.ts`, `contribution.ts`, `game.ts` 或 `preview.ts` 后运行
+- 修改 `pages.ts`, `contribution.ts`, `requirements.ts`, `game.ts` 或 `preview.ts` 后运行
   `cargo run -p ui-registry-gen`, 并提交 `launcher/ui/src/host/generated/` 下的
   两个生成物; CI 用 `--check` 校验漂移.
 

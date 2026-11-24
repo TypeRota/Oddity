@@ -15,13 +15,7 @@ import {
   motion,
   useReducedMotion,
 } from "@host/ui-kit";
-import {
-  hostFacts,
-  playerActions,
-  playerCard,
-  playerFacts,
-  type GameRecord,
-} from "@host/api";
+import { hostFacts, playerActions, playerCard, playerFacts } from "@host/api";
 import { usePlayerMotion } from "./usePlayerMotion";
 
 const panelId = useId();
@@ -29,17 +23,10 @@ const triggerId = useId();
 const open = playerCard.expanded;
 const gamepadActive = playerCard.gamepad;
 const reduceMotion = hostFacts.reduceMotion;
-const global = computed(() => hostFacts.distribution.value === "global");
-const recordsLoading = playerFacts.recordsLoading;
-const recordsWaiting = playerFacts.recordsWaiting;
-const attendanceLoaded = playerFacts.attendanceLoaded;
-const attendanceLoading = playerFacts.attendanceLoading;
 const selectedId = ref("");
 const direction = ref(1);
-const prefersReducedMotion = useReducedMotion();
-const reduced = computed(
-  () => reduceMotion.value || prefersReducedMotion.value,
-);
+const reducedPreference = useReducedMotion();
+const reduced = computed(() => reduceMotion.value || reducedPreference.value);
 const spring = computed(() =>
   reduced.value
     ? { duration: 0 }
@@ -59,42 +46,83 @@ const { detailsReady, summaryReady, moving } = usePlayerMotion(
   surface,
   details,
 );
-const accounts = computed(() =>
-  global.value ? [] : playerFacts.accounts.value,
-);
-const account = computed(
+const live = computed(() => playerFacts.live.value);
+const accounts = computed(() => playerFacts.accounts.value);
+const entries = computed(() => {
+  const snapshots = [live.value.observation, live.value.record].filter(
+    (record) => record !== null,
+  );
+  const items = accounts.value.map((account) => {
+    const snapshot = snapshots.find(
+      (record) => record.roleId && account.gameRecord?.roleId === record.roleId,
+    );
+    return {
+      id: account.id,
+      label: account.maskedPhone,
+      record: snapshot
+        ? {
+            ...snapshot,
+            roleName: snapshot.roleName || account.gameRecord?.roleName || "",
+          }
+        : account.gameRecord,
+      failure: snapshot ? null : account.gameRecordError,
+      source: snapshot ? "game" : "community",
+    };
+  });
+  for (const snapshot of [...snapshots].reverse()) {
+    if (
+      items.some(
+        (item) =>
+          item.source === "game" && item.record?.roleId === snapshot.roleId,
+      )
+    )
+      continue;
+    items.unshift({
+      id: `game:${snapshot.roleId || "unidentified"}`,
+      label: snapshot.roleId ? "游戏角色" : "当前游戏",
+      record: snapshot,
+      failure: null,
+      source: "game",
+    });
+  }
+  return items.sort(
+    (a, b) => Number(b.source === "game") - Number(a.source === "game"),
+  );
+});
+const entry = computed(
   () =>
-    accounts.value.find((item) => item.id === selectedId.value) ??
-    accounts.value[0],
+    entries.value.find((item) => item.id === selectedId.value) ??
+    entries.value[0],
 );
 const index = computed(() =>
   Math.max(
     0,
-    accounts.value.findIndex((item) => item.id === account.value?.id),
+    entries.value.findIndex((item) => item.id === entry.value?.id),
   ),
 );
-const record = computed(() => account.value?.gameRecord);
-const failure = computed(() => account.value?.gameRecordError);
-const error = computed(
-  () =>
-    failure.value?.message ||
-    playerFacts.recordsError.value ||
-    (!accounts.value.length ? playerFacts.attendanceError.value : ""),
+const record = computed(() => entry.value?.record);
+const needsLogin = computed(() =>
+  ["auth", "verification"].includes(entry.value?.failure?.kind ?? ""),
 );
-const busy = computed(
+const communityBusy = computed(
   () =>
-    recordsLoading.value ||
+    playerFacts.recordsLoading.value ||
     (playerFacts.attendanceBusy.value && !playerFacts.attendanceRunning.value),
 );
-const needsLogin = computed(() =>
-  ["auth", "verification"].includes(failure.value?.kind ?? ""),
+const recordsLoading = playerFacts.recordsLoading;
+const recordsWaiting = playerFacts.recordsWaiting;
+const attendanceLoaded = playerFacts.attendanceLoaded;
+const attendanceLoading = playerFacts.attendanceLoading;
+const busy = communityBusy;
+const displayName = computed(
+  () => record.value?.roleName || entry.value?.label || "玩家信息",
 );
 function select(offset: number) {
-  if (!accounts.value.length) return;
+  if (!entries.value.length) return;
   direction.value = offset;
   selectedId.value =
-    accounts.value[
-      (index.value + offset + accounts.value.length) % accounts.value.length
+    entries.value[
+      (index.value + offset + entries.value.length) % entries.value.length
     ].id;
 }
 function close() {
@@ -118,28 +146,51 @@ function refresh(force = false) {
   if (hostFacts.page.value === "home" && !document.hidden)
     void playerActions.refreshRecords(force);
 }
+function refreshLive() {
+  if (hostFacts.page.value === "home" && !document.hidden)
+    void playerActions.refreshLive();
+}
 watch(
   () => [
     accounts.value.map((a) => a.id).join(","),
     hostFacts.page.value,
-    busy.value,
+    communityBusy.value,
   ],
   () => refresh(),
 );
-let timer: ReturnType<typeof setInterval>;
-const onFocus = () => refresh();
+watch(
+  () => [
+    hostFacts.distribution.value,
+    hostFacts.page.value,
+    hostFacts.ready.value,
+    open.value,
+  ],
+  refreshLive,
+);
+let communityTimer: ReturnType<typeof setInterval>;
+let liveTimer: ReturnType<typeof setInterval>;
+const onFocus = () => {
+  refresh();
+  refreshLive();
+};
 onMounted(() => {
   open.value = false;
   void playerActions.loadAccounts();
   refresh();
-  timer = setInterval(onFocus, 30_000);
+  refreshLive();
+  communityTimer = setInterval(refresh, 30_000);
+  liveTimer = setInterval(() => {
+    if (live.value.enabled || live.value.record || live.value.observation)
+      refreshLive();
+  }, 1000);
   window.addEventListener("focus", onFocus);
   document.addEventListener("visibilitychange", onFocus);
   document.addEventListener("pointerdown", outside);
 });
 onBeforeUnmount(() => {
   open.value = false;
-  clearInterval(timer);
+  clearInterval(communityTimer);
+  clearInterval(liveTimer);
   window.removeEventListener("focus", onFocus);
   document.removeEventListener("visibilitychange", onFocus);
   document.removeEventListener("pointerdown", outside);
@@ -153,9 +204,23 @@ function meter(
 ) {
   return `${value(current)} / ${value(max)}`;
 }
-function percent(data: GameRecord) {
-  if (data.stamina == null || !data.staminaMax) return 0;
-  return Math.max(0, Math.min(100, (data.stamina / data.staminaMax) * 100));
+function grouped(number: number | null | undefined) {
+  return number == null
+    ? "--"
+    : String(number).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+function remaining(milliseconds: number | null | undefined) {
+  if (milliseconds == null) return "";
+  const days = Math.floor(milliseconds / 86_400_000);
+  if (days > 0) return `${days} 天后刷新`;
+  const hours = Math.floor(milliseconds / 3_600_000);
+  if (hours > 0) return `${hours} 小时后刷新`;
+  return `${Math.max(1, Math.ceil(milliseconds / 60_000))} 分钟后刷新`;
+}
+function percent(data: NonNullable<typeof record.value>) {
+  return !data.staminaMax || data.stamina == null
+    ? 0
+    : Math.max(0, Math.min(100, (data.stamina / data.staminaMax) * 100));
 }
 </script>
 
@@ -193,15 +258,11 @@ function percent(data: GameRecord) {
             }"
             :transition="{ duration: reduced ? 0 : 0.12 }"
           >
-            <span class="game-records__name">{{
-              record?.roleName ||
-              record?.roleId ||
-              (account ? account.maskedPhone : "玩家信息")
-            }}</span>
+            <span class="game-records__name">{{ displayName }}</span>
             <span class="game-records__stamina">{{
               record
                 ? `体力 ${meter(record.stamina, record.staminaMax)}`
-                : account
+                : entry
                   ? "查看游戏状态"
                   : "登录塔吉多"
             }}</span>
@@ -235,14 +296,15 @@ function percent(data: GameRecord) {
             :exit="{ opacity: 0 }"
             :transition="{ duration: reduced ? 0 : 0.14 }"
             ><div ref="details" class="game-records__details">
-              <header v-if="account" class="game-records__head">
+              <header v-if="entry" class="game-records__head">
                 <p class="game-records__identity">
-                  <span>{{ account.maskedPhone }}</span>
-                  <span v-if="record?.serverName">{{ record.serverName }}</span>
+                  <span>{{ displayName }}</span>
+                  <span v-if="record?.roleId">UID {{ record.roleId }}</span>
+                  <span v-else-if="entry?.source === 'game'">身份未识别</span>
                 </p>
                 <div class="game-records__actions">
                   <motion.button
-                    v-if="accounts.length"
+                    v-if="entries.length"
                     class="game-records__icon-button"
                     :while-press="reduced ? {} : { scale: 0.88 }"
                     :transition="spring"
@@ -258,8 +320,8 @@ function percent(data: GameRecord) {
                 </div>
               </header>
               <motion.article
-                v-if="account"
-                :key="account.id"
+                v-if="entry"
+                :key="entry.id"
                 class="game-records__account"
                 aria-live="polite"
                 :initial="{
@@ -316,14 +378,32 @@ function percent(data: GameRecord) {
                       <dt>今日活跃度</dt>
                       <dd>{{ value(record.activity) }}</dd>
                     </div>
+                    <div>
+                      <dt>备用本性像素</dt>
+                      <dd>{{ value(record.staminaBackup) }} / 2400</dd>
+                    </div>
+                    <div>
+                      <dt>备用都市活力</dt>
+                      <dd>{{ value(record.cityStaminaBackup) }} / 1000</dd>
+                    </div>
+                    <div>
+                      <dt>大亨激励金</dt>
+                      <dd>
+                        {{ grouped(record.incentiveObtained) }} /
+                        {{ grouped(record.incentiveMaximum) }}
+                        <small
+                          v-if="record.incentiveRemaining != null"
+                          class="game-records__note"
+                          >{{ remaining(record.incentiveRemaining) }}</small
+                        >
+                      </dd>
+                    </div>
                   </motion.dl>
                 </template>
                 <p v-else-if="recordsLoading" class="game-records__hint">
                   正在读取角色信息...
                 </p>
-                <p v-else-if="!error" class="game-records__hint">
-                  等待获取角色信息.
-                </p>
+                <p v-else class="game-records__hint">等待获取角色信息.</p>
                 <p
                   v-if="recordsWaiting"
                   class="game-records__hint"
@@ -331,15 +411,7 @@ function percent(data: GameRecord) {
                 >
                   正在等待账号任务完成, 稍后自动刷新.
                 </p>
-                <div v-if="error || needsLogin" class="game-records__status">
-                  <p
-                    v-if="error"
-                    class="game-records__error"
-                    role="status"
-                    :title="error + (record ? '. 当前显示上次数据.' : '')"
-                  >
-                    {{ error }}{{ record ? ". 当前显示上次数据." : "" }}
-                  </p>
+                <div v-if="needsLogin" class="game-records__status">
                   <motion.button
                     v-if="needsLogin"
                     type="button"
@@ -350,22 +422,11 @@ function percent(data: GameRecord) {
                   </motion.button>
                 </div>
               </motion.article>
-              <div v-else-if="global" class="game-records__empty">
-                <p class="game-records__hint">当前地区暂无可读取的玩家信息.</p>
-              </div>
               <div v-else class="game-records__empty">
                 <span class="game-records__empty-mark" aria-hidden="true"
                   ><svg class="icon"><use href="#i-users" /></svg
                 ></span>
-                <p
-                  v-if="error"
-                  class="game-records__error"
-                  role="status"
-                  :title="error"
-                >
-                  {{ error }}
-                </p>
-                <p v-else>
+                <p>
                   {{
                     !attendanceLoaded && attendanceLoading
                       ? "正在读取账号..."
@@ -381,9 +442,9 @@ function percent(data: GameRecord) {
                 </motion.button>
               </div>
 
-              <footer v-if="accounts.length" class="game-records__foot">
+              <footer v-if="entries.length" class="game-records__foot">
                 <nav
-                  v-if="accounts.length > 1"
+                  v-if="entries.length > 1"
                   class="game-records__pager"
                   aria-label="切换账号"
                   @keydown.left.prevent="select(-1)"
@@ -401,9 +462,7 @@ function percent(data: GameRecord) {
                   </motion.button>
                   <span aria-live="polite" aria-atomic="true"
                     >{{ String(index + 1).padStart(2, "0") }}
-                    <i
-                      >/ {{ String(accounts.length).padStart(2, "0") }}</i
-                    ></span
+                    <i>/ {{ String(entries.length).padStart(2, "0") }}</i></span
                   >
                   <motion.button
                     class="game-records__icon-button game-records__next"
@@ -613,15 +672,27 @@ dd {
 }
 .game-records__secondary {
   display: grid;
-  grid-template-columns: 1.45fr 1fr;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
   gap: 12px;
   margin: 0;
 }
-.game-records__secondary > div:last-child {
+.game-records__secondary > div {
+  min-width: 0;
+}
+.game-records__secondary > div:nth-child(even) {
   padding-left: 16px;
 }
 .game-records__secondary dd {
   font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.game-records__note {
+  display: block;
+  margin-top: 2px;
+  color: var(--faint);
+  font-size: 9px;
+  line-height: 12px;
 }
 .game-records__status {
   padding-top: 10px;

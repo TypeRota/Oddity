@@ -3,10 +3,27 @@ name: 前端质量检查
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    paths:
+      - ".gitea/workflows/frontend-quality.yml"
+      - ".gitea/actions/ci-result/**"
+      - "scripts/reuse-ci-result.mjs"
+      - "launcher/ui/**"
+      - "launcher/packages/*/ui/**"
+      - "scripts/check-frontend-coverage.mjs"
+      - "scripts/check-rust-coverage.mjs"
+      - "scripts/check-ui-boundaries.mjs"
+      - "!**/*.md"
+  schedule:
+    # 北京时间 5:00, 与每日检查汇总同一时刻启动。
+    - cron: "TZ=Asia/Shanghai 0 5 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 concurrency:
-  group: frontend-quality-${{ github.event.pull_request.number || github.ref }}
+  group: frontend-quality-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -27,6 +44,12 @@ jobs:
           git fetch --depth 1 origin "$GITHUB_REF" || git fetch --depth 1 origin "$GITHUB_SHA"
           git checkout -q FETCH_HEAD
           git log --oneline -1
+      - name: 复用成功检查
+        id: previous
+        if: github.event_name == 'pull_request'
+        uses: ./checkout/.gitea/actions/ci-result
+        with:
+          workflow: frontend-quality
       - name: 安装依赖
         run: |
           # 项目 engines 要求 Node >= 24.19, runner 自带 Node 24 装在 /data/workspace/node24.
@@ -35,33 +58,31 @@ jobs:
           pnpm -v
           cd checkout/launcher/ui
           pnpm install --frozen-lockfile
-      - name: 检查契约与注册表生成物
-        run: |
-          export PATH="/opt/rust/bin:$HOME/.cargo/bin:$PATH"
-          cd checkout/launcher
-          cargo run --locked -p contract-gen -- --check
-          cargo run --locked -p ui-registry-gen -- --check
       - name: 格式检查
         run: |
           export PATH=/data/workspace/node24/bin:$PATH
           cd checkout/launcher/ui
           pnpm run format:check
       - name: 样式检查
+        if: steps.previous.outputs.reused != 'true'
         run: |
           export PATH=/data/workspace/node24/bin:$PATH
           cd checkout/launcher/ui
           pnpm run lint:css
       - name: 包 UI 边界检查
+        if: steps.previous.outputs.reused != 'true'
         run: |
           export PATH=/data/workspace/node24/bin:$PATH
           cd checkout/launcher/ui
           node ../../scripts/check-ui-boundaries.mjs
       - name: 构建
+        if: steps.previous.outputs.reused != 'true'
         run: |
           export PATH=/data/workspace/node24/bin:$PATH
           cd checkout/launcher/ui
           pnpm run build
       - name: 覆盖率
+        if: steps.previous.outputs.reused != 'true'
         run: |
           export PATH=/data/workspace/node24/bin:$PATH
           cd checkout/launcher/ui

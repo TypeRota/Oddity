@@ -1,0 +1,66 @@
+name: 生成物一致性检查
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".gitea/workflows/generated-quality.yml"
+      - ".gitea/actions/ci-result/**"
+      - "scripts/reuse-ci-result.mjs"
+      - ".cargo/**"
+      - "rust-toolchain*"
+      - "launcher/.cargo/**"
+      - "launcher/rust-toolchain*"
+      - "launcher/Cargo.*"
+      - "launcher/tools/**"
+      - "launcher/crates/oddity-contract/**"
+      - "launcher/crates/oddity-host/src/hardware.rs"
+      - "launcher/packages/*/backend/src/lib.rs"
+      - "launcher/CONTRACTS.md"
+      - "launcher/ui/electron/commands.ts"
+      - "launcher/ui/src/core/generated/command-ids.ts"
+      - "launcher/ui/src/types/generated/commands.ts"
+      - "launcher/ui/src/host/**/*.ts"
+      - "launcher/packages/*/ui/src/**/*.ts"
+  schedule:
+    # 北京时间 5:00, 与每日检查汇总同一时刻启动。
+    - cron: "TZ=Asia/Shanghai 0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: generated-quality-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 检查契约与 UI 注册表
+    runs-on: heavy
+    timeout-minutes: 10
+    steps:
+      - name: 检出代码
+        run: |
+          set -euo pipefail
+          export PATH="/opt/rust/bin:$HOME/.cargo/bin:$PATH"
+          git init -q checkout
+          cd checkout
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --depth 1 origin "$GITHUB_SHA"
+          git checkout -q --detach FETCH_HEAD
+      - name: 复用成功检查
+        id: previous
+        if: github.event_name == 'pull_request'
+        uses: ./checkout/.gitea/actions/ci-result
+        with:
+          workflow: generated-quality
+      - name: 检查生成物
+        if: steps.previous.outputs.reused != 'true'
+        run: |
+          set -euo pipefail
+          export PATH="/opt/rust/bin:$HOME/.cargo/bin:$PATH"
+          cd checkout/launcher
+          cargo run --locked -p contract-gen -- --check
+          cargo run --locked -p ui-registry-gen -- --check

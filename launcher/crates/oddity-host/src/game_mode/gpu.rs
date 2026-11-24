@@ -89,6 +89,11 @@ fn devices_at(root: &Path) -> Vec<Device> {
     devices
 }
 
+/// 是否存在可调优的显卡; 能力求值只读这一结果, 不重复探测.
+pub fn has_tunable_device() -> bool {
+    !devices_at(Path::new("/sys/class/drm")).is_empty()
+}
+
 pub fn info() -> Result<Info> {
     let devices = devices_at(Path::new("/sys/class/drm"));
     let text = super::config::read()?;

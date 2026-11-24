@@ -44,7 +44,13 @@ ls -d ~/.local/share/oddity/environments/环境ID/prefix/drive_c
 
 ### Wine prefix 尚未初始化
 
-请先按[安装指南](install.md#proton-运行环境)在 **设置 → 运行环境** 中创建 Proton 运行环境. 不需要手动设置 Wine prefix, 创建环境后由 Oddity 管理. 首次启动时由 Proton 初始化前缀. 若环境目录损坏或被移除, 请创建新环境后切换使用.
+请先按[安装指南](install.md#proton-运行环境)在 **设置 → 运行环境** 中创建 Proton 运行环境. 不需要手动设置 Wine prefix, 创建环境后由 Oddity 管理. 首次启动时由 Proton 初始化前缀. 若环境目录损坏或被移除, 先在运行环境页仅移除该环境的登记, 再创建新环境并切换使用.
+
+### 运行环境不可用或安装目录不一致
+
+环境列表标记为不可用时不能切换或启动. 环境目录、身份文件或 prefix 缺失, 以及固定 Proton 已失效的环境, 可以点击 **仅移除登记**: 只清除设置中的记录并清空各区服记忆, 磁盘目录保留, 之后可在 **环境数据维护** 中删除; 身份文件与 prefix 完好时也可以重新导入.
+
+只是安装目录变化时, 环境列表会提示上次使用的目录与当前目录不同. 点击 **更新绑定** 会立即重写 prefix 内的链接、注册表和官方配置; 也可以在下次启动时由 Oddity 自动对齐. 详见[运行环境](runtime-environments.md#更新绑定与失效环境).
 
 ### 使用应急模式
 
@@ -84,11 +90,15 @@ NTE_SOFTWARE_RENDER=1 oddity
 
 如果开启了 **关闭窗口时最小化到托盘**, 关闭主窗口只会隐藏到后台. 可以从托盘菜单选择 **退出 Oddity**, 或在设置中关闭该选项.
 
+### 退出 Oddity 后游戏仍在运行
+
+这是预期行为. 游戏会话由后台服务持有, 退出界面不会结束游戏; 重新打开 Oddity 会接回该会话, 首页显示游戏仍在运行, 可以直接关闭游戏. 如果确认游戏已经退出但首页仍显示运行中, 请结束残留进程后重试: `pkill -f oddity-backend`.
+
 ### 桌面动作没有启动游戏
 
 先确认启动失败时是否出现 `异环启动失败` 或 `NTE 启动失败` 桌面通知. 没有通知时检查当前桌面是否提供 `org.freedesktop.Notifications`, 并查看 `~/.local/share/oddity/logs/` 下的启动日志.
 
-如果提示需要创建运行环境, 先在 **设置 → 运行环境** 中选择对应地区并创建环境. 同一地区有多个环境时, 使用 `oddity --launch --region ... --environment <名称>` 指定. 详细参数见[外部启动入口](external-launch.md).
+如果提示需要创建运行环境, 启动环境向导会打开创建确认页; 也可以在 **设置 → 运行环境** 中创建. 同一地区有多个环境时, 使用 `oddity --launch --region ... --environment <名称>` 指定. 详细参数见[外部启动入口](external-launch.md).
 
 ### Chromium 沙箱初始化失败
 
@@ -152,6 +162,7 @@ Oddity 在每次实际启动游戏前记录一份环境快照, 并在游戏进�
 | 内容          | 默认位置                                            |
 |-------------|-------------------------------------------------|
 | 设置          | `~/.config/oddity/settings.json`                |
+| 设置历史        | `~/.config/oddity/settings-history/`            |
 | 安全验证记录      | `~/.local/share/oddity/integrity.json`          |
 | 签到状态        | `~/.config/oddity/taygedo/state.json`           |
 | 日志目录        | `~/.local/share/oddity/logs/`                   |
@@ -162,6 +173,8 @@ Oddity 在每次实际启动游戏前记录一份环境快照, 并在游戏进�
 | Wine prefix | `~/.local/share/oddity/environments/<环境 ID>/prefix`                  |
 
 配置和数据目录分别跟随 `XDG_CONFIG_HOME`, `XDG_DATA_HOME`.
+
+每次保存设置前的上一份内容会作为快照保存在设置历史目录, 最多保留 10 份, 文件名包含保存时间和写入来源, 便于排查设置被意外覆盖的问题. 设置历史只用于排查, 界面不会自动恢复历史内容.
 
 Wine prefix 由所选运行环境决定. 运行环境页会显示当前 prefix 的实际位置.
 

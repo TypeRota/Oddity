@@ -290,6 +290,7 @@ impl Profile {
 pub struct Options {
     pub enabled: bool,
     pub icons: String,
+    pub keyboard_layout: String,
     pub dead_zone: f32,
     pub vibration: bool,
     pub strength: u8,
@@ -313,6 +314,7 @@ impl Default for Options {
         Self {
             enabled: true,
             icons: "auto".into(),
+            keyboard_layout: "qwerty".into(),
             dead_zone: 0.28,
             vibration: true,
             strength: 100,
@@ -329,6 +331,7 @@ impl Default for Options {
 impl Options {
     pub fn validate(&self) -> Result<(), String> {
         if !["auto", "dualsense", "ds4", "switch", "xbox"].contains(&self.icons.as_str())
+            || !["qwerty", "alphabetical"].contains(&self.keyboard_layout.as_str())
             || !self.dead_zone.is_finite()
             || !(0.1..=0.75).contains(&self.dead_zone)
             || self.strength > 100

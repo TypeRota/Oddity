@@ -12,6 +12,7 @@ export const pages = [
     slot: "drawer",
     order: 2,
     nav: { label: "更新", icon: "download-simple" },
+    requires: [],
     visible: (facts: HostFacts) => facts.activeGame === "nte",
   },
   {
@@ -19,6 +20,7 @@ export const pages = [
     slot: "drawer",
     order: 4,
     nav: { label: "公告", icon: "newspaper-clipping" },
+    requires: [],
     visible: (facts: HostFacts) => facts.activeGame === "nte",
   },
 ] as const satisfies readonly PageEntry[];

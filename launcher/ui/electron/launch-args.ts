@@ -1,5 +1,11 @@
 // 第二实例事件里的 argv 会被 Chromium 重排, 原始参数改用 additionalData 传递.
-const launchOptions = ["--game", "--region", "--launch-mode", "--environment"];
+const launchOptions = [
+  "--game",
+  "--region",
+  "--launch-mode",
+  "--environment",
+  "--cross-screen-socket",
+];
 
 /// 这些参数只能配合 --launch 使用; 只要出现就交给后台校验组合是否合法.
 export function isLaunchRequest(argv: string[]): boolean {

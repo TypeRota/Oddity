@@ -26,31 +26,32 @@ describe("浏览器命令桥接", () => {
   it("创建副本验证指定的源环境及其安装范围", async () => {
     const { invoke } = await import("../../src/core/api");
     const first = await invoke("environment_create", {
-      distribution: "cn",
       name: "A",
       protonPath: "/proton-a",
       sourceId: null,
     });
     const id = first.settings.runtimeEnvironments[0].id;
     const copied = await invoke("environment_create", {
-      distribution: "cn",
       name: "A 副本",
       protonPath: "/proton-b",
       sourceId: id,
     });
     expect(copied.settings.runtimeEnvironments).toHaveLength(2);
-    expect(gameSettings(copied.settings).activeEnvironment).toBe(id);
+    expect(gameSettings(copied.settings).activeEnvironments.cn).toBe(id);
     await expect(
       invoke("environment_create", {
-        distribution: "cn",
         name: "缺失源",
         protonPath: "/proton-b",
         sourceId: "missing",
       }),
     ).rejects.toThrow("源运行环境不存在");
+    await invoke("update_settings_section", {
+      owner: "game:nte",
+      patch: { distribution: "global" },
+    });
+    // 当前地区没有安装游戏时不能创建环境.
     await expect(
       invoke("environment_create", {
-        distribution: "global",
         name: "国际服",
         protonPath: "/proton-b",
         sourceId: id,
@@ -61,23 +62,32 @@ describe("浏览器命令桥接", () => {
       patch: { installRoots: { global: "/global-game" } },
     });
     const global = await invoke("environment_create", {
-      distribution: "global",
       name: "国际服",
       protonPath: "/proton-b",
       sourceId: id,
     });
     const profile = global.settings.runtimeEnvironments.at(-1)!;
-    expect(profile).toMatchObject({
-      distribution: "global",
-      installRoot: "/global-game",
+    expect(profile.installRoot).toBe("/global-game");
+    // 国际服自己的槽位由首个环境占用, 国服的标记不受影响.
+    expect(gameSettings(global.settings).activeEnvironments).toEqual({
+      cn: id,
+      global: profile.id,
     });
-    expect(gameSettings(global.settings).distribution).toBe("cn");
+    await invoke("update_settings_section", {
+      owner: "game:nte",
+      patch: { distribution: "cn" },
+    });
     const switched = await invoke("environment_action", {
       action: "switch",
       id: profile.id,
     });
-    expect(gameSettings(switched.settings).distribution).toBe("global");
-    expect(switched.installRoot).toBe("/global-game");
+    // 切换只更新当前地区的槽位, 不改变地区.
+    expect(gameSettings(switched.settings).distribution).toBe("cn");
+    expect(gameSettings(switched.settings).activeEnvironments).toEqual({
+      cn: profile.id,
+      global: profile.id,
+    });
+    expect(switched.prefix).toContain(`/environments/${profile.id}/prefix`);
   });
   it("按 owner 合并设置并拒绝跨 owner 与未知字段", async () => {
     const { invoke } = await import("../../src/core/api");
@@ -130,14 +140,12 @@ describe("浏览器命令桥接", () => {
     const { invoke } = await import("../../src/core/api");
     await expect(
       invoke("environment_create", {
-        distribution: "cn",
         name: "",
         protonPath: "/new",
         sourceId: null,
       }),
     ).rejects.toThrow("请填写");
     const created = await invoke("environment_create", {
-      distribution: "cn",
       sourceId: null,
       name: "测试",
       protonPath: "/proton-b",
@@ -145,7 +153,6 @@ describe("浏览器命令桥接", () => {
     const id = created.settings.runtimeEnvironments[0].id;
     await expect(
       invoke("environment_create", {
-        distribution: "cn",
         name: "测试",
         protonPath: "/proton-b",
         sourceId: null,
@@ -165,7 +172,6 @@ describe("浏览器命令桥接", () => {
     ).rejects.toThrow("不能删除");
     await invoke("environment_action", { action: "keep", id });
     const next = await invoke("environment_create", {
-      distribution: "cn",
       name: "其他环境",
       protonPath: "/proton-c",
       sourceId: null,
@@ -176,6 +182,41 @@ describe("浏览器命令桥接", () => {
       invoke("environment_action", { action: "discard", id }),
     ).rejects.toThrow("不能删除");
     await invoke("environment_action", { action: "keep", id: otherId });
+    const renamed = await invoke("environment_rename", {
+      id: otherId,
+      name: " 改名环境 ",
+    });
+    expect(
+      renamed.settings.runtimeEnvironments.find((entry) => entry.id === otherId)
+        ?.name,
+    ).toBe("改名环境");
+    expect(gameSettings(renamed.settings).activeEnvironments.cn).toBe(otherId);
+    expect(gameSettings(renamed.settings).stableEnvironments.cn).toBe(otherId);
+    await expect(
+      invoke("environment_rename", { id: otherId, name: "测试" }),
+    ).rejects.toThrow("已存在");
+    await expect(
+      invoke("environment_rename", { id: otherId, name: " " }),
+    ).rejects.toThrow("1-64");
+    await expect(
+      invoke("environment_rename", { id: otherId, name: "名".repeat(65) }),
+    ).rejects.toThrow("1-64");
+    await expect(
+      invoke("environment_rename", { id: otherId, name: "改名\u0007环境" }),
+    ).rejects.toThrow("1-64");
+    const longName = "名".repeat(64);
+    const longNamed = await invoke("environment_rename", {
+      id: otherId,
+      name: longName,
+    });
+    expect(
+      longNamed.settings.runtimeEnvironments.find(
+        (entry) => entry.id === otherId,
+      )?.name,
+    ).toBe(longName);
+    await expect(
+      invoke("environment_rename", { id: "missing", name: "名字" }),
+    ).rejects.toThrow("不存在");
     const removed = await invoke("environment_action", {
       action: "discard",
       id,
@@ -193,7 +234,6 @@ describe("浏览器命令桥接", () => {
     const statuses: GameStatus[] = [];
     const dispose = listenGameState((status) => statuses.push(status));
     await invoke("environment_create", {
-      distribution: "cn",
       name: "测试",
       protonPath: "/proton",
       sourceId: null,
@@ -309,7 +349,6 @@ describe("浏览器命令桥接", () => {
     expect(data.launcherRoot).toBe("/game/NTELauncher");
     expect(data.protonPath).toBe("");
     const created = await invoke("environment_create", {
-      distribution: "cn",
       name: "测试",
       protonPath: "/proton",
       sourceId: null,
@@ -382,7 +421,6 @@ describe("浏览器命令桥接", () => {
     );
     await expect(invoke("launch_official")).rejects.toThrow("请先创建");
     await invoke("environment_create", {
-      distribution: "cn",
       name: "测试",
       protonPath: "/proton",
       sourceId: null,
@@ -577,7 +615,6 @@ it("游玩记录预览在运行时返回活动会话并隔离快照", async () =
     ),
   ).toBe(true);
   await invoke("environment_create", {
-    distribution: "cn",
     name: "测试",
     protonPath: "/proton",
     sourceId: null,
@@ -847,17 +884,31 @@ it("桌面会话、下载和迁移订阅转发载荷, 处理提前注销与订�
   expect(native.listen).toHaveBeenCalledTimes(calls);
 });
 
-it("浏览器环境配置计划保留选择, 应用后创建并选中独立运行环境", async () => {
+it("浏览器环境配置先只准备组件, 确认名称后创建并选中环境", async () => {
   const { invoke } = await import("../../src/core/api");
+  // 清空前面用例遗留的运行环境, 回到未配置状态.
+  for (const environment of (await invoke("bootstrap")).settings
+    .runtimeEnvironments)
+    await invoke("environment_action", {
+      action: "forget",
+      id: environment.id,
+    });
   await expect(invoke("runtime_setup_apply")).rejects.toThrow(
     "请先查看安装计划",
   );
   const before = await invoke("runtime_setup_info");
-  expect(before.environment).toBeNull();
+  expect(before).toMatchObject({
+    environment: null,
+    ready: false,
+    installed: true,
+    channel: "国服",
+    installRoot: "~/Games/Neverness To Everness",
+    suggestedName: "默认运行环境",
+  });
   const plan = await invoke("runtime_setup_plan", {
     allUsers: true,
     proton: "/test/proton",
-    createEnvironment: true,
+    environmentName: null,
   });
   expect(plan).toMatchObject({
     proton: "/test/proton",
@@ -872,36 +923,144 @@ it("浏览器环境配置计划保留选择, 应用后创建并选中独立运�
     done: true,
     error: null,
   });
-  const configured = await invoke("runtime_setup_environment");
-  const current = gameSettings(configured.settings);
-  expect(current.activeEnvironment).toBeTruthy();
-  expect(configured.settings.runtimeEnvironments).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        id: current.activeEnvironment,
-        proton: expect.objectContaining({ path: "/test/proton" }),
-      }),
-    ]),
-  );
+  // 组件安装完成但未确认名称时不创建环境.
   expect(await invoke("runtime_setup_info")).toMatchObject({
-    proton: "/test/proton",
-    systemUmu: true,
+    environment: null,
+    ready: false,
   });
-  const noInstall = await invoke("runtime_setup_plan", {
-    allUsers: true,
-    proton: "/test/proton",
-    createEnvironment: false,
+  await expect(invoke("runtime_setup_environment")).rejects.toThrow(
+    "请先在设置中创建并选择 Proton 运行环境",
+  );
+  const confirmed = await invoke("runtime_setup_plan", {
+    allUsers: false,
+    proton: null,
+    environmentName: "测试环境",
   });
-  expect(noInstall.systemCommand).toBeNull();
+  expect(confirmed.systemCommand).toBeNull();
+  const creating = invoke("runtime_setup_apply");
+  await vi.advanceTimersByTimeAsync(4200);
+  await creating;
+  const info = await invoke("runtime_setup_info");
+  expect(info).toMatchObject({ ready: true, proton: confirmed.proton });
+  expect(info.environment?.name).toBe("测试环境");
+  const current = gameSettings((await invoke("bootstrap")).settings);
+  expect(current.activeEnvironments.cn).toBe(info.environment?.id);
+  expect(current.stableEnvironments.cn).toBe(info.environment?.id);
+  expect((await invoke("runtime_setup_environment")).prefixExists).toBe(true);
   const localPlan = await invoke("runtime_setup_plan", {
     allUsers: false,
     proton: null,
-    createEnvironment: false,
+    environmentName: null,
   });
   expect(localPlan.installProton).toBe(true);
   expect(localPlan.umu).toContain("oddity/runtime/umu");
   await invoke("runtime_setup_dismiss");
   expect((await invoke("runtime_setup_status")).busy).toBe(false);
+});
+
+it("确认创建后续环境时保持原有稳定标记", async () => {
+  const { invoke } = await import("../../src/core/api");
+  for (const environment of (await invoke("bootstrap")).settings
+    .runtimeEnvironments)
+    await invoke("environment_action", {
+      action: "forget",
+      id: environment.id,
+    });
+  await invoke("runtime_setup_plan", {
+    allUsers: false,
+    proton: null,
+    environmentName: "第一环境",
+  });
+  const firstApply = invoke("runtime_setup_apply");
+  await vi.advanceTimersByTimeAsync(4200);
+  await firstApply;
+  const first = (await invoke("runtime_setup_info")).environment!;
+  expect(first.name).toBe("第一环境");
+  expect(
+    gameSettings((await invoke("bootstrap")).settings).stableEnvironments.cn,
+  ).toBe(first.id);
+  await invoke("runtime_setup_plan", {
+    allUsers: false,
+    proton: null,
+    environmentName: "第二环境",
+  });
+  const secondApply = invoke("runtime_setup_apply");
+  await vi.advanceTimersByTimeAsync(4200);
+  await secondApply;
+  const second = (await invoke("runtime_setup_info")).environment!;
+  expect(second.name).toBe("第二环境");
+  const current = gameSettings((await invoke("bootstrap")).settings);
+  expect(current.activeEnvironments.cn).toBe(second.id);
+  // 后续创建只切换当前环境, 不覆盖已停留的稳定标记.
+  expect(current.stableEnvironments.cn).toBe(first.id);
+});
+
+it("浏览器预览支持环境健康扫描、改绑、仅移除登记与未登记数据清理", async () => {
+  const { invoke } = await import("../../src/core/api");
+  for (const environment of (await invoke("bootstrap")).settings
+    .runtimeEnvironments)
+    await invoke("environment_action", {
+      action: "forget",
+      id: environment.id,
+    });
+  const created = await invoke("environment_create", {
+    name: "预览环境",
+    protonPath: "/proton-a",
+    sourceId: null,
+  });
+  const id = created.settings.runtimeEnvironments[0].id;
+  const audit = await invoke("environment_audit");
+  expect(audit.environments).toEqual([
+    {
+      id,
+      name: "预览环境",
+      state: "ready",
+      installRoot: "~/Games/Neverness To Everness",
+      installRootCurrent: "~/Games/Neverness To Everness",
+    },
+  ]);
+  expect(audit.orphans).toEqual([]);
+  await invoke("update_settings_section", {
+    owner: "game:nte",
+    patch: { installRoots: { cn: "/new-game" } },
+  });
+  const rebound = await invoke("environment_action", {
+    action: "rebind",
+    id,
+  });
+  expect(rebound.settings.runtimeEnvironments[0].installRoot).toBe("/new-game");
+  const forgotten = await invoke("environment_action", {
+    action: "forget",
+    id,
+  });
+  expect(forgotten.settings.runtimeEnvironments).toEqual([]);
+  expect(gameSettings(forgotten.settings).activeEnvironments).toEqual({});
+  expect(gameSettings(forgotten.settings).stableEnvironments).toEqual({});
+  const importedId = "b".repeat(32);
+  const imported = await invoke("environment_import", {
+    id: importedId,
+    name: "导入环境",
+    protonPath: "/proton-b",
+  });
+  expect(imported.settings.runtimeEnvironments).toEqual([
+    expect.objectContaining({ id: importedId, name: "导入环境" }),
+  ]);
+  await expect(
+    invoke("environment_import", {
+      id: importedId,
+      name: "重复",
+      protonPath: "/proton-b",
+    }),
+  ).rejects.toThrow("已登记");
+  expect(
+    await invoke("environment_orphan_delete", {
+      kind: "logs",
+      name: "c".repeat(32),
+    }),
+  ).toBeNull();
+  await expect(
+    invoke("environment_orphan_delete", { kind: "logs", name: " " }),
+  ).rejects.toThrow("名称无效");
 });
 
 it("浏览器能力信息明确不可用, 原生专用操作不会伪装成功", async () => {
@@ -942,4 +1101,46 @@ it("浏览器能力信息明确不可用, 原生专用操作不会伪装成功",
     await invoke("game_account_remove", { accountId: "missing" }),
   ).toBeNull();
   expect(await invoke("take_launch_error")).toBeNull();
+});
+
+it("预览用 ?hang=1 在启动完成后注入卡死现场", async () => {
+  history.replaceState(null, "", "/?hang=1");
+  const { invoke, listenGameState } = await import("../../src/core/api");
+  const statuses: GameStatus[] = [];
+  const dispose = listenGameState((status) => statuses.push(status));
+  await invoke("environment_create", {
+    name: "卡死",
+    protonPath: "/proton",
+    sourceId: null,
+  });
+  await invoke("launch_official");
+  expect(statuses.at(-1)?.hang).toBeNull();
+
+  // 现场在启动阶段出现, 此时后端仍在运行且还没有进入 running 阶段.
+  await vi.advanceTimersByTimeAsync(3000);
+  const hang = statuses.at(-1)?.hang;
+  expect(statuses.at(-1)?.running).toBe(true);
+  expect(statuses.at(-1)?.launch?.stage).toBe("game");
+  expect(hang?.crashType).toBe("Hang");
+  expect(hang?.errorMessage).toContain("GameThread timed out");
+  expect(hang?.site).toContain("UECC-");
+  expect(hang?.detectedAt).toBeGreaterThan(0);
+
+  await vi.advanceTimersByTimeAsync(700);
+  expect(statuses.at(-1)?.launch).toBeNull();
+
+  // 结束进程后现场保留, 供已结束形态继续展示.
+  const closing = invoke("close_game");
+  await vi.advanceTimersByTimeAsync(850);
+  await closing;
+  expect(statuses.at(-1)?.running).toBe(false);
+  expect(statuses.at(-1)?.hang?.site).toBe(hang?.site);
+
+  // 下一次启动清空现场, 普通启动也不再注入.
+  history.replaceState(null, "", "/");
+  await invoke("launch_official");
+  await vi.advanceTimersByTimeAsync(3700);
+  expect(statuses.at(-1)?.running).toBe(true);
+  expect(statuses.at(-1)?.hang).toBeNull();
+  dispose();
 });

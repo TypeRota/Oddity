@@ -2,72 +2,136 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { calculateLabels, syncPrLabels } from "./sync-pr-labels.mjs";
 
-test("标题范围和路径范围取并集", () => {
-  assert.deepEqual(calculateLabels("feat(proton): 添加运行环境", [
-    "launcher/crates/oddity-host/src/environment.rs",
-    "launcher/crates/oddity-host/src/environment_commands.rs",
-    "launcher/ui/src/components/RuntimeEnvironments.vue",
-  ], []), ["area: launcher", "area: proton", "area: ui", "feature"]);
+test("按文件路径合并 crate、游戏和功能范围", () => {
+  assert.deepEqual(
+    calculateLabels([
+      "launcher/crates/oddity-host/src/environment_commands.rs",
+      "launcher/packages/game-nte/backend/src/update/mod.rs",
+      "launcher/packages/game-nte/backend/src/auth/mod.rs",
+      "launcher/packages/game-arknights/ui/src/main.ts",
+      "launcher/packages/game-azurpromilia/backend/src/launch.rs",
+      "launcher/packages/game-hsr/backend/src/lib.rs",
+    ]),
+    [
+      "area: arknights",
+      "area: azurpromilia",
+      "area: host",
+      "area: hsr",
+      "area: login",
+      "area: nte",
+      "area: proton",
+      "area: ui",
+      "area: updater",
+    ],
+  );
 });
 
-test("同步失效范围和 breaking，保留人工标签及类型标签", () => {
-  assert.deepEqual(calculateLabels("fix(cli): 修复参数", ["launcher/crates/oddity-cli/src/main.rs"],
-    ["area: proton", "area: login", "ci", "docs", "breaking", "feature", "status: blocked"]),
-  ["area: cli", "bug", "feature", "status: blocked"]);
+test("七个宿主 crate 按各自边界标注", () => {
+  const crates = [
+    "backend",
+    "cli",
+    "contract",
+    "host",
+    "platform",
+    "recovery",
+    "runtime",
+  ];
+  for (const name of crates) {
+    assert.deepEqual(
+      calculateLabels([`launcher/crates/oddity-${name}/Cargo.toml`]),
+      [`area: ${name}`],
+    );
+  }
+  assert.deepEqual(calculateLabels(["launcher/ui/electron/commands.ts"]), [
+    "area: contract",
+    "area: ui",
+  ]);
 });
 
-test("标题类型可命中 ci、docs 和范围，app 映射到 launcher", () => {
-  assert.deepEqual(calculateLabels("ci: 更新构建", ["README.md"], []), ["ci", "docs"]);
-  assert.deepEqual(calculateLabels("docs: 更新说明", ["launcher/ui/src/main.ts"], []), ["area: ui", "docs"]);
-  assert.deepEqual(calculateLabels("app!: 调整接口", [], []), ["area: launcher", "breaking"]);
-  assert.deepEqual(calculateLabels("fix(login): 修复登录", [], []), ["area: login", "bug"]);
+test("识别打包、命令行和 Gitea 工作流", () => {
+  assert.deepEqual(
+    calculateLabels([
+      ".gitea/workflows/release.yml",
+      "launcher/ui/electron/after-pack.cjs",
+      "packaging/gentoo/oddity.ebuild",
+      "launcher/crates/oddity-cli/src/main.rs",
+    ]),
+    ["area: cli", "area: packaging", "area: ui", "ci"],
+  );
 });
 
-test("文档仅在全部文件匹配时按路径命中，空列表不命中", () => {
-  assert.deepEqual(calculateLabels("chore: 整理文件", ["README.md", "docs/example.txt"], []), ["chore", "docs"]);
-  assert.deepEqual(calculateLabels("chore: 整理文件", ["README.md", "Cargo.toml"], []), ["chore"]);
-  assert.deepEqual(calculateLabels("chore: 整理文件", [], []), ["chore"]);
+test("混合修改也附加独立的文档和打包标签", () => {
+  assert.deepEqual(calculateLabels(["README.md", "docs/assets/demo.png"]), [
+    "docs",
+  ]);
+  assert.deepEqual(
+    calculateLabels([
+      "docs/assets/demo.png",
+      "packaging/arch/PKGBUILD.in",
+      "launcher/crates/oddity-cli/src/main.rs",
+    ]),
+    ["area: cli", "area: packaging", "docs"],
+  );
+  assert.deepEqual(calculateLabels([]), []);
 });
 
-test("路径规则覆盖隐藏目录、嵌套文件和精确文件名", () => {
-  assert.deepEqual(calculateLabels("fix: 修复构建", [
-    ".github/workflows/example.yml", "packaging/gentoo/oddity.ebuild",
-    "launcher/packages/game-nte/backend/src/update/mod.rs",
-    "launcher/crates/oddity-host/src/environment.rs",
-  ], []), ["area: launcher", "area: packaging", "area: proton", "area: updater", "bug", "ci"]);
-});
-
-test("读取最新标题、分页获取路径，一次写入且重复同步不写入", async () => {
-  let labels = ["status: blocked"];
+test("同步保留人工标签并计入重命名前后的路径", async () => {
+  const available = [
+    "area: packaging",
+    "area: ui",
+    "area: host",
+    "status: blocked",
+    "feature",
+  ].map((name, id) => ({ name, id: id + 1 }));
+  let labels = [available[2], available[3], available[4]];
   const writes = [];
-  const listFiles = Symbol("listFiles");
-  const github = {
-    rest: {
-      pulls: {
-        get: async () => ({ data: {
-          title: "feat(proton): 添加运行环境", labels: labels.map((name) => ({ name })),
-        } }),
-        listFiles,
-      },
-      issues: {
-        setLabels: async (request) => {
-          writes.push(request);
-          labels = request.labels;
+  const api = {
+    list: async (path) => {
+      if (path === "/labels") return available;
+      assert.equal(path, "/pulls/76/files");
+      return [
+        {
+          filename: "launcher/ui/electron/after-pack.cjs",
+          previous_filename: "packaging/after-pack.cjs",
         },
-      },
+      ];
     },
-    paginate: async (method, request) => {
-      assert.equal(method, listFiles);
-      assert.deepEqual(request, { owner: "owner", repo: "repo", pull_number: 76, per_page: 100 });
-      return [{ filename: "launcher/ui/src/main.ts" }];
+    request: async (method, path, body) => {
+      if (method === "GET") {
+        assert.equal(path, "/issues/76/labels");
+        return labels;
+      }
+      writes.push([method, path, body]);
+      if (method === "POST") {
+        labels = labels.concat(
+          available.filter(({ id }) => body.labels.includes(id)),
+        );
+      } else {
+        labels = labels.filter(({ id }) => path !== `/issues/76/labels/${id}`);
+      }
     },
   };
-  const context = {
-    repo: { owner: "owner", repo: "repo" },
-    payload: { pull_request: { number: 76, title: "过期标题" } },
-  };
-  await syncPrLabels({ github, context });
-  await syncPrLabels({ github, context });
-  assert.deepEqual(writes, [{ owner: "owner", repo: "repo", issue_number: 76,
-    labels: ["area: proton", "area: ui", "feature", "status: blocked"] }]);
+
+  await syncPrLabels(api, 76);
+  await syncPrLabels(api, 76);
+  assert.deepEqual(writes, [
+    ["POST", "/issues/76/labels", { labels: [1, 2] }],
+    ["DELETE", "/issues/76/labels/3", undefined],
+  ]);
+  assert.deepEqual(labels.map(({ name }) => name).sort(), [
+    "area: packaging",
+    "area: ui",
+    "feature",
+    "status: blocked",
+  ]);
+});
+
+test("文件移出旧范围时，重命名前的路径仍计入改动", () => {
+  assert.deepEqual(
+    calculateLabels([
+      "docs/moved.ts",
+      "launcher/packages/game-fixture/ui/src/moved.ts",
+    ]),
+    ["area: ui", "docs"],
+  );
 });

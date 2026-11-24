@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use oddity_runtime::{
     EventSink, LaunchError, LaunchFailureKind, LaunchMode, LaunchProgress, LaunchResult,
-    LaunchStage, SessionControl, SessionStatus, SessionTicket,
+    LaunchStage, SessionControl, SessionHang, SessionStatus, SessionTicket,
 };
 use serde::Serialize;
 
@@ -18,6 +18,7 @@ use crate::service::ServiceHandle;
 use crate::settings::Settings;
 use crate::AppState;
 
+pub(crate) mod hang;
 pub mod host;
 pub(crate) mod monitor;
 pub(crate) mod process;
@@ -68,6 +69,8 @@ pub struct Registry {
     pub last_error: Option<String>,
     pub launch: Option<LaunchProgress>,
     pub launch_cancel: Option<Arc<AtomicBool>>,
+    /// 本轮会话发现的崩溃或卡死现场; 会话结束后保留到下一次启动.
+    pub hang: Option<SessionHang>,
 }
 
 impl Registry {
@@ -79,6 +82,7 @@ impl Registry {
             .map_or_else(idle_status, Session::status);
         status.error = self.last_error.clone();
         status.launch = self.launch.clone();
+        status.hang = self.hang.clone();
         status
     }
 
@@ -120,6 +124,8 @@ pub struct Session {
     pub snapshot: Option<String>,
     pub snapshot_success_after_ms: u64,
     pub launcher_root: Option<PathBuf>,
+    /// 本轮会话使用的 Wine prefix; 崩溃现场在这里查找.
+    pub prefix: PathBuf,
     pub(crate) monitor_state: Arc<Mutex<monitor::MonitorState>>,
     pub(crate) control: ControlSlot,
 }
@@ -135,6 +141,7 @@ impl Session {
             log: Some(self.log.clone()),
             launch: None,
             error: None,
+            hang: None,
         }
     }
 
@@ -158,6 +165,7 @@ pub(crate) fn idle_status() -> SessionStatus {
         log: None,
         launch: None,
         error: None,
+        hang: None,
     }
 }
 
@@ -173,6 +181,16 @@ pub fn session_alive(session: &Session) -> bool {
         },
         |control| control.is_alive(),
     )
+}
+
+/// 指定会话当前的崩溃摘要; 会话已经结束或不是这一轮时返回 None.
+pub(crate) fn hang_of(state: &AppState, session_id: u64) -> Option<SessionHang> {
+    let registry = state.game.lock().ok()?;
+    registry
+        .session
+        .as_ref()
+        .filter(|session| session.id == session_id)?;
+    registry.hang.clone()
 }
 
 /// 发 game-state; 调用方必须已经释放注册表锁.
@@ -236,17 +254,10 @@ pub(crate) fn reset_launch(registry: &mut Registry) {
     registry.clear_launch();
 }
 
-pub(crate) async fn launch_official(
-    app: ServiceHandle,
-    state: &AppState,
-) -> Result<LaunchResult, String> {
-    let settings = crate::session::launch_settings(state)?;
-    start_launch(app, settings).await
-}
-
-pub fn prepare_launch(
+/// 启动前置条件; 只读, 不改注册表.
+pub fn launch_blocker(
     packages: &oddity_runtime::Registry,
-    registry: &mut Registry,
+    registry: &Registry,
 ) -> Result<(), String> {
     if packages.blocks_changes() {
         return Err("游戏资源任务正在进行，暂时无法启动游戏".into());
@@ -268,9 +279,18 @@ pub fn prepare_launch(
             return Err("游戏已在运行。".to_string());
         }
     }
+    Ok(())
+}
+
+pub fn prepare_launch(
+    packages: &oddity_runtime::Registry,
+    registry: &mut Registry,
+) -> Result<(), String> {
+    launch_blocker(packages, registry)?;
     // 已结束的会话允许重新启动.
     registry.session = None;
     registry.last_error = None;
+    registry.hang = None;
     registry.starting = true;
     Ok(())
 }
@@ -307,7 +327,7 @@ pub async fn start_launch(app: ServiceHandle, settings: Settings) -> Result<Laun
     };
     emit_game_status(&app, &app.state);
 
-    let host = host::HostSession::new(app.clone(), settings.clone(), id, Arc::clone(&cancel));
+    let host = host::HostSession::new(app.clone(), settings, id, Arc::clone(&cancel));
     let ticket = SessionTicket::new(
         id.to_string(),
         Arc::clone(&host) as Arc<dyn oddity_runtime::SessionHost>,
@@ -440,10 +460,14 @@ pub(crate) async fn cancel_launch(
             Ok(status)
         }
         LaunchCancelAction::Idle => {
-            if let Ok(mut registry) = state.game.lock() {
-                registry.clear_launch();
-            }
-            Ok(idle_status())
+            let status = match state.game.lock() {
+                Ok(mut registry) => {
+                    registry.clear_launch();
+                    registry.status()
+                }
+                Err(_) => idle_status(),
+            };
+            Ok(status)
         }
     }
 }
@@ -479,13 +503,14 @@ pub async fn close_game(app: ServiceHandle, state: &AppState) -> Result<SessionS
                     let expired = session.clone();
                     registry.session = None;
                     registry.clear_launch();
+                    // 现场摘要在会话结束后仍要保留, 状态按注册表现读.
+                    let status = registry.status();
                     drop(registry);
                     monitor::finalize_game_session(
                         &app,
                         &expired,
                         Some(crate::snapshots::Failure::early_exit(None)),
                     );
-                    let status = idle_status();
                     let _ = app.emit("game-state", status.clone());
                     return Ok(status);
                 }
@@ -497,7 +522,8 @@ pub async fn close_game(app: ServiceHandle, state: &AppState) -> Result<SessionS
                     Arc::clone(&session.game_alive),
                 )
             }
-            None => return Ok(idle_status()),
+            // 没有会话时仍要带出上一轮的崩溃摘要.
+            None => return Ok(registry.status()),
         }
     };
 

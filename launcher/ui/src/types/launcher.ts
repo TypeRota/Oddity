@@ -98,12 +98,45 @@ export interface GameRecord {
   serverName: string;
   stamina: number | null;
   staminaMax: number | null;
+  staminaBackup?: number | null;
   cityStamina: number | null;
   cityStaminaMax: number | null;
+  cityStaminaBackup?: number | null;
   activity: number | null;
   weeklyRemaining: number | null;
+  incentiveObtained?: number | null;
+  incentiveMaximum?: number | null;
+  incentivePeriodDays?: number | null;
+  incentiveRemaining?: number | null;
   updatedAt: number;
 }
+export interface PlayerStateStatus {
+  enabled: boolean;
+  state:
+    | "disabled"
+    | "waiting"
+    | "starting"
+    | "reading"
+    | "unidentified"
+    | "capturing"
+    | "stale"
+    | "error";
+  message: string | null;
+  record: GameRecord | null;
+  observation: GameRecord | null;
+  capture?: {
+    pid: number | null;
+    ports: number;
+    packets: number;
+    records: number;
+    startedAt: number | null;
+    lastPacketAt: number | null;
+    lastRecordAt: number | null;
+    retryAt: number | null;
+    lastError: string | null;
+  };
+}
+
 export interface AttendanceStatus {
   accounts: AttendanceAccount[];
   preferences: AttendancePreferences;
@@ -202,8 +235,10 @@ export interface GameSettings {
   gameAccountId: string | null;
   gameMode: GameModeOptions;
   updates: UpdateSettings;
-  activeEnvironment: string | null;
-  stableEnvironment: string | null;
+  /** 按区服记住的当前运行环境; 键是区服 id. 没有声明渠道的游戏用空串. */
+  activeEnvironments: Record<string, string>;
+  /** 按区服记住的稳定运行环境. */
+  stableEnvironments: Record<string, string>;
 }
 export type SettingsFieldValue = string | number | boolean;
 /** 包声明的一个设置字段及其当前值. */
@@ -257,6 +292,8 @@ export type SettingsPatch = Record<string, unknown>;
 export interface SettingsSection {
   owner: string;
   fields: SettingsPatch;
+  /** 写入后按新上下文重新求值的能力事实; 界面据此更新挂载. */
+  capabilities: CapabilityFact[];
 }
 export interface GameAccount {
   accountId: string;
@@ -286,9 +323,9 @@ export interface RuntimeEnvironment {
   id: string;
   name: string;
   proton: ProtonPin;
+  /** 上次使用的游戏安装目录, 启动前据此修正 prefix. */
   installRoot: string;
   game: GameId;
-  distribution: string;
   createdAt: number;
 }
 export interface RuntimeInstallation {
@@ -389,6 +426,13 @@ export interface LaunchProgress {
   startedAt: number;
   cancelling: boolean;
 }
+/** UE 崩溃现场: 运行中检测到卡死时记录, 进程结束后保留, 下一次启动清空. */
+export interface GameHangScene {
+  crashType: string;
+  errorMessage: string;
+  site: string;
+  detectedAt: number;
+}
 export interface GameStatus {
   error?: string | null;
   running: boolean;
@@ -398,6 +442,7 @@ export interface GameStatus {
   exe: string;
   log: string;
   launch?: LaunchProgress | null;
+  hang?: GameHangScene | null;
 }
 export type DownloadPhase =
   | "idle"
@@ -545,12 +590,33 @@ export interface LauncherBackgroundMedia {
   video: string | null;
   image: string | null;
 }
+export interface LauncherBackgroundArchiveEntry {
+  id: string;
+  video: string | null;
+  image: string | null;
+}
+export interface LauncherBackgroundMigration {
+  state: "idle" | "moved" | "failed";
+  moved: number;
+  reason: string | null;
+}
+export interface LauncherBackgroundArchive {
+  available: boolean;
+  entries: LauncherBackgroundArchiveEntry[];
+  selected: string | null;
+  current: string | null;
+  migration: LauncherBackgroundMigration;
+  archive: boolean;
+  dir: string;
+  retention: number;
+}
 export interface LogPreview {
   id: string;
   fileCount: number;
   redactions: { home: number; phone: number; credentials: number; jwt: number };
   samples: { file: string; line: number; text: string }[];
   normalizedFiles: number;
+  crashSites: number;
 }
 
 export type SnapshotStatus =
@@ -630,11 +696,43 @@ declare global {
 
 export interface RuntimeSetupInfo {
   environment: RuntimeEnvironment | null;
+  ready: boolean;
   needsSetup: boolean;
+  installed: boolean;
+  channel: string;
+  installRoot: string;
+  suggestedName: string;
   umu: string | null;
   proton: string | null;
   protonDirectory: string;
   systemUmu: boolean;
+}
+export type EnvironmentHealthState =
+  | "ready"
+  | "prefix-missing"
+  | "identity-invalid"
+  | "directory-missing"
+  | "proton-invalid";
+export interface EnvironmentHealth {
+  id: string;
+  name: string;
+  state: EnvironmentHealthState;
+  installRoot: string;
+  installRootCurrent: string;
+}
+export type EnvironmentOrphanKind = "environment" | "logs" | "pending";
+export interface EnvironmentOrphan {
+  kind: EnvironmentOrphanKind;
+  name: string;
+  id: string | null;
+  bytes: number;
+  modifiedAt: number;
+  identityValid: boolean;
+  prefixValid: boolean;
+}
+export interface EnvironmentAudit {
+  environments: EnvironmentHealth[];
+  orphans: EnvironmentOrphan[];
 }
 export interface RuntimeSetupPlan {
   umu: string;
@@ -656,4 +754,12 @@ export interface RuntimeSetupStatus {
   };
   error: string | null;
   done: boolean;
+}
+
+export interface CrossScreenStatus {
+  enabled: boolean;
+  supported: boolean;
+  needsRestore: boolean;
+  missing: string[];
+  message: string;
 }

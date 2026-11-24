@@ -8,7 +8,6 @@ const controller = vi.hoisted(() => ({
     plan: unknown;
     status: any;
     planning: boolean;
-    error: string;
   },
   planInstallMigration: vi.fn(),
   startInstallMigration: vi.fn(),
@@ -33,7 +32,6 @@ vi.mock("../../src/core/controller", async () => {
     plan: null,
     status: null,
     planning: false,
-    error: "",
   });
   return controller;
 });
@@ -62,7 +60,6 @@ beforeEach(() => {
     plan: null,
     status: null,
     planning: false,
-    error: "",
   });
   controller.planInstallMigration
     .mockReset()
@@ -207,22 +204,19 @@ it("修复失败时重试或放弃修复", async () => {
   wrapper.unmount();
 });
 
-it("放弃修复失败时保留弹窗和错误", async () => {
+it("放弃修复失败时保留弹窗, 失败原因走全局通知", async () => {
   Object.assign(controller.migration, {
     status: status({ phase: "repair", canCancel: false }),
-    error: "",
   });
-  controller.abandonInstallMigration.mockImplementation(async () => {
-    controller.migration.error = "删除迁移记录失败";
-    return false;
-  });
+  // 命令失败由 controller 推送全局通知, 弹窗只保留重试与放弃两个入口.
+  controller.abandonInstallMigration.mockImplementation(async () => false);
   const wrapper = await render();
   await button(wrapper, "迁移国服").trigger("click");
   await flushPromises();
   await button(wrapper, "放弃修复").trigger("click");
   await flushPromises();
   expect(wrapper.find("[role=dialog]").exists()).toBe(true);
-  expect(wrapper.text()).toContain("删除迁移记录失败");
+  expect(wrapper.find('[role="alert"]').exists()).toBe(false);
   wrapper.unmount();
 });
 

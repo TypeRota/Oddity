@@ -155,6 +155,8 @@ requireFile("packaging/gentoo/metadata.xml");
 requireFile("scripts/render-ebuild.mjs");
 requireFile("docs/nix.md");
 requireFile("docs/gentoo.md");
+requireFile(".githooks/pre-commit");
+requireFile("scripts/setup-git-hooks.mjs");
 
 const ignore = read(".gitignore");
 for (const required of ["internal/", "research/"]) {

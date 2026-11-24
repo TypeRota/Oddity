@@ -9,13 +9,20 @@
 
 | 命令 | 受众 | 需要当前游戏 | 参数 | 返回 |
 | --- | --- | --- | --- | --- |
+| `cross_screen_status` | 渲染层 | 是 | `undefined` | `CrossScreenStatus` |
+| `cross_screen_configure` | 渲染层 | 是 | `{ enabled: boolean }` | `CrossScreenStatus` |
+| `cross_screen_install` | 渲染层 | 是 | `undefined` | `null` |
+| `cross_screen_restore` | 渲染层 | 是 | `undefined` | `null` |
 | `runtime_setup_info` | 渲染层 | 否 | `undefined` | `RuntimeSetupInfo` |
-| `runtime_setup_plan` | 渲染层 | 否 | `{ allUsers: boolean; proton: string \| null; createEnvironment: boolean }` | `RuntimeSetupPlan` |
+| `runtime_setup_plan` | 渲染层 | 否 | `{ allUsers: boolean; proton: string \| null; environmentName: string \| null }` | `RuntimeSetupPlan` |
 | `runtime_setup_apply` | 渲染层 | 否 | `undefined` | `null` |
 | `runtime_setup_status` | 渲染层 | 否 | `undefined` | `RuntimeSetupStatus` |
 | `runtime_setup_dismiss` | 渲染层 | 否 | `undefined` | `null` |
 | `runtime_setup_environment` | 渲染层 | 是 | `undefined` | `Bootstrap` |
 | `game_accounts` | 渲染层 | 是 | `undefined` | `GameAccount[]` |
+| `game_state_status` | 渲染层 | 是 | `undefined` | `PlayerStateStatus` |
+| `game_state_start` | 渲染层 | 是 | `undefined` | `PlayerStateStatus` |
+| `game_state_stop` | 渲染层 | 是 | `undefined` | `PlayerStateStatus` |
 | `game_send_code` | 渲染层 | 是 | `{ phone: string }` | `string` |
 | `game_login` | 渲染层 | 是 | `{ phone: string; secret: string; password: boolean; deviceId: string }` | `GameAccount` |
 | `game_account_remove` | 渲染层 | 是 | `{ accountId: string }` | `null` |
@@ -36,13 +43,20 @@
 | `attendance_logout` | 渲染层 | 否 | `{ accountId: string }` | `AttendanceStatus` |
 | `attendance_keyring_check` | 渲染层 | 否 | `undefined` | `void` |
 | `launcher_background` | 渲染层 | 是 | `undefined` | `LauncherBackgroundMedia` |
+| `launcher_background_archive` | 渲染层 | 是 | `undefined` | `LauncherBackgroundArchive` |
+| `launcher_background_configure` | 渲染层 | 是 | `{ archive: boolean; dir: string; retention: number }` | `LauncherBackgroundArchive` |
+| `launcher_background_select` | 渲染层 | 是 | `{ id: string \| null }` | `LauncherBackgroundArchive` |
 | `bootstrap` | 渲染层 | 否 | `undefined` | `Bootstrap` |
 | `integrity_acknowledge` | 渲染层 | 否 | `{ notice: IntegrityNotice }` | `null` |
 | `check_update` | 渲染层 | 是 | `{ full: boolean }` | `CheckResult` |
 | `fetch_bulletins` | 渲染层 | 是 | `{ distribution: "cn" \| "global" }` | `BulletinFeed` |
 | `update_settings_section` | 渲染层 | 是 | `{ owner: string; patch: SettingsPatch }` | `SettingsSection` |
-| `environment_create` | 渲染层 | 是 | `{ distribution: string; name: string; protonPath: string; sourceId: string \| null }` | `Bootstrap` |
-| `environment_action` | 渲染层 | 是 | `{ action: "switch" \| "keep" \| "discard"; id: string \| null }` | `Bootstrap` |
+| `environment_create` | 渲染层 | 是 | `{ name: string; protonPath: string; sourceId: string \| null }` | `Bootstrap` |
+| `environment_action` | 渲染层 | 是 | `{ action: "switch" \| "keep" \| "discard" \| "rebind" \| "forget"; id: string \| null }` | `Bootstrap` |
+| `environment_rename` | 渲染层 | 是 | `{ id: string \| null; name: string }` | `Bootstrap` |
+| `environment_audit` | 渲染层 | 是 | `undefined` | `EnvironmentAudit` |
+| `environment_import` | 渲染层 | 是 | `{ id: string; name: string; protonPath: string }` | `Bootstrap` |
+| `environment_orphan_delete` | 渲染层 | 否 | `{ kind: "environment" \| "logs" \| "pending"; name: string }` | `null` |
 | `migration_plan` | 渲染层 | 是 | `{ distribution: string; target: string }` | `MigrationPlan` |
 | `migration_start` | 渲染层 | 是 | `{ distribution: string; target: string }` | `MigrationStatus` |
 | `migration_status` | 渲染层 | 是 | `undefined` | `MigrationStatus` |

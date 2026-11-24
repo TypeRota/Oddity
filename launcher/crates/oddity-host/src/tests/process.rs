@@ -6,6 +6,7 @@ use crate::settings::Settings;
 use crate::AppState;
 use oddity_runtime::{LaunchProgress, LaunchStage};
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -164,6 +165,7 @@ fn game_mode_status_reports_capabilities_and_releases_the_finished_session() {
         snapshot: None,
         snapshot_success_after_ms: crate::snapshots::SUCCESS_AFTER_MS,
         launcher_root: None,
+        prefix: PathBuf::new(),
         monitor_state: Arc::new(Mutex::new(crate::session::monitor::MonitorState::default())),
         control: crate::session::ControlSlot::default(),
     };
@@ -214,6 +216,7 @@ fn game_status_reflects_the_session() {
         snapshot: None,
         snapshot_success_after_ms: crate::snapshots::SUCCESS_AFTER_MS,
         launcher_root: None,
+        prefix: PathBuf::new(),
         monitor_state: Arc::new(Mutex::new(crate::session::monitor::MonitorState::default())),
         control: crate::session::ControlSlot::default(),
     };
@@ -249,6 +252,7 @@ fn test_game_session(closing: bool) -> session::Session {
         snapshot: None,
         snapshot_success_after_ms: crate::snapshots::SUCCESS_AFTER_MS,
         launcher_root: None,
+        prefix: PathBuf::new(),
         monitor_state: Arc::new(Mutex::new(crate::session::monitor::MonitorState::default())),
         control: crate::session::ControlSlot::default(),
     }
@@ -682,6 +686,7 @@ fn sampling_starts_and_stops_playtime_for_the_game_process() {
         snapshot: None,
         snapshot_success_after_ms: crate::snapshots::SUCCESS_AFTER_MS,
         launcher_root: None,
+        prefix: PathBuf::new(),
         monitor_state: Arc::new(Mutex::new(MonitorState::default())),
         control: crate::session::ControlSlot::default(),
     };

@@ -122,6 +122,22 @@ impl Drop for TempDir {
     }
 }
 
+/// 按真实 prefix 布局创建一份 UE 崩溃现场目录.
+pub fn crash_site(prefix: &Path, user: &str, name: &str) -> PathBuf {
+    let site = prefix.join(format!(
+        "drive_c/users/{user}/AppData/Local/HT/Saved/Crashes/{name}"
+    ));
+    fs::create_dir_all(&site).expect("创建崩溃现场目录");
+    site
+}
+
+/// 一份 UE 崩溃上下文, 形如真实文件里的 RuntimeProperties.
+pub fn crash_context(crash_type: &str, message: &str) -> String {
+    format!(
+        "<FGenericCrashContext>\n  <RuntimeProperties>\n    <CrashType>{crash_type}</CrashType>\n    <ErrorMessage>{message}</ErrorMessage>\n  </RuntimeProperties>\n</FGenericCrashContext>\n"
+    )
+}
+
 struct ResponseGate {
     entered: std::sync::mpsc::Sender<()>,
     resume: std::sync::mpsc::Receiver<()>,

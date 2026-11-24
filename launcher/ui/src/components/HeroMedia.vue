@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useReducedMotion } from "motion-v";
+import { motion, useReducedMotion } from "motion-v";
 import { useDocumentVisibility } from "@vueuse/core";
 import {
   applyHeroMedia,
@@ -50,6 +50,14 @@ const standbyVideo = computed(() =>
 const artStyle = computed(() =>
   media.image ? { backgroundImage: `url("${media.image}")` } : undefined,
 );
+// 视频层只在真正有画面可放时淡入, 换素材的中途不会露出空画布.
+const shown = computed(
+  () =>
+    state.heroMedia === "video" &&
+    ready.value &&
+    !form.reduceMotion &&
+    !reduced.value,
+);
 let context: CanvasRenderingContext2D | null = null;
 let frame = 0;
 let painting: HTMLVideoElement | null = null;
@@ -60,6 +68,8 @@ let switching = false;
 let resumeTime = 0;
 // 静帧档需要定时器试探恢复, 其余档位没有任何常驻回调。
 let retryTimer = 0;
+// 换素材时视频与静态壁纸同步淡入, 和壁纸的 420ms 交叉淡入对齐。
+const videoFade = { duration: 0.42, ease: "easeInOut" as const };
 // 名义帧间隔的增量下限: 连续播放区间太短时算出的帧率噪声很大。
 const NOMINAL_MIN_FRAMES = 15;
 const NOMINAL_MIN_TIME = 0.5;
@@ -378,16 +388,20 @@ onBeforeUnmount(() => {
     hidden
     aria-hidden="true"
   ></video>
-  <canvas
-    id="hero-canvas"
-    ref="canvas"
-    width="0"
-    height="0"
-    class="hero__video"
-    :class="{
-      'is-visible':
-        state.heroMedia === 'video' && ready && !form.reduceMotion && !reduced,
-    }"
+  <motion.div
+    class="hero__layer"
     aria-hidden="true"
-  ></canvas>
+    :initial="false"
+    :animate="{ opacity: shown ? 1 : 0 }"
+    :transition="reduced || form.reduceMotion ? { duration: 0 } : videoFade"
+  >
+    <canvas
+      id="hero-canvas"
+      ref="canvas"
+      width="0"
+      height="0"
+      class="hero__video"
+      :class="{ 'is-visible': shown }"
+    ></canvas>
+  </motion.div>
 </template>

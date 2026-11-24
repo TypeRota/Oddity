@@ -412,6 +412,8 @@ pub(crate) struct TestHost {
     pub(crate) settings_error: bool,
     pub(crate) activity: ActivitySnapshot,
     pub(crate) events: Arc<RecordingSink>,
+    /// 宿主数据目录; None 表示不可用.
+    pub(crate) data_dir: Option<PathBuf>,
     tasks: Arc<TaskRegistry>,
 }
 
@@ -425,6 +427,7 @@ impl TestHost {
             settings_error: false,
             activity: ActivitySnapshot::default(),
             events: Arc::default(),
+            data_dir: None,
             tasks: Arc::default(),
         }
     }
@@ -468,6 +471,10 @@ impl HostContext for TestHost {
 
     fn official_launcher_root(&self) -> Option<PathBuf> {
         self.launcher_root.clone()
+    }
+
+    fn data_dir(&self) -> Option<PathBuf> {
+        self.data_dir.clone()
     }
 
     fn emit(&self, id: &'static str, payload: Value) -> Result<(), String> {

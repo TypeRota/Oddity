@@ -80,6 +80,7 @@ export type Feedback = "confirm" | "complete" | "error";
 export interface GamepadOptions {
   enabled: boolean;
   icons: "auto" | "dualsense" | "ds4" | "switch" | "xbox";
+  keyboardLayout: "qwerty" | "alphabetical";
   deadZone: number;
   vibration: boolean;
   strength: number;
@@ -117,6 +118,7 @@ export function defaultGamepadOptions(): GamepadOptions {
   return {
     enabled: true,
     icons: "auto",
+    keyboardLayout: "qwerty",
     deadZone: 0.28,
     vibration: true,
     strength: 100,

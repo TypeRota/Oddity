@@ -13,13 +13,15 @@
   命令在任务结束后才返回; 成功, 失败与取消是三种不同结局.
 - 每日与开机模式生成 systemd 用户单元和定时器, 单元用当前进程路径重启无头入口.
 - 状态按北京时间自然日计算; 已完成的账号与任务在当天跳过, 附加任务单独重试.
+- 每次 run 与会话刷新的结局写入宿主日志目录的 `attendance.log`, 只记录步骤分类,
+  HTTP 状态与业务码; 账号只用掩码. 该文件随"导出日志"一起收集.
 
 ## 依赖
 
 - `oddity-platform`: 密钥环能力缝 (`SecretStore`: 生产 Secret Service, 测试内存实现),
   共享 HTTP 连接池, 时钟与错误类型.
-- `oddity-runtime`: 命令组, 宿主设置快照与任务提交
-  (`HostContext::settings`, `HostContext::submit`).
+- `oddity-runtime`: 命令组, 宿主设置快照, 任务提交与数据目录
+  (`HostContext::settings`, `HostContext::submit`, `HostContext::data_dir`).
 - `serde` / `serde_json` / `zeroize` / `tokio`: 载荷, 凭据清零与阻塞任务.
 
 ## 测试入口

@@ -533,7 +533,6 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::ChannelId;
     use crate::environment::ProtonPin;
     use std::process::Command;
 
@@ -547,7 +546,6 @@ mod tests {
             },
             install_root: "/game".into(),
             game: GameId::from("nte"),
-            distribution: ChannelId::new("cn"),
             created_at: 1,
         }
     }

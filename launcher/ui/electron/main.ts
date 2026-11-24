@@ -4,6 +4,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  nativeImage,
   net,
   protocol,
   Tray,
@@ -20,6 +21,7 @@ import type { DialogOptions } from "../src/core/desktop";
 import type {
   Bootstrap,
   GameSettings,
+  LauncherBackgroundArchive,
   LauncherBackgroundMedia,
   SettingsSection,
 } from "../src/types/launcher";
@@ -79,8 +81,38 @@ let minimized = false;
 let settings: Bootstrap["settings"] | undefined;
 let pendingShow = false;
 let mediaRevision = 0;
+/// 主视觉当前使用的版本, 清理旧版本时不能把它挤掉.
+let heroRevision = 0;
 const mediaByRevision = new Map<number, LauncherBackgroundMedia>();
 const knownCommands = new Set<string>(Object.keys(commands));
+/// 缩略图宽度; 卡片按 16:9 裁切, 只影响清晰度不影响版面.
+const THUMB_WIDTH = 480;
+/// 缩略图按源文件缓存, 同一套素材只解码一次.
+const thumbs = new Map<string, Promise<Buffer | null>>();
+
+/// 生成归档素材的缩略图; 原图可以是 4K, 直接交给渲染层会明显拖慢弹窗.
+function thumbnail(file: string): Promise<Buffer | null> {
+  const cached = thumbs.get(file);
+  if (cached) return cached;
+  // 归档条目按内容哈希命名, 同一路径的内容不会变, 缓存无需失效.
+  if (thumbs.size > 64) thumbs.clear();
+  const pending = stat(file).then(
+    async (info) => {
+      if (!info.isFile()) return null;
+      const image = nativeImage.createFromPath(file);
+      if (image.isEmpty()) return null;
+      // 宽高都不超过目标尺寸时保持原样, 放大只会更糊.
+      const scaled =
+        image.getSize().width <= THUMB_WIDTH
+          ? image
+          : image.resize({ width: THUMB_WIDTH, quality: "good" });
+      return scaled.toPNG();
+    },
+    () => null,
+  );
+  thumbs.set(file, pending);
+  return pending;
+}
 
 /// 按 owner 合并设置视图, 保持主进程缓存的设置与界面一致.
 function applySettingsSection(section: SettingsSection) {
@@ -209,12 +241,16 @@ async function showMain() {
   windowEvent();
 }
 
-async function start() {
-  const logs = join(
+/// 宿主数据目录, 与服务侧的路径规则一致.
+function dataRoot(): string {
+  return join(
     process.env.XDG_DATA_HOME || join(homedir(), ".local/share"),
     "oddity",
-    "logs",
   );
+}
+
+async function start() {
+  const logs = join(dataRoot(), "logs");
   mkdirSync(logs, { recursive: true, mode: 0o700 });
   const previousLogs = (await readdir(logs))
     .filter((name) => /^oddity-startup-\d+-\d+\.log$/.test(name))
@@ -242,7 +278,13 @@ async function start() {
   };
   app.once("will-quit", closeLog);
   await access(backendPath);
-  backend = new Backend(backendPath, compatible);
+  backend = new Backend({
+    executable: backendPath,
+    dataDir: dataRoot(),
+    log: join(logs, "oddity-service.log"),
+    compatible,
+  });
+  await backend.start();
   backend.on("exit", () => {
     if (!quitting) app.quit();
   });
@@ -278,6 +320,19 @@ async function start() {
     } else if (url.hostname === "media") {
       const media = mediaByRevision.get(Number(url.searchParams.get("v")));
       if (!media) return new Response(null, { status: 404 });
+      if (url.pathname === "/thumb") {
+        if (!media.image) return new Response(null, { status: 404 });
+        const png = await thumbnail(media.image);
+        if (!png) return new Response(null, { status: 404 });
+        return new Response(new Uint8Array(png), {
+          headers: {
+            "Content-Type": "image/png",
+            "Content-Length": String(png.byteLength),
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": rendererOrigin,
+          },
+        });
+      }
       const candidate =
         url.pathname === "/video"
           ? media.video
@@ -373,11 +428,41 @@ async function start() {
     if (command === "launcher_background") {
       const background = result as LauncherBackgroundMedia;
       const revision = ++mediaRevision;
+      heroRevision = revision;
       // 每次回复绑定自己的版本, 并发完成时旧 URL 仍读回旧文件.
       mediaByRevision.set(revision, background);
       return {
         video: background.video ? `oddity://media/video?v=${revision}` : null,
         image: background.image ? `oddity://media/image?v=${revision}` : null,
+      };
+    }
+    if (
+      command === "launcher_background_archive" ||
+      command === "launcher_background_select" ||
+      command === "launcher_background_configure"
+    ) {
+      const archive = result as LauncherBackgroundArchive;
+      // 每个条目单独绑定版本, 缩略图与视频都只能经协议读取.
+      return {
+        ...archive,
+        entries: archive.entries.map((entry) => {
+          const revision = ++mediaRevision;
+          // 版本表只服务最近的回复, 长期打开设置也不会一直涨.
+          if (mediaByRevision.size > 128) {
+            for (const key of mediaByRevision.keys()) {
+              if (mediaByRevision.size <= 96) break;
+              if (key === heroRevision) continue;
+              mediaByRevision.delete(key);
+            }
+          }
+          mediaByRevision.set(revision, entry);
+          return {
+            id: entry.id,
+            video: entry.video ? `oddity://media/video?v=${revision}` : null,
+            // 缩略图走宿主缩放后的副本, 渲染层不碰 4K 原图.
+            image: entry.image ? `oddity://media/thumb?v=${revision}` : null,
+          };
+        }),
       };
     }
     return result;
@@ -490,6 +575,7 @@ function fatal(error: unknown) {
 app.on("window-all-closed", () => {});
 app.on("before-quit", () => {
   quitting = true;
+  // 只断开界面连接; 会话服务与运行中的游戏继续存在.
   backend?.close();
   tray?.destroy();
 });

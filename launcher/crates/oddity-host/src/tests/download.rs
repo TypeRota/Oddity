@@ -41,6 +41,62 @@ fn read_only_checks_do_not_block_launch_or_settings() {
 }
 
 #[test]
+fn browsing_can_switch_during_download_without_changing_its_paths() {
+    let _lock = serial();
+    let mut env = crate::tests::EnvGuard::new();
+    let home = crate::tests::TempDir::new("browse-during-download");
+    env.set("XDG_CONFIG_HOME", home.join("config"));
+    env.set("XDG_DATA_HOME", home.join("data"));
+    reset();
+    let app = crate::service::test_service();
+    {
+        let mut settings = app.state.settings.lock().unwrap();
+        settings
+            .current_mut()
+            .install_roots
+            .insert("cn".into(), "/games/nte".into());
+        settings
+            .game_mut(crate::identity::GameId::from("second"))
+            .set_active_environment("main", Some("environment"));
+    }
+    set_package_busy(true, true);
+
+    let section = crate::settings::update_settings_section(
+        &app,
+        "host".into(),
+        serde_json::json!({"activeGame": "second"}),
+    )
+    .unwrap();
+    assert_eq!(section.fields["activeGame"], "second");
+    assert_eq!(
+        app.state
+            .settings
+            .lock()
+            .unwrap()
+            .game(crate::identity::GameId::default())
+            .install_root_for_key("cn"),
+        Some("/games/nte")
+    );
+    assert!(crate::settings::update_settings_section(
+        &app,
+        "game:nte".into(),
+        serde_json::json!({"installRoots": {"cn": "/other"}}),
+    )
+    .unwrap_err()
+    .contains("游戏资源任务正在进行"));
+    reset();
+
+    app.state.game.lock().unwrap().migration_busy = true;
+    assert!(crate::settings::update_settings_section(
+        &app,
+        "host".into(),
+        serde_json::json!({"activeGame": "nte"}),
+    )
+    .unwrap_err()
+    .contains("暂时无法切换游戏"));
+}
+
+#[test]
 fn automatic_check_uses_detection_without_persisting_it() {
     let _lock = serial();
     reset();

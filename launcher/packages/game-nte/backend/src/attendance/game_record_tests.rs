@@ -16,7 +16,7 @@ fn game_records_refresh_all_accounts_without_attendance_and_persist_rotated_toke
         let record = account.game_record.as_ref().unwrap();
         assert_eq!(record.role_id, "9007199254740993");
         assert_eq!(record.stamina, Some(0));
-        assert_eq!(record.stamina_max, Some(240));
+        assert_eq!(record.stamina_max, Some(360));
         assert_eq!(record.city_stamina, Some(420));
         assert_eq!(record.weekly_remaining, Some(0));
         assert!(record.updated_at > 0);
@@ -109,10 +109,29 @@ fn game_record_rejects_wrong_identity_and_preserves_unknown_values() {
     let record = status.accounts[0].game_record.as_ref().unwrap();
     assert_eq!(record.role_name, "测试角色甲");
     assert_eq!(record.stamina, None);
-    assert_eq!(record.stamina_max, Some(0));
+    assert_eq!(record.stamina_max, Some(360));
     assert_eq!(record.city_stamina, None);
     assert_eq!(record.activity, None);
     assert_eq!(record.weekly_remaining, None);
+}
+
+#[test]
+fn game_record_uses_furniture_cap_when_missing_and_keeps_reported_caps() {
+    for (reported, expected) in [
+        (serde_json::Value::Null, 360),
+        (serde_json::json!(0), 360),
+        (serde_json::json!("240"), 360),
+        (serde_json::json!("invalid"), 360),
+        (serde_json::json!(300), 300),
+        (serde_json::json!("360"), 360),
+    ] {
+        let record = GameRecord::parse(
+            &serde_json::json!({"roleid": "role-a", "staminaMaxValue": reported}),
+            "role-a",
+        )
+        .unwrap();
+        assert_eq!(record.stamina_max, Some(expected));
+    }
 }
 
 #[test]

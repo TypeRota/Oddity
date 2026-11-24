@@ -302,7 +302,6 @@ fn query(arguments: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::ChannelId;
     use crate::environment::ProtonPin;
     use std::os::unix::fs::PermissionsExt;
 
@@ -316,7 +315,6 @@ mod tests {
             },
             install_root: "/game".into(),
             game: Default::default(),
-            distribution: ChannelId::new(""),
             created_at: 1,
         };
         Recording::prepare(

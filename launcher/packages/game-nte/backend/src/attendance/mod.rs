@@ -1,9 +1,11 @@
 //! 塔吉多登录和可选签到, 所有入口共享会话、锁和执行结果。
 //!
 //! 命令组声明 `attendance_*` 并由包内分发; 参数与返回沿用宿主的 JSON 载荷,
-//! 账号凭据只写入桌面密钥环, 游戏状态与签到记录存放在包内配置目录.
+//! 账号凭据只写入桌面密钥环, 游戏状态与签到记录存放在包内配置目录,
+//! 每次 run 与会话刷新的结局写入宿主日志目录.
 
 mod client;
+mod diagnostic;
 mod game_record;
 pub(crate) mod lifecycle;
 pub mod schedule;
@@ -61,6 +63,12 @@ pub struct Failure {
     /// 能力 `Unavailable` 的 provider 原因码.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<Cow<'static, str>>,
+    /// 失败响应的 HTTP 状态码, 供诊断日志定位.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// 失败响应的业务码, 供诊断日志定位.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub business: Option<i64>,
     pub message: String,
 }
 impl Failure {
@@ -69,6 +77,8 @@ impl Failure {
             kind,
             code: None,
             reason: None,
+            status: None,
+            business: None,
             message: message.into(),
         }
     }
@@ -77,8 +87,18 @@ impl Failure {
             kind: FailureKind::Service,
             code: Some(Cow::Borrowed(error.code)),
             reason: error.reason.map(Cow::Borrowed),
+            status: None,
+            business: None,
             message: error.message.into(),
         }
+    }
+    fn with_status(mut self, status: u16) -> Self {
+        self.status = Some(status);
+        self
+    }
+    fn with_business(mut self, code: Option<i64>) -> Self {
+        self.business = code;
+        self
     }
     fn at(mut self, stage: &str) -> Self {
         self.message = format!("{stage}: {}", self.message);
@@ -149,6 +169,18 @@ impl Default for TaskPermissions {
         }
     }
 }
+impl Trigger {
+    /// 诊断日志里使用的触发方式.
+    fn name(self) -> &'static str {
+        match self {
+            Trigger::Off => "off",
+            Trigger::Launch => "launch",
+            Trigger::Boot => "boot",
+            Trigger::Daily => "daily",
+            Trigger::Manual => "manual",
+        }
+    }
+}
 impl TaskPermissions {
     fn coin_enabled(&self) -> bool {
         self.community_sign || self.browse_posts || self.like_posts || self.share_posts
@@ -211,6 +243,12 @@ pub struct Step {
     pub ok: bool,
     pub message: String,
     pub kind: Option<FailureKind>,
+    /// 失败响应的业务码, 供诊断日志定位.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub business: Option<i64>,
+    /// 失败响应的 HTTP 状态码, 供诊断日志定位.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
     /// 附加任务失败不影响核心签到状态, 也不触发重新登录。
     #[serde(default)]
     pub optional: bool,
@@ -223,6 +261,8 @@ impl Step {
                 ok: true,
                 message: "签到完成或今日已签到".into(),
                 kind: None,
+                business: None,
+                status: None,
                 optional: false,
             },
             Err(e) => Self {
@@ -230,6 +270,8 @@ impl Step {
                 ok: false,
                 message: e.message.clone(),
                 kind: Some(e.kind),
+                business: e.business,
+                status: e.status,
                 optional: false,
             },
         }
@@ -245,6 +287,8 @@ impl Step {
             ok,
             message: message.into(),
             kind,
+            business: None,
+            status: None,
             optional: true,
         }
     }
@@ -254,6 +298,8 @@ impl Step {
             ok: false,
             message: error.message.replace("; 自动任务已暂停", ""),
             kind: Some(error.kind),
+            business: error.business,
+            status: error.status,
             optional: true,
         }
     }

@@ -74,9 +74,7 @@ impl Settings {
 }
 
 impl Ctx {
-    /// 由已绑定的宿主能力构造; 未绑定时给命令层返回明确错误.
-    pub(crate) fn new() -> Result<Self, String> {
-        let host = state::host()?;
+    pub(crate) fn new(host: Arc<dyn HostContext>) -> Result<Self, String> {
         let settings = Settings(host.settings()?);
         Ok(Self { host, settings })
     }
@@ -1564,11 +1562,11 @@ pub const COMMANDS: &[&str] = &[
 
 /// 包内命令分发: 参数解析后交给下载实现, 阻塞工作移出异步线程.
 pub async fn dispatch(
-    _host: &dyn HostContext,
+    host: Arc<dyn HostContext>,
     command: &str,
     args: Value,
 ) -> std::result::Result<Value, Value> {
-    let ctx = Ctx::new().map_err(|error| json!(error))?;
+    let ctx = Ctx::new(host).map_err(|error| json!(error))?;
     match command {
         "game_resource_catalog" => blocking(move || game_resource_catalog(&ctx)).await,
         "game_preload_delete" => blocking(move || game_preload_delete(&ctx)).await,
@@ -1623,9 +1621,14 @@ async fn blocking<T: Send + 'static + serde::Serialize>(
     serde_json::to_value(value).map_err(|error| json!(error.to_string()))
 }
 
-/// 启动一轮下载/检查; 宿主需先 bind_host.
-pub fn start_download(mode: &str, full: bool, origin: &str) -> Result<DownloadStatus, String> {
-    let app = Ctx::new()?;
+/// 由自动调度启动一轮下载或检查.
+pub(super) fn start_download(
+    host: Arc<dyn HostContext>,
+    mode: &str,
+    full: bool,
+    origin: &str,
+) -> Result<DownloadStatus, String> {
+    let app = Ctx::new(host)?;
     start_task(&app, mode, full, origin)
 }
 
@@ -1658,22 +1661,27 @@ mod testing_tests {
     }
 
     #[test]
-    fn commands_require_a_bound_host() {
+    fn download_start_uses_the_request_context() {
         let _lock = serial();
         reset();
-        let error = game_download_status();
-        assert_eq!(error.phase, "idle");
-        let value = block_on(dispatch(
-            &*FakeHost::new(),
-            "game_download_cancel",
-            Value::Null,
-        ));
-        assert!(value.is_err());
-        let failure = value.unwrap_err();
-        assert!(failure
-            .as_str()
-            .unwrap_or_default()
-            .contains("尚未绑定宿主"));
+        let runtime = host();
+        let mut settings = runtime.settings();
+        settings.game = "other".into();
+        runtime.set_settings(settings);
+
+        let request = FakeHost::new();
+        request.set_activity(ActivitySnapshot {
+            migration_busy: true,
+            ..Default::default()
+        });
+        let error = block_on(dispatch(
+            request,
+            "game_download_start",
+            json!({"mode": "check", "full": false}),
+        ))
+        .unwrap_err();
+        assert_eq!(error, json!("安装目录迁移正在进行"));
+        reset();
     }
 
     #[test]
@@ -1681,7 +1689,7 @@ mod testing_tests {
         let _lock = serial();
         reset();
         let host = host();
-        block_on(dispatch(&*host, "game_download_cancel", Value::Null)).expect("取消命令");
+        block_on(dispatch(host.clone(), "game_download_cancel", Value::Null)).expect("取消命令");
         assert_eq!(game_download_status().phase, "idle");
         set_auto_waiting_reason("window");
         assert_eq!(game_download_status().auto_waiting, "window");
@@ -1696,7 +1704,7 @@ mod testing_tests {
         let _lock = serial();
         reset();
         let host = host();
-        let error = block_on(dispatch(&*host, "game_resource_catalog", Value::Null))
+        let error = block_on(dispatch(host, "game_resource_catalog", Value::Null))
             .expect_err("缺少启动器配置应失败");
         assert!(
             error
@@ -1717,7 +1725,7 @@ mod testing_tests {
             migration_busy: true,
             ..Default::default()
         });
-        let error = start_download("check", false, "manual").expect_err("迁移期间拒绝启动");
+        let error = start_download(host, "check", false, "manual").expect_err("迁移期间拒绝启动");
         assert!(error.contains("安装目录迁移正在进行"), "{error}");
         reset();
     }

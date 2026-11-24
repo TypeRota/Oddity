@@ -169,8 +169,12 @@ fn echo_returns_the_message_and_its_character_count() {
     let group = registry
         .group_for("fixture", "fixture_echo")
         .expect("fixture 组应接管回显");
-    let result = block_on(group.dispatch(&TestHost, "fixture_echo", json!({"message": "你好"})))
-        .expect("回显应成功");
+    let result = block_on(group.dispatch(
+        Arc::new(TestHost),
+        "fixture_echo",
+        json!({"message": "你好"}),
+    ))
+    .expect("回显应成功");
     assert_eq!(result, json!({"message": "你好", "length": 2}));
 }
 
@@ -180,8 +184,8 @@ fn info_returns_fixed_package_data() {
     let group = registry
         .group_for("fixture", "fixture_info")
         .expect("信息组应接管查询");
-    let result =
-        block_on(group.dispatch(&TestHost, "fixture_info", json!({}))).expect("固定数据应成功");
+    let result = block_on(group.dispatch(Arc::new(TestHost), "fixture_info", json!({})))
+        .expect("固定数据应成功");
     assert_eq!(
         result,
         json!({
@@ -198,8 +202,12 @@ fn failure_injection_returns_a_structured_error() {
     let group = registry
         .group_for("fixture", "fixture_fail")
         .expect("fixture 组应接管失败注入");
-    let error = block_on(group.dispatch(&TestHost, "fixture_fail", json!({"message": "注入失败"})))
-        .expect_err("失败注入必须返回错误");
+    let error = block_on(group.dispatch(
+        Arc::new(TestHost),
+        "fixture_fail",
+        json!({"message": "注入失败"}),
+    ))
+    .expect_err("失败注入必须返回错误");
     assert_eq!(
         error,
         json!({"code": "fixture_failure", "message": "注入失败"})
@@ -213,7 +221,8 @@ fn malformed_and_unknown_commands_are_rejected() {
         .group_for("fixture", "fixture_echo")
         .expect("fixture 组应接管回显");
 
-    let missing = block_on(group.dispatch(&TestHost, "fixture_echo", json!({}))).unwrap_err();
+    let missing =
+        block_on(group.dispatch(Arc::new(TestHost), "fixture_echo", json!({}))).unwrap_err();
     assert!(
         missing
             .as_str()
@@ -223,7 +232,7 @@ fn malformed_and_unknown_commands_are_rejected() {
     );
 
     let extra = block_on(group.dispatch(
-        &TestHost,
+        Arc::new(TestHost),
         "fixture_echo",
         json!({"message": "你好", "extra": true}),
     ))
@@ -233,7 +242,7 @@ fn malformed_and_unknown_commands_are_rejected() {
         "{extra}"
     );
 
-    let unknown = block_on(group.dispatch(&TestHost, "unknown", json!({}))).unwrap_err();
+    let unknown = block_on(group.dispatch(Arc::new(TestHost), "unknown", json!({}))).unwrap_err();
     assert_eq!(unknown, json!("无法识别的 fixture 命令"));
 }
 

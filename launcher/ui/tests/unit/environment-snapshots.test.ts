@@ -16,7 +16,10 @@ vi.mock("../../src/core/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/core/api")>();
   return { ...actual, invoke };
 });
-vi.mock("../../src/core/notifications", () => ({ notify }));
+vi.mock("../../src/core/notifications", async () => {
+  const { errorText } = await import("../../src/core/notifications.ts");
+  return { notify, errorText };
+});
 
 let overview: SnapshotOverview;
 let comparison: SnapshotComparison;
@@ -270,6 +273,113 @@ describe("环境快照", () => {
     clickButton(deleteDialog, "确定删除");
     await flushPromises();
     expect(settingsText()).not.toContain("手动参考");
+  });
+
+  it("读取快照概览失败通过通知报告, 不留占位卡片", async () => {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "environment_snapshot_overview")
+        throw new Error("快照文件损坏");
+      return undefined;
+    });
+    wrapper = render();
+    await flushPromises();
+    expect(notify).toHaveBeenCalledWith(
+      "读取环境快照失败: 快照文件损坏",
+      "error",
+      6500,
+      { key: "snapshot-overview" },
+    );
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(wrapper.get(".snapshot-state").isVisible()).toBe(false);
+    expect(wrapper.get(".snapshot-content").isVisible()).toBe(false);
+  });
+
+  it("读取对比结果失败通过通知报告, 弹窗保留进度位", async () => {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "environment_snapshot_overview")
+        return structuredClone(overview);
+      if (command === "environment_snapshot_compare")
+        throw new Error("环境对比任务失败");
+      return undefined;
+    });
+    wrapper = render();
+    await flushPromises();
+    await wrapper.get('[data-testid="compare-baseline"]').trigger("click");
+    await flushPromises();
+    expect(notify).toHaveBeenCalledWith(
+      "读取对比结果失败: 环境对比任务失败",
+      "error",
+      6500,
+      { key: "snapshot-compare" },
+    );
+    const panel = dialog();
+    expect(panel.querySelector('[role="alert"]')).toBeNull();
+    expect(panel.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("删除与清除失败各发一次通知", async () => {
+    wrapper = render();
+    await flushPromises();
+    invoke.mockRejectedValue(new Error("磁盘已满"));
+
+    await wrapper.get('[data-testid="delete-reference"]').trigger("click");
+    await flushPromises();
+    const deleteDialog = dialog("删除参考快照");
+    clickButton(deleteDialog, "确定删除");
+    await flushPromises();
+    expect(notify).toHaveBeenCalledWith(
+      "删除参考快照失败: 磁盘已满",
+      "error",
+      6500,
+      { key: "snapshot-reference" },
+    );
+    expect(deleteDialog.querySelector('[role="alert"]')).toBeNull();
+    expect(deleteDialog.textContent).toContain("删除参考快照");
+
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "environment_snapshot_overview")
+        return structuredClone(overview);
+      throw new Error("写入失败");
+    });
+    notify.mockClear();
+    await wrapper.get('[data-testid="clear-history"]').trigger("click");
+    await flushPromises();
+    const clearDialog = dialog("参考快照会保留");
+    clickButton(clearDialog, "确定清除");
+    await flushPromises();
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      "清除启动历史失败: 写入失败",
+      "error",
+      6500,
+      { key: "snapshot-reference" },
+    );
+    expect(clearDialog.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("保存参考快照失败只发一次通知", async () => {
+    overview.reference = null;
+    wrapper = render();
+    await flushPromises();
+    await wrapper.get('[data-testid="save-reference"]').trigger("click");
+    await flushPromises();
+    notify.mockClear();
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "environment_snapshot_overview")
+        return structuredClone(overview);
+      throw new Error("配置目录只读");
+    });
+    const saveDialog = dialog();
+    clickButton(saveDialog, "保存");
+    await flushPromises();
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      "保存参考快照失败: 配置目录只读",
+      "error",
+      6500,
+      { key: "snapshot-reference" },
+    );
+    expect(saveDialog.querySelector('[role="alert"]')).toBeNull();
   });
 
   it("清除启动历史时保留参考快照", async () => {

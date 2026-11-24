@@ -7,21 +7,19 @@ import BaseDisclosure from "./BaseDisclosure.vue";
 import { onBeforeUnmount, ref } from "vue";
 import { open } from "../core/filePicker";
 import { invoke, isDesktop } from "../core/api";
-import { notify } from "../core/notifications";
+import { notify, errorText } from "../core/notifications";
 import type { LogPreview } from "../types/launcher";
 
 const exporting = ref(false);
 const showSamples = ref(false);
 const preview = ref<LogPreview | null>(null);
 const savedPath = ref("");
-const error = ref("");
 let disposed = false;
 
 async function exportLogs() {
   if (exporting.value || preview.value) return;
   exporting.value = true;
   savedPath.value = "";
-  error.value = "";
   try {
     if (!isDesktop()) throw new Error("请在 Oddity 桌面应用中导出日志");
     notify("正在检查日志...", "info", 0, { key: "log-export" });
@@ -34,8 +32,9 @@ async function exportLogs() {
     preview.value = result;
     notify("日志检查完成.", "ok", 3400, { key: "log-export" });
   } catch (cause) {
-    error.value = `检查日志失败: ${String(cause)}`;
-    notify(error.value, "error", 6500, { key: "log-export" });
+    notify(`检查日志失败: ${errorText(cause)}`, "error", 6500, {
+      key: "log-export",
+    });
   } finally {
     exporting.value = false;
   }
@@ -46,16 +45,16 @@ async function closePreview() {
   try {
     await invoke("discard_log_export", { id: preview.value.id });
     preview.value = null;
-    error.value = "";
   } catch (cause) {
-    error.value = `取消导出失败: ${String(cause)}`;
+    notify(`取消导出失败: ${errorText(cause)}`, "error", 6500, {
+      key: "log-export",
+    });
   }
 }
 
 async function saveLogs() {
   if (exporting.value || !preview.value) return;
   exporting.value = true;
-  error.value = "";
   try {
     const destination = await open({
       title: "选择日志导出文件夹",
@@ -74,10 +73,14 @@ async function saveLogs() {
     });
     await invoke("open_directory", { path: destination });
   } catch (cause) {
-    error.value = savedPath.value
-      ? `日志已导出, 但无法打开文件夹: ${String(cause)}`
-      : `保存脱敏日志失败: ${String(cause)}`;
-    notify(error.value, "error", 6500, { key: "log-export" });
+    notify(
+      savedPath.value
+        ? `日志已导出, 但无法打开文件夹: ${errorText(cause)}`
+        : `保存脱敏日志失败: ${errorText(cause)}`,
+      "error",
+      6500,
+      { key: "log-export" },
+    );
   } finally {
     exporting.value = false;
   }
@@ -88,7 +91,7 @@ onBeforeUnmount(() => {
   if (preview.value) {
     void invoke("discard_log_export", { id: preview.value.id }).catch(
       (cause) => {
-        notify(`取消导出失败: ${String(cause)}`, "error", 6500);
+        notify(`取消导出失败: ${errorText(cause)}`, "error", 6500);
       },
     );
   }
@@ -106,18 +109,9 @@ onBeforeUnmount(() => {
         @click="exportLogs"
         >{{ exporting ? "正在处理..." : "导出日志" }}</BaseButton
       >
-      <template v-if="savedPath || (error && !preview)" #detail>
-        <small
-          v-if="savedPath"
-          class="field__hint log-export__result"
-          role="status"
+      <template v-if="savedPath" #detail>
+        <small class="field__hint log-export__result" role="status"
           >日志已导出至: {{ savedPath }}</small
-        >
-        <small
-          v-if="error"
-          class="field__hint log-export__result"
-          role="alert"
-          >{{ error }}</small
         >
       </template>
     </SettingRow>
@@ -147,6 +141,9 @@ onBeforeUnmount(() => {
           <dd>{{ preview.redactions.jwt }} 处</dd>
         </div>
       </dl>
+      <p v-if="preview.crashSites" class="field__hint">
+        已附带 {{ preview.crashSites }} 个崩溃现场.
+      </p>
       <p v-if="preview.normalizedFiles" class="field__hint">
         {{ preview.normalizedFiles }} 个文件存在编码异常.
       </p>
@@ -165,7 +162,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </BaseDisclosure>
-      <p v-if="error" role="alert" class="log-export__result">{{ error }}</p>
       <div class="log-export__actions">
         <BaseButton variant="ghost" :disabled="exporting" @click="closePreview"
           >取消</BaseButton

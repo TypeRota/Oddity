@@ -100,50 +100,33 @@ impl HostSession {
                 },
             )
         })?;
-        let install_dir =
-            crate::install::effective_install_root(packages, settings, Some(&launcher_root));
-        let install_lock = Arc::new(
-            oddity_platform::install_lock::InstallLock::acquire(&install_dir).map_err(backend)?,
-        );
-        let channel = crate::channel::effective(
-            packages,
-            game.as_str(),
-            settings.current().distribution.as_ref(),
-        )
-        .ok_or_else(|| backend(format!("《{name}》没有可用的发行渠道.")))?;
-        let game_exe = crate::install::game_exe(packages, game, &launcher_root);
-        let prefix = environment_commands::prefix(packages, settings).map_err(backend)?;
-        environment_commands::verify_proton(settings).map_err(backend)?;
+        let selection = environment_commands::resolve(packages, settings).map_err(backend)?;
+        selection
+            .environment
+            .proton
+            .verify()
+            .map_err(|error| backend(format!("{error:#}")))?;
         let umu = crate::runtime_setup::umu(&crate::paths::data_dir())
             .ok_or_else(|| backend("PATH 中未找到 umu-run"))?;
-        let proton = crate::bootstrap::detect_proton(settings)
+        let proton = crate::bootstrap::detect_proton(packages, settings)
             .ok_or_else(|| backend("未找到可用的 Proton（需要 proton 与 toolmanifest.vdf）"))?;
-        if !prefix.join("drive_c").is_dir() {
-            return Err(backend(format!(
-                "Wine prefix 尚未初始化：{}",
-                prefix.display()
-            )));
-        }
-        let prefix_lock = Arc::new(
-            crate::environment::lock_prefix(&prefix)
-                .map_err(|error| backend(format!("{error:#}")))?,
-        );
-        let log_dir = environment_commands::log_dir(settings).map_err(backend)?;
+        let (prefix, install_lock, prefix_lock) =
+            environment_commands::lock_and_align(&self.app.state, settings, &selection)
+                .map_err(backend)?;
+        let log_dir = environment_commands::log_dir(packages, settings).map_err(backend)?;
         std::fs::create_dir_all(&log_dir)
             .map_err(|error| backend(format!("create log dir: {error}")))?;
         let runner = self.runner(&umu)?;
-        let identity = environment_commands::selected(settings)
-            .map(|environment| environment.proton.identity.clone())
-            .unwrap_or_default();
+
         let plan = LaunchPlan {
             target: SessionTarget {
                 game: settings.active_game.as_str().to_string(),
-                distribution: channel.id.to_string(),
+                distribution: selection.channel.id.to_string(),
                 mode,
             },
-            install_root: install_dir,
+            install_root: selection.install_root,
             launcher_root: launcher_root.clone(),
-            game_exe,
+            game_exe: crate::install::game_exe(packages, game, &launcher_root),
             game_version: crate::install::game_version(packages, game, &launcher_root),
             launcher_version: crate::install::launcher_info(packages, game, &launcher_root)
                 .map(|info| info.version)
@@ -152,7 +135,7 @@ impl HostSession {
             proton: ProtonRef {
                 root: proton.root.clone(),
                 name: proton.name.clone(),
-                identity,
+                identity: selection.environment.proton.identity.clone(),
             },
             umu,
             log_dir,
@@ -162,8 +145,8 @@ impl HostSession {
             account_id: settings.current().game_account_id.clone(),
         };
         inner.plan = Some(plan.clone());
-        inner.install_lock = Some(install_lock);
-        inner.prefix_lock = Some(prefix_lock);
+        inner.install_lock = Some(Arc::new(install_lock));
+        inner.prefix_lock = Some(Arc::new(prefix_lock));
         Ok(plan)
     }
 
@@ -217,7 +200,13 @@ impl SessionHost for HostSession {
             command,
         )));
         inner.game_mode = Some(game_mode);
-        match self.app.performance.prepare(&self.settings, &plan, command) {
+        let environment = environment_commands::selected(&self.app.state.packages, &self.settings)
+            .map_err(backend)?;
+        match self
+            .app
+            .performance
+            .prepare(environment, &self.settings, &plan, command)
+        {
             Ok(recording) => inner.performance = recording,
             Err(error) => eprintln!("{error}"),
         }
@@ -283,7 +272,11 @@ impl SessionHost for HostSession {
             snapshot: inner.snapshot.clone(),
             snapshot_success_after_ms,
             launcher_root: Some(plan.launcher_root.clone()),
-            monitor_state: Arc::new(Mutex::new(session::monitor::MonitorState::default())),
+            // 现场扫描用启动时的 prefix, 后续设置变化不影响本轮会话.
+            prefix: plan.prefix.clone(),
+            monitor_state: Arc::new(Mutex::new(session::monitor::MonitorState::for_prefix(
+                &plan.prefix,
+            ))),
             control: session::ControlSlot(Arc::new(Mutex::new(inner.control.clone()))),
         };
         {

@@ -1,68 +1,43 @@
 #![cfg(feature = "game-nte")]
 
-use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
+//! 会话服务的协议用例: 命令, 错误, 事件与空闲退出.
 
-#[test]
-fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
+mod support;
+
+use serde_json::{json, Value};
+use std::os::unix::fs::PermissionsExt;
+
+use support::Session;
+
+/// 带日志与假 systemctl 的临时根目录.
+fn fixture() -> (std::path::PathBuf, std::path::PathBuf) {
     let directory = std::env::temp_dir().join(format!("oddity-ipc-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
+    let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(directory.join("data/oddity/logs")).unwrap();
     std::fs::write(
         directory.join("data/oddity/logs/test.log"),
         "协议导出测试\n",
     )
     .unwrap();
+    (directory.clone(), directory.join("commands/systemctl"))
+}
+
+/// 发一条命令并等待回复.
+fn call(session: &mut Session, command: &str, args: Value) -> Value {
+    session.call(command, args)
+}
+
+#[test]
+fn service_roundtrip_errors_events_and_idle_shutdown() {
+    let (directory, systemctl) = fixture();
     std::fs::create_dir_all(directory.join("commands")).unwrap();
-    let systemctl = directory.join("commands/systemctl");
     std::fs::write(&systemctl, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let backend =
-        std::env::var("CARGO_BIN_EXE_oddity-backend").expect("CARGO_BIN_EXE_oddity-backend");
-    let mut child = Command::new(&backend)
-        .arg("--ipc")
-        .env("HOME", &directory)
-        .env("XDG_CONFIG_HOME", directory.join("config"))
-        .env("XDG_DATA_HOME", directory.join("data"))
-        .env(
-            "DBUS_SESSION_BUS_ADDRESS",
-            "unix:path=/nonexistent/oddity-protocol-bus",
-        )
-        .env("PATH", directory.join("commands"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut input = child.stdin.take().unwrap();
-    writeln!(input, "{{invalid json").unwrap();
-    let output = child.stdout.take().unwrap();
-    let (sender, replies) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(output).lines() {
-            sender
-                .send(serde_json::from_str::<Value>(&line.unwrap()).unwrap())
-                .unwrap();
-        }
-    });
-    let mut id = 0;
-    let mut call = |command: &str, args: Value| {
-        id += 1;
-        writeln!(input, "{}", json!({"id":id,"command":command,"args":args})).unwrap();
-        loop {
-            let value = replies.recv_timeout(Duration::from_secs(15)).unwrap();
-            if value.get("id") == Some(&json!(id)) {
-                break value;
-            }
-            assert!(value.get("event").is_some(), "{value}");
-        }
-    };
-    let bootstrap = call("bootstrap", json!({}));
+    let mut session = Session::start(&directory);
+    let bootstrap = call(&mut session, "bootstrap", json!({}));
     assert!(bootstrap["result"]["settings"].is_object(), "{bootstrap}");
     let installed = call(
+        &mut session,
         "update_settings_section",
         json!({
             "owner": "game:nte",
@@ -75,9 +50,13 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
         }),
     );
     assert!(installed.get("result").is_some(), "{installed}");
-    assert!(call("integrity_acknowledge", json!({"notice":"success"}))
-        .get("result")
-        .is_some());
+    assert!(call(
+        &mut session,
+        "integrity_acknowledge",
+        json!({"notice":"success"})
+    )
+    .get("result")
+    .is_some());
     for command in [
         "attendance_login",
         "attendance_send_code",
@@ -87,6 +66,8 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
         "game_download_start",
         "environment_create",
         "environment_action",
+        "environment_import",
+        "environment_orphan_delete",
         "browse_files",
         "game_mode_gpu_apply",
         "game_mode_tuning_apply",
@@ -109,11 +90,12 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
         "external_launch",
         "migration_abandon",
     ] {
-        let reply = call(command, json!(false));
+        let reply = call(&mut session, command, json!(false));
         assert!(reply["error"].is_string(), "{command}: {reply}");
     }
     for command in [
         "launcher_background",
+        "launcher_background_archive",
         "game_download_status",
         "game_download_cancel",
         "game_mode_gpu_info",
@@ -129,12 +111,28 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
         "environment_snapshot_overview",
         "environment_snapshot_clear_history",
         "environment_snapshot_delete_reference",
+        "environment_audit",
         "attendance_status",
         "migration_retry",
     ] {
-        let reply = call(command, json!({}));
+        let reply = call(&mut session, command, json!({}));
         assert!(reply.get("result").is_some(), "{command}: {reply}");
     }
+    let audit = call(&mut session, "environment_audit", json!({}));
+    assert!(audit["result"]["environments"].is_array(), "{audit}");
+    assert!(audit["result"]["orphans"].is_array(), "{audit}");
+    let orphan = "f".repeat(32);
+    let orphan_path = directory
+        .join("data/oddity/logs/environments")
+        .join(&orphan);
+    std::fs::create_dir_all(&orphan_path).unwrap();
+    let removed = call(
+        &mut session,
+        "environment_orphan_delete",
+        json!({"kind":"logs","name":orphan}),
+    );
+    assert!(removed.get("result").is_some(), "{removed}");
+    assert!(!orphan_path.exists());
     for (command, args) in [
         ("unregistered", json!({})),
         (
@@ -143,9 +141,17 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
         ),
         (
             "environment_create",
-            json!({"name":"test","protonPath":"/missing/proton","sourceId":null,"distribution":"cn"}),
+            json!({"name":"test","protonPath":"/missing/proton","sourceId":null}),
         ),
         ("environment_action", json!({"action":"invalid","id":null})),
+        (
+            "environment_import",
+            json!({"id":"missing","name":"导入","protonPath":"/missing/proton"}),
+        ),
+        (
+            "environment_orphan_delete",
+            json!({"kind":"other","name":"missing"}),
+        ),
         (
             "game_download_start",
             json!({"mode":"invalid","full":false}),
@@ -166,19 +172,24 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
             json!({"destination":directory.join("poster.png"),"data":"invalid"}),
         ),
     ] {
-        let reply = call(command, args);
+        let reply = call(&mut session, command, args);
         assert!(reply.get("error").is_some(), "{command}: {reply}");
     }
     let reference = call(
+        &mut session,
         "environment_snapshot_save_reference",
         json!({"label":"测试参考","attemptId":null}),
     );
     assert_eq!(reference["result"]["label"], "测试参考", "{reference}");
-    let listing = call("browse_files", json!({"path":directory}));
+    let listing = call(&mut session, "browse_files", json!({"path":directory}));
     assert!(listing["result"]["entries"].is_array(), "{listing}");
-    let update = call("check_update", json!({"full":false}));
+    let update = call(&mut session, "check_update", json!({"full":false}));
     assert_eq!(update["result"]["installed"], false, "{update}");
-    let feedback = call("gamepad_feedback", json!({"deviceId":0,"effect":"stop"}));
+    let feedback = call(
+        &mut session,
+        "gamepad_feedback",
+        json!({"deviceId":0,"effect":"stop"}),
+    );
     assert!(feedback.get("result").is_some(), "{feedback}");
     let profile = oddity_host::gamepad::Profile::default();
     let profile_path = directory.join("profile.json");
@@ -190,35 +201,40 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
         ),
         ("gamepad_profile_load", json!({"path":profile_path})),
     ] {
-        let reply = call(command, args);
+        let reply = call(&mut session, command, args);
         assert!(reply.get("result").is_some(), "{command}: {reply}");
     }
-    let prepared = call("prepare_log_export", json!({}));
+    let prepared = call(&mut session, "prepare_log_export", json!({}));
     let saved = call(
+        &mut session,
         "save_log_export",
         json!({"id":prepared["result"]["id"],"destination":directory}),
     );
     assert!(saved["result"].is_string(), "{saved}");
     assert!(std::path::Path::new(saved["result"].as_str().unwrap()).is_file());
-    let prepared = call("prepare_log_export", json!({}));
-    assert!(
-        call("discard_log_export", json!({"id":prepared["result"]["id"]}))
-            .get("result")
-            .is_some()
-    );
+    let prepared = call(&mut session, "prepare_log_export", json!({}));
+    assert!(call(
+        &mut session,
+        "discard_log_export",
+        json!({"id":prepared["result"]["id"]})
+    )
+    .get("result")
+    .is_some());
     let host = call(
+        &mut session,
         "update_settings_section",
         json!({"owner":"host","patch":{"theme":"dark"}}),
     );
     assert_eq!(host["result"]["fields"]["theme"], "dark", "{host}");
     assert!(host["result"]["fields"].get("games").is_none(), "{host}");
     let game = call(
+        &mut session,
         "update_settings_section",
         json!({"owner":"game:nte","patch":{"distribution":"global","launchMode":"official"}}),
     );
     assert_eq!(game["result"]["fields"]["distribution"], "global", "{game}");
     assert_eq!(game["result"]["fields"]["launchMode"], "official", "{game}");
-    let saved = call("bootstrap", json!({}));
+    let saved = call(&mut session, "bootstrap", json!({}));
     assert_eq!(saved["result"]["settings"]["theme"], "dark", "{saved}");
     assert_eq!(
         saved["result"]["settings"]["games"]["nte"]["launchMode"], "official",
@@ -237,68 +253,62 @@ fn persistent_stdio_roundtrip_errors_events_and_shutdown() {
         ),
         ("attendance_run", json!({})),
     ] {
-        let reply = call(command, args);
+        let reply = call(&mut session, command, args);
         assert_eq!(reply["error"]["kind"], "service", "{reply}");
         assert!(reply["error"]["message"]
             .as_str()
             .unwrap()
             .contains("仅支持国服"));
     }
-    let logout = call("attendance_logout", json!({"accountId":"missing"}));
+    let logout = call(
+        &mut session,
+        "attendance_logout",
+        json!({"accountId":"missing"}),
+    );
     assert!(logout.get("error").is_some(), "{logout}");
-    let keyring = call("attendance_keyring_check", json!({}));
+    let keyring = call(&mut session, "attendance_keyring_check", json!({}));
     assert!(keyring["error"].is_object(), "{keyring}");
     let preferences = call(
+        &mut session,
         "attendance_configure",
         json!({"preferences":oddity_game_nte::attendance::Preferences::default()}),
     );
     assert!(preferences.get("result").is_some(), "{preferences}");
-    let launch = call("launch_official", json!({}));
+    let launch = call(&mut session, "launch_official", json!({}));
     assert!(launch["error"].is_string(), "{launch}");
-    assert!(call("host_state", json!({"focused":false,"visible":false}))
-        .get("result")
-        .is_some());
-    drop(call);
+    assert!(call(
+        &mut session,
+        "host_state",
+        json!({"focused":false,"visible":false})
+    )
+    .get("result")
+    .is_some());
     // 新调用带 game, 旧调用不带时仍按《异环》处理.
-    let mut call_game = |id: u64, game: Option<&str>| {
-        let mut request = json!({"id":id,"command":"game_status","args":{}});
-        if let Some(game) = game {
-            request["game"] = json!(game);
-        }
-        writeln!(input, "{request}").unwrap();
-        loop {
-            let value = replies.recv_timeout(Duration::from_secs(15)).unwrap();
-            if value.get("id") == Some(&json!(id)) {
-                return value;
-            }
-            assert!(value.get("event").is_some(), "{value}");
-        }
-    };
-    let unknown = call_game(1000, Some("genshin"));
+    let unknown = session.call_with_events("game_status", json!({}), |_| {});
     assert!(
-        unknown["error"]
+        unknown.get("result").is_some() || unknown.get("error").is_some(),
+        "{unknown}"
+    );
+    let unknown_game = session_game(&mut session, Some("genshin"));
+    assert!(
+        unknown_game["error"]
             .as_str()
             .unwrap()
             .contains("无法识别游戏: genshin"),
-        "{unknown}"
+        "{unknown_game}"
     );
-    let matching = call_game(1001, Some("nte"));
+    let matching = session_game(&mut session, Some("nte"));
     assert!(matching.get("result").is_some(), "{matching}");
-    let legacy = call_game(1002, None);
+    let legacy = session_game(&mut session, None);
     assert!(legacy.get("result").is_some(), "{legacy}");
-    drop(call_game);
-    drop(input);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            assert!(status.success());
-            break;
-        }
-        if std::time::Instant::now() > deadline {
-            child.kill().unwrap();
-            panic!("stdin 关闭后后台服务未退出");
-        }
-        std::thread::sleep(Duration::from_millis(10));
+    session.disconnect();
+}
+
+/// 带或不带游戏 id 的请求; 旧调用不带 game 时按当前游戏处理.
+fn session_game(session: &mut Session, game: Option<&str>) -> Value {
+    let mut request = json!({"id": 9001, "command": "game_status", "args": {}});
+    if let Some(game) = game {
+        request["game"] = json!(game);
     }
-    std::fs::remove_dir_all(directory).unwrap();
+    session.call_value(request)
 }

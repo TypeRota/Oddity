@@ -354,6 +354,7 @@ pub fn require_supported(game: &str, distribution: &str) -> std::result::Result<
         account_id: None,
         session_running: false,
         launcher_present: true,
+        hardware: Default::default(),
     };
     availability(&context)
         .into_gate(UNSUPPORTED)

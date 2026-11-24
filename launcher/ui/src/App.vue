@@ -24,6 +24,7 @@ import { useScenePalette } from "./composables/useScenePalette";
 import { navigationScrubbing } from "./composables/navigationGesture";
 import NotificationCenter from "./components/NotificationCenter.vue";
 import IntegrityDialog from "./components/IntegrityDialog.vue";
+import HangDialog from "./components/HangDialog.vue";
 import DemoNotice from "./components/DemoNotice.vue";
 import TitleBar from "./components/layout/TitleBar.vue";
 import HeroMedia from "./components/HeroMedia.vue";
@@ -152,6 +153,7 @@ onBeforeUnmount(() => {
       </div>
       <NotificationCenter />
       <IntegrityDialog />
+      <HangDialog />
       <DemoNotice v-if="isDemo" />
       <GamepadFilePicker />
       <GamepadKeyboard />

@@ -75,7 +75,7 @@ fn progress(label: &str, done: u64, target: u64, error: Option<Failure>) -> Step
 impl Client {
     fn tasks(&self, account: &Account, access: &str) -> Result<Vec<Task>> {
         let value = self.native("/apihub/api/getUserTasks?gid=1", account, access, None)?;
-        check(&value)?;
+        check(&value, false)?;
         value["data"]["task_list1"]
             .as_array()
             .ok_or_else(|| protocol("金币任务列表格式无效"))?
@@ -101,7 +101,7 @@ impl Client {
             access,
             None,
         )?;
-        check(&value)?;
+        check(&value, false)?;
         let data = &value["data"];
         let list = data
             .as_array()
@@ -124,7 +124,7 @@ impl Client {
             access,
             None,
         )?;
-        check(&value)?;
+        check(&value, false)?;
         let data = &value["data"];
         post(data)
             .or_else(|| {
@@ -161,7 +161,13 @@ impl Client {
                         access,
                         Some(form(&[("communityId", "2")])),
                     )
-                    .and_then(|v| if already(&v) { Ok(()) } else { check(&v) });
+                    .and_then(|v| {
+                        if already(&v) {
+                            Ok(())
+                        } else {
+                            check(&v, false)
+                        }
+                    });
                 steps.push(match result {
                     Ok(()) => progress("BBS 金币签到", 1, bbs, None),
                     Err(error) => Step::optional_failure("BBS 金币签到", error),
@@ -251,7 +257,7 @@ impl Client {
                     access,
                     Some(form(&[("postId", &p.id)])),
                 )
-                .and_then(|v| check(&v))
+                .and_then(|v| check(&v, false))
             {
                 Ok(()) => liked += 1,
                 Err(e) => {
@@ -277,7 +283,7 @@ impl Client {
                         access,
                         Some(form(&[("platform", SHARE_PLATFORM), ("postId", &p.id)])),
                     )
-                    .and_then(|v| check(&v)),
+                    .and_then(|v| check(&v, false)),
                 None => Err(protocol("没有可分享的推荐帖子")),
             }
         } else {
@@ -302,7 +308,7 @@ impl Client {
         }
         let state = (|| -> Result<String> {
             let value = self.native("/apihub/api/getUserCoinTaskState", account, access, None)?;
-            check(&value)?;
+            check(&value, false)?;
             coin_message(&value["data"]).ok_or_else(|| protocol("今日金币状态无效"))
         })();
         steps.push(match state {
@@ -323,7 +329,7 @@ impl Client {
             ],
             Some(&body),
         )?;
-        check(&value)?;
+        check(&value, false)?;
         if !value["result"].is_object() {
             return Err(protocol("云异环时长响应格式无效"));
         }

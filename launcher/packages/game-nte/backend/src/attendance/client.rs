@@ -86,8 +86,13 @@ fn encrypt(value: &str) -> String {
     }
     base64::prelude::BASE64_STANDARD.encode(bytes)
 }
-fn check(value: &Value) -> Result<()> {
-    if value["code"].as_i64() == Some(0) {
+/// 把响应里的业务码分成失败类别.
+///
+/// 只有会话接口的业务拒绝才表示登录失效; 其他接口的拒绝即使文案里出现
+/// "失效""过期"也只是该次操作未完成, 不能据此要求用户重新登录.
+fn check(value: &Value, session: bool) -> Result<()> {
+    let code = value["code"].as_i64();
+    if code == Some(0) {
         return Ok(());
     }
     let msg = value["message"]
@@ -95,6 +100,7 @@ fn check(value: &Value) -> Result<()> {
         .or_else(|| value["msg"].as_str())
         .unwrap_or("")
         .to_lowercase();
+    // 人机验证不分接口: 服务端一旦要求验证, 继续请求只会加重风控.
     if ["人机", "验证码", "滑块", "captcha", "robot", "验证", "风控"]
         .iter()
         .any(|s| msg.contains(s))
@@ -102,34 +108,22 @@ fn check(value: &Value) -> Result<()> {
         return Err(Failure::new(
             FailureKind::Verification,
             "登录需要人工验证, 请在官方渠道完成验证后重新登录; 自动任务已暂停",
-        ));
+        )
+        .with_business(code));
     }
-    if [
-        "密码",
-        "登录",
-        "失效",
-        "过期",
-        "未授权",
-        "token",
-        "unauthorized",
-    ]
-    .iter()
-    .any(|s| msg.contains(s))
-    {
-        return Err(Failure::new(
-            FailureKind::Auth,
-            "账号登录或会话已失效, 请重新登录",
-        ));
+    if session {
+        return Err(
+            Failure::new(FailureKind::Auth, "账号登录或会话已失效, 请重新登录").with_business(code),
+        );
     }
     Err(Failure::new(
         FailureKind::Protocol,
         format!(
             "塔吉多请求未成功 (业务码: {})",
-            value["code"]
-                .as_i64()
-                .map_or("未知".into(), |c| c.to_string())
+            code.map_or("未知".into(), |code| code.to_string())
         ),
-    ))
+    )
+    .with_business(code))
 }
 fn already(value: &Value) -> bool {
     ["msg", "message"]
@@ -236,16 +230,16 @@ impl Client {
             .map_err(|_| Failure::new(FailureKind::Network, "无法读取服务响应"))?;
         let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if matches!(status, 401..=403) {
-            return Err(Failure::new(
-                FailureKind::Auth,
-                "登录被拒绝或会话失效, 请重新登录",
-            ));
+            return Err(
+                Failure::new(FailureKind::Auth, "登录被拒绝或会话失效, 请重新登录")
+                    .with_status(status),
+            );
         }
         if !(200..300).contains(&status) {
-            return Err(Failure::new(
-                FailureKind::Network,
-                format!("服务返回 HTTP {status}"),
-            ));
+            return Err(
+                Failure::new(FailureKind::Network, format!("服务返回 HTTP {status}"))
+                    .with_status(status),
+            );
         }
         if !value.is_object() {
             return Err(Failure::new(FailureKind::Protocol, "服务返回了无效 JSON"));
@@ -259,7 +253,7 @@ impl Client {
         body: Option<&BTreeMap<String, String>>,
     ) -> Result<Value> {
         let value = self.request_raw(url, headers, body)?;
-        if let Err(error) = check(&value) {
+        if let Err(error) = check(&value, false) {
             if error.kind == FailureKind::Verification {
                 return Err(error);
             }
@@ -463,7 +457,7 @@ impl Client {
             ],
             Some(&body),
         ).map_err(|e| e.at("账号密码登录"))?;
-        check(&value).map_err(|e| e.at("账号密码登录"))?;
+        check(&value, true).map_err(|e| e.at("账号密码登录"))?;
         Ok((
             required(&value["result"], "token")?,
             required(&value["result"], "userId")?,
@@ -491,7 +485,7 @@ impl Client {
                 ])),
             )
             .map_err(|e| e.at("塔吉多会话登录"))?;
-        check(&value).map_err(|e| e.at("塔吉多会话登录"))?;
+        check(&value, true).map_err(|e| e.at("塔吉多会话登录"))?;
         Ok(Session {
             access: required(&value["data"], "accessToken")?,
             refresh: required(&value["data"], "refreshToken")?,
@@ -509,7 +503,7 @@ impl Client {
                 Some(BTreeMap::new()),
             )
             .map_err(|e| e.at("刷新塔吉多会话"))?;
-        check(&value).map_err(|e| e.at("刷新塔吉多会话"))?;
+        check(&value, true).map_err(|e| e.at("刷新塔吉多会话"))?;
         Ok(Session {
             access: required(&value["data"], "accessToken")?,
             refresh: required(&value["data"], "refreshToken")?,
@@ -533,7 +527,13 @@ impl Client {
                     access,
                     Some(form(&[("communityId", "1")])),
                 )
-                .and_then(|v| if already(&v) { Ok(()) } else { check(&v) });
+                .and_then(|v| {
+                    if already(&v) {
+                        Ok(())
+                    } else {
+                        check(&v, false)
+                    }
+                });
             steps.push(Step::from_result("社区签到", result));
         }
         if !tasks.role_sign {
@@ -564,7 +564,7 @@ impl Client {
                                 access,
                                 None,
                             )?;
-                            check(&state)?;
+                            check(&state, false)?;
                             if state["data"]["todaySign"] == json!(true) {
                                 return Ok(());
                             }
@@ -573,7 +573,7 @@ impl Client {
                                 "重复签到响应未获得今日状态确认",
                             ));
                         }
-                        check(&value)
+                        check(&value, false)
                     })();
                     let stop = result.as_ref().is_err_and(|e| e.needs_login());
                     let display_name = if name.is_empty() { role } else { name };
@@ -593,7 +593,7 @@ impl Client {
             access,
             None,
         )?;
-        check(&value)?;
+        check(&value, false)?;
         let list = value["data"]["roles"]
             .as_array()
             .ok_or_else(|| Failure::new(FailureKind::Protocol, "角色列表格式无效"))?;
@@ -642,7 +642,7 @@ impl Client {
             access,
             None,
         )?;
-        check(&value)?;
+        check(&value, false)?;
         let mut record = GameRecord::parse(&value["data"], role)?;
         if record.role_name.is_empty() {
             record.role_name = name.clone();
@@ -851,14 +851,35 @@ mod tests {
         assert_eq!(encrypt("secret-password"), "ULobCwCc+A8F/uF8S8Tvzg==");
     }
     #[test]
-    fn classifies_authentication_and_verification_without_leaking_body() {
-        let e = check(&json!({"code":7,"message":"人机验证 private-token"})).unwrap_err();
+    fn only_session_endpoints_treat_a_business_rejection_as_lost_login() {
+        let e = check(&json!({"code":7,"message":"人机验证 private-token"}), false).unwrap_err();
         assert_eq!(e.kind, FailureKind::Verification);
+        assert_eq!(e.business, Some(7));
         assert!(!e.message.contains("private-token"));
+        let e = check(&json!({"code":1,"msg":"密码错误"}), true).unwrap_err();
+        assert_eq!(e.kind, FailureKind::Auth);
+        assert_eq!(e.business, Some(1));
+        assert!(check(&json!({}), false).is_err());
+    }
+
+    #[test]
+    fn task_rejections_mentioning_expiry_are_not_authentication_failures() {
+        for message in [
+            "帖子已失效",
+            "任务已过期",
+            "分享已过期, 请重试",
+            "登录奖励已领取",
+        ] {
+            let error = check(&json!({"code":500,"msg":message}), false).unwrap_err();
+            assert_eq!(error.kind, FailureKind::Protocol, "{message}");
+            assert_eq!(error.business, Some(500), "{message}");
+            assert!(!error.needs_login(), "{message}");
+        }
         assert_eq!(
-            check(&json!({"code":1,"msg":"密码错误"})).unwrap_err().kind,
+            check(&json!({"code":1,"msg":"token 已失效"}), true)
+                .unwrap_err()
+                .kind,
             FailureKind::Auth
         );
-        assert!(check(&json!({})).is_err());
     }
 }

@@ -6,6 +6,10 @@ import {
   attendanceForm,
   form,
   gameRecords,
+  livePlayerState,
+  refreshPlayerState,
+  startPlayerState,
+  stopPlayerState,
   loadAttendance,
   loginAttendance,
   loginAttendanceSms,
@@ -63,7 +67,15 @@ export type {
   Necessity,
 } from "../host/capability";
 /** 能力判定: required 未满足不挂载; optional 由贡献读取事实后自行降级. */
-export { capabilityOf, contributionActive } from "../host/capability";
+export {
+  capabilityOf,
+  contributionActive,
+  contributionVisible,
+} from "../host/capability";
+/** 按能力要求决定子区块是否进入 DOM; 不满足时插槽内容根本不渲染. */
+export { default as CapabilityGate } from "../host/CapabilityGate.vue";
+/** 把同一份能力要求求值成响应式真假, 供筛选选项等非挂载点使用. */
+export { useCapabilityActive } from "../host/useCapabilityActive";
 export type { PackageContribution } from "../host/contribution";
 export type {
   GameContribution,
@@ -80,8 +92,17 @@ export type {
 /** 在系统浏览器打开链接, 沿用宿主的成功与失败提示. */
 export { openUrl } from "../core/controller";
 
+/** 选择背景素材后让主视觉重新解析当前素材. */
+export { reloadHeroBackground } from "../core/controller";
+
+/** 背景素材列表与选中的一套. */
+export type {
+  LauncherBackgroundArchive,
+  LauncherBackgroundArchiveEntry,
+} from "../types/launcher";
+
 /** 包 UI 向用户提示瞬时结果, 样式与生命周期由宿主通知中心管理. */
-export { notify } from "../core/notifications";
+export { notify, errorText } from "../core/notifications";
 
 /**
  * 包 UI 可读的宿主事实. 全部是只读响应式值, 跟随 bootstrap 与宿主设置更新;
@@ -92,6 +113,8 @@ export const hostFacts = {
   distribution: computed(() => factsFrom(state.bootstrap).distribution),
   /** 当前游戏声明的渠道; 选择器与展示文案都从这里取值. */
   channels: computed(() => factsFrom(state.bootstrap).channels),
+  /** 宿主按当前上下文投影的能力事实; 包内子区块用同一份事实判定. */
+  capabilities: computed(() => factsFrom(state.bootstrap).capabilities),
   /** 启动数据已落地 (成功或失败), 包内可以开始读取依赖游戏身份的数据. */
   ready: computed(() => state.bootstrap !== null || ui.setupNeeded),
   page: computed(() => state.page),
@@ -115,12 +138,18 @@ export const playerFacts = {
   recordsLoading: computed(() => gameRecords.loading),
   recordsWaiting: computed(() => gameRecords.waiting),
   recordsError: computed(() => gameRecords.error),
+  live: computed(() => livePlayerState.status),
+  liveBusy: computed(() => livePlayerState.busy),
+  liveError: computed(() => livePlayerState.error),
 };
 
 /** 玩家信息卡可用的宿主动作: 读账号, 刷新游戏记录, 跳到账号设置. */
 export const playerActions = {
   loadAccounts: loadAttendance,
   refreshRecords: refreshGameRecords,
+  refreshLive: refreshPlayerState,
+  startLive: startPlayerState,
+  stopLive: stopPlayerState,
   openAccountSettings: () => openSettings("nte-account"),
 };
 
@@ -137,6 +166,7 @@ export type {
   BulletinFeed,
   BulletinItem,
   GameRecord,
+  PlayerStateStatus,
 } from "../types/launcher";
 
 /**

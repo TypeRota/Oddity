@@ -30,8 +30,8 @@ export const defaultGame = (
     limitBytesPerSecond: 0,
     window: null,
   },
-  activeEnvironment: null,
-  stableEnvironment: null,
+  activeEnvironments: {},
+  stableEnvironments: {},
   ...overrides,
 });
 
@@ -84,6 +84,20 @@ export const capabilities: Bootstrap["capabilities"] = [
   },
   {
     id: "oddity.fixture.settings",
+    revision: 1,
+    state: "available",
+    code: null,
+    message: null,
+  },
+  {
+    id: "oddity.tuning.cpu",
+    revision: 1,
+    state: "available",
+    code: null,
+    message: null,
+  },
+  {
+    id: "oddity.tuning.gpu",
     revision: 1,
     state: "available",
     code: null,

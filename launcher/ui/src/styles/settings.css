@@ -296,7 +296,9 @@
 .settings-migration {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--space-8);
+  width: 100%;
 }
 
 .migration-summary__path {
@@ -315,4 +317,104 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.background-library {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  min-width: 0;
+}
+
+.background-library > .setting-row {
+  padding-block: var(--space-12);
+}
+
+.background-library .setting-row__control,
+.background-library .control-select {
+  width: 100%;
+}
+
+/* 下拉要容得下选项文字与勾选标记, 不能被标题挤成省略号. */
+.background-library .background-library__retention {
+  grid-template-columns: minmax(0, 1fr) 168px;
+}
+
+.background-library__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.65;
+}
+
+.background-library__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.background-library__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.background-library__tile {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.background-library__tile:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+
+.background-library__tile:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.background-library__tile.is-active {
+  border-color: var(--signal-strong);
+  box-shadow: 0 0 0 1px var(--signal-strong);
+}
+
+.background-library__tile img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.background-library__empty-tile {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: var(--faint);
+}
+
+.background-library__empty-tile svg {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 12;
+}
+
+.background-library__badge {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--signal-strong);
+  color: var(--surface-solid);
+  font-size: 11px;
+  line-height: 1.6;
 }

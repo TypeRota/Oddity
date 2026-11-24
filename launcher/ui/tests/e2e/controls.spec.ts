@@ -25,12 +25,26 @@ test("选择器方向键预览、Escape 取消、Enter 确认与暗色浮层", a
   await expect(page.getByRole("listbox")).toHaveAttribute("data-theme", "dark");
   await page.keyboard.press("Escape");
   await settingsCategory(page, "runtime");
-  await page.getByRole("button", { name: "创建运行环境", exact: true }).click();
+  const section = page
+    .locator("section", { has: page.locator("#runtime-environments-title") })
+    .last();
+  await section
+    .getByRole("button", { name: "创建运行环境", exact: true })
+    .click();
   const dialog = page.getByRole("dialog", {
     name: "创建运行环境",
     exact: true,
   });
-  await dialog.locator("#runtime-environment-distribution-trigger").click();
+  await expect(dialog).toBeVisible();
+  await dialog.locator("#runtime-environment-name").fill("弹窗选择器");
+  await dialog.locator("#runtime-environment-proton").fill("/opt/Proton");
+  await dialog.getByRole("button", { name: "创建环境", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  // 弹窗内的选择器在暗色主题下浮层取色一致, 且不渲染在弹窗面板内部.
+  await section
+    .getByRole("button", { name: "创建环境或副本", exact: true })
+    .click();
+  await dialog.locator("#runtime-environment-source-trigger").click();
   const menu = dialog.getByRole("listbox");
   await expect(menu).toBeVisible();
   await expect(menu).toHaveAttribute("data-theme", "dark");

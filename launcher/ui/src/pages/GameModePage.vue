@@ -2,11 +2,17 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { motion, useAnimate } from "motion-v";
 import { form, queueSettingsSave, state, ui } from "../core/controller";
-import { notify } from "../core/notifications";
+import { notify, errorText } from "../core/notifications";
 import { invoke, isDesktop } from "../core/api";
 import type { GameModeOptions, GameModeStatus } from "../types/launcher";
 import { useControlMotion } from "../composables/useControlMotion";
 import { useScrubNavigation } from "../composables/useScrubNavigation";
+import {
+  contributionActive,
+  type CapabilityRequirement,
+} from "../host/capability";
+import { factsFrom } from "../host/facts";
+import { cpuTuning, gpuTuning } from "../host/requirements";
 import GamescopeSettings from "../components/GamescopeSettings.vue";
 import PerformanceRecords from "../components/PerformanceRecords.vue";
 import CpuSettings from "../components/CpuSettings.vue";
@@ -71,15 +77,43 @@ const groups = [
     description: string;
   }[];
 }[];
-const categories = [
+// requires 是该分类依赖的能力; 能力不满足时整块卸载, 不留置灰占位.
+const allCategories = [
   { id: "general", label: "常规", icon: "i-game-controller" },
-  { id: "cpu", label: "CPU 与优先级", icon: "i-cpu" },
-  { id: "gpu", label: "GPU 超频", icon: "i-graphics-card" },
+  {
+    id: "cpu",
+    label: "CPU 与优先级",
+    icon: "i-cpu",
+    requires: [cpuTuning],
+  },
+  {
+    id: "gpu",
+    label: "GPU 超频",
+    icon: "i-graphics-card",
+    requires: [gpuTuning],
+  },
   { id: "records", label: "性能记录", icon: "i-monitor" },
   { id: "gamescope", label: "Gamescope", icon: "i-monitor" },
-] as const;
-type Category = (typeof categories)[number]["id"];
+] as const satisfies readonly {
+  id: string;
+  label: string;
+  icon: string;
+  requires?: readonly CapabilityRequirement[];
+}[];
+type Category = (typeof allCategories)[number]["id"];
+// 能力事实随 GameMode 开关在写入后重新求值, 切换开关时分类立即收敛.
+const categories = computed(() => {
+  const facts = factsFrom(state.bootstrap);
+  return allCategories.filter((item) =>
+    contributionActive("requires" in item ? item.requires : undefined, facts),
+  );
+});
 const category = ref<Category>("general");
+watch(categories, (list) => {
+  // 关闭 GameMode 时当前分类可能消失, 回到第一个可用分类.
+  if (!list.some((item) => item.id === category.value))
+    category.value = list[0].id;
+});
 const query = ref("");
 const searching = computed(() => Boolean(query.value.trim()));
 const entries: {
@@ -148,13 +182,17 @@ entries.push({
 });
 const results = computed(() => {
   const words = query.value.trim().toLocaleLowerCase().split(/\s+/);
-  return entries.filter((entry) =>
-    words.every((word) =>
-      `${entry.label} ${entry.description} ${entry.keywords} ${categories.find((category) => category.id === entry.category)!.label}`
-        .toLocaleLowerCase()
-        .includes(word),
-    ),
-  );
+  return entries
+    .filter((entry) =>
+      categories.value.some((item) => item.id === entry.category),
+    )
+    .filter((entry) =>
+      words.every((word) =>
+        `${entry.label} ${entry.description} ${entry.keywords} ${categories.value.find((item) => item.id === entry.category)!.label}`
+          .toLocaleLowerCase()
+          .includes(word),
+      ),
+    );
 });
 function chooseCategory(value: Category) {
   category.value = value;
@@ -183,20 +221,21 @@ function clickCategory(event: MouseEvent, value: Category) {
   chooseCategory(value);
 }
 function categoryKeys(event: KeyboardEvent) {
-  const index = categories.findIndex((item) => item.id === category.value);
+  const list = categories.value;
+  const index = list.findIndex((item) => item.id === category.value);
   const next =
     event.key === "ArrowDown" || event.key === "ArrowRight"
-      ? (index + 1) % categories.length
+      ? (index + 1) % list.length
       : event.key === "ArrowUp" || event.key === "ArrowLeft"
-        ? (index - 1 + categories.length) % categories.length
+        ? (index - 1 + list.length) % list.length
         : event.key === "Home"
           ? 0
           : event.key === "End"
-            ? categories.length - 1
+            ? list.length - 1
             : -1;
   if (next < 0) return;
   event.preventDefault();
-  chooseCategory(categories[next].id);
+  chooseCategory(list[next].id);
   root.value
     ?.querySelector<HTMLElement>(`[data-category="${category.value}"]`)
     ?.focus();
@@ -304,14 +343,9 @@ async function runRefresh() {
       }
       status.value = result;
     },
-    (reason: unknown) => {
+    (cause: unknown) => {
       if (!disposed)
-        notify(
-          reason instanceof Error ? reason.message : String(reason),
-          "error",
-          6500,
-          { key: "game-mode-detect" },
-        );
+        notify(errorText(cause), "error", 6500, { key: "game-mode-detect" });
     },
   );
   detecting.value = false;
@@ -525,7 +559,6 @@ const isActive = computed(() => state.page === "game-mode");
                   tuning = value as InstanceType<typeof CpuSettings> | null;
                 }
               "
-              :available="available('performance')"
             />
             <GpuSettings
               v-else-if="item.id === 'gpu'"
@@ -534,7 +567,6 @@ const isActive = computed(() => state.page === "game-mode");
                   gpu = value as InstanceType<typeof GpuSettings> | null;
                 }
               "
-              :available="available('performance')"
             />
             <PerformanceRecords
               v-else-if="item.id === 'records'"

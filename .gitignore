@@ -73,3 +73,4 @@ launcher/ui/coverage/
 # ============================================================
 .agents/
 .mircode/
+.alma-snapshots

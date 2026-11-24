@@ -168,9 +168,25 @@ impl LaunchProgress {
     }
 }
 
+/// 游戏卡死或崩溃时 UE 在 prefix 内写下的现场.
+///
+/// 游戏进程此时通常常驻在崩溃上报界面不退出, 界面据此提示用户并结束会话.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHang {
+    /// 现场记录的原因类型; 读取不到时为空串.
+    pub crash_type: String,
+    /// 现场记录的补充说明; 读取不到时为空串.
+    pub error_message: String,
+    /// 现场目录名.
+    pub site: String,
+    /// 发现时间, Unix 毫秒.
+    pub detected_at: u64,
+}
+
 /// 会话状态, 也是 game-state 事件的载荷.
 ///
-/// 字段与序列化和宿主现有状态投影一致; launch 与 error 没有值时不出现,
+/// 字段与序列化和宿主现有状态投影一致; launch, error 与 hang 没有值时不出现,
 /// 与界面现有消费方式保持一致.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -193,6 +209,9 @@ pub struct SessionStatus {
     /// 冷启动错误, 由界面取走并提示.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// 本轮会话发现的崩溃或卡死现场; 会话结束后保留到下一次启动.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hang: Option<SessionHang>,
 }
 
 /// 一轮会话采样的事实.

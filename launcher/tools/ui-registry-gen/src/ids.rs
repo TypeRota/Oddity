@@ -1,10 +1,10 @@
-//! 读取包声明里的贡献 id, 校验命名空间, 前缀与唯一性.
+//! 读取 UI 声明, 校验贡献 id 与能力依赖.
 //!
-//! 生成器不执行包代码, 只扫描声明文件里的字面量 id. 页面, 首页卡片与设置
-//! 分区必须带上包命名空间前缀; 游戏展示的 id 与预览的 namespace 必须与包
-//! 命名空间一致. 声明里出现无法静态确定的贡献时直接失败, 避免新增贡献种类
-//! 后漏检.
+//! 页面、首页卡片与设置分区使用包命名空间前缀. 游戏展示的 id 和预览的
+//! namespace 与包命名空间一致. 贡献以及能力依赖都必须能静态确定.
 
+use crate::capabilities::Catalog;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -31,23 +31,39 @@ impl PackageIds {
 }
 
 /// 读取并校验一个包的声明; 错误信息带上包目录与文件名.
-pub fn read(dir: &str, src: &Path) -> Result<PackageIds, String> {
+pub fn read(dir: &str, src: &Path, catalog: &Catalog) -> Result<PackageIds, String> {
     let contribution = read_file(dir, src, "contribution.ts")?;
     let pages = read_file(dir, src, "pages.ts")?;
-    let (namespace, cards, sections) = contribution_ids(dir, &contribution)?;
-    let page_ids = page_ids(dir, &pages)?;
+    let contribution = Manifest::new(
+        &file_path(dir, "contribution.ts"),
+        src,
+        &contribution,
+        catalog,
+    )?;
+    let pages = Manifest::new(&file_path(dir, "pages.ts"), src, &pages, catalog)?;
+    let (namespace, cards, sections) = contribution.contribution_ids()?;
+    let page_ids = pages.array_ids(&pages.path, pages.declaration("pages", true)?, false)?;
     let game = match optional_file(dir, src, "game.ts")? {
-        Some(source) => Some(top_level_literal(dir, "game.ts", "game", "id", &source)?),
+        Some(source) => {
+            let game = Manifest::new(&file_path(dir, "game.ts"), src, &source, catalog)?;
+            let fields = object(&game.path, game.declaration("game", true)?)?;
+            let id = string_property(&game.path, &fields, "id")?;
+            if let Some(modes) = fields.get("launchModeRequires") {
+                let modes = object(&game.path, modes)?;
+                for (mode, requires) in modes {
+                    game.requires(&format!("{}: {id}/{mode}", game.path), requires)?;
+                }
+            }
+            Some(id)
+        }
         None => None,
     };
     let preview = match optional_file(dir, src, "preview.ts")? {
-        Some(source) => Some(top_level_literal(
-            dir,
-            "preview.ts",
-            "preview",
-            "namespace",
-            &source,
-        )?),
+        Some(source) => {
+            let preview = Manifest::new(&file_path(dir, "preview.ts"), src, &source, catalog)?;
+            let fields = object(&preview.path, preview.declaration("preview", true)?)?;
+            Some(string_property(&preview.path, &fields, "namespace")?)
+        }
         None => None,
     };
     let ids = PackageIds {
@@ -63,11 +79,16 @@ pub fn read(dir: &str, src: &Path) -> Result<PackageIds, String> {
 }
 
 /// 宿主页面声明的 id; 与包贡献共用同一个唯一性集合.
-pub fn host_page_ids(root: &Path) -> Result<Vec<String>, String> {
-    let source = fs::read_to_string(root.join("ui/src/host/pages.ts"))
+pub fn host_page_ids(root: &Path, catalog: &Catalog) -> Result<Vec<String>, String> {
+    let dir = root.join("ui/src/host");
+    let source = fs::read_to_string(dir.join("pages.ts"))
         .map_err(|error| format!("{HOST_PAGES}: 无法读取: {error}"))?;
-    let (ids, _) = declaration_ids(HOST_PAGES, &source, "hostPageEntries")?;
-    Ok(ids)
+    let pages = Manifest::new(HOST_PAGES, &dir, &source, catalog)?;
+    pages.array_ids(
+        HOST_PAGES,
+        pages.declaration("hostPageEntries", true)?,
+        false,
+    )
 }
 
 fn read_file(dir: &str, src: &Path, file: &str) -> Result<String, String> {
@@ -87,220 +108,318 @@ fn file_path(dir: &str, file: &str) -> String {
     format!("launcher/packages/{dir}/ui/src/{file}")
 }
 
-/// 页面声明的 id 必须是对象属性里的字符串字面量.
-fn page_ids(dir: &str, source: &str) -> Result<Vec<String>, String> {
-    let path = file_path(dir, "pages.ts");
-    let (ids, _) = declaration_ids(&path, source, "pages")?;
-    Ok(ids)
+struct Manifest<'a> {
+    path: String,
+    dir: &'a Path,
+    tokens: Vec<Token>,
+    catalog: &'a Catalog,
 }
 
-/// 读取 `export const <name> = [...]` 里每个元素的字面量 id.
-fn declaration_ids(path: &str, source: &str, name: &str) -> Result<(Vec<String>, usize), String> {
-    let tokens = declaration_tokens(path, source, name)?;
-    if tokens.first() != Some(&Token::Punct('[')) {
-        return Err(format!("{path}: {name} 必须是数组字面量"));
+impl<'a> Manifest<'a> {
+    fn new(path: &str, dir: &'a Path, source: &str, catalog: &'a Catalog) -> Result<Self, String> {
+        let tokens = lex(source).map_err(|error| format!("{path}: {error}"))?;
+        Ok(Self {
+            path: path.into(),
+            dir,
+            tokens,
+            catalog,
+        })
     }
-    array_ids(path, &tokens, 0)
-}
 
-/// 从 contribution 声明里取出命名空间, 卡片与设置分区的 id.
-fn contribution_ids(dir: &str, source: &str) -> Result<(String, Vec<String>, Vec<String>), String> {
-    let path = file_path(dir, "contribution.ts");
-    let tokens = declaration_tokens(&path, source, "contribution")?;
-    if tokens.first() != Some(&Token::Punct('{')) {
-        return Err(format!("{path}: 贡献声明必须是对象字面量"));
+    fn declaration(&self, name: &str, exported: bool) -> Result<&[Token], String> {
+        let value = top_level(&self.tokens)
+            .find_map(|tokens| {
+                let tokens = match tokens {
+                    [Token::Ident(keyword), rest @ ..] if keyword == "export" => rest,
+                    _ if !exported => tokens,
+                    _ => return None,
+                };
+                match tokens {
+                    [Token::Ident(keyword), Token::Ident(binding), Token::Punct('='), value @ ..]
+                        if keyword == "const" && binding == name =>
+                    {
+                        Some(value)
+                    }
+                    _ => None,
+                }
+            })
+            .ok_or_else(|| format!("{}: 找不到常量 {name} 的声明", self.path))?;
+        let value = top_level(value)
+            .find(|tail| tail.first() == Some(&Token::Punct(';')))
+            .map_or(value, |tail| &value[..value.len() - tail.len()]);
+        let assertion = top_level(value).find(|tail| {
+            let [Token::Ident(as_kw), Token::Ident(const_kw), suffix @ ..] = tail else {
+                return false;
+            };
+            if as_kw != "as" || const_kw != "const" {
+                return false;
+            }
+            match suffix {
+                [] => true,
+                [Token::Ident(satisfies), types @ ..] if satisfies == "satisfies" => {
+                    !types.is_empty()
+                        && types.iter().all(|token| {
+                            matches!(
+                                token,
+                                Token::Ident(_)
+                                    | Token::Str(_)
+                                    | Token::Punct('<' | '>' | '[' | ']' | '.')
+                            )
+                        })
+                }
+                _ => false,
+            }
+        });
+        Ok(assertion.map_or(value, |tail| &value[..value.len() - tail.len()]))
     }
-    let mut namespace: Option<String> = None;
-    let mut cards: Option<Vec<String>> = None;
-    let mut sections: Option<Vec<String>> = None;
-    let mut index = 1;
-    loop {
-        match tokens.get(index) {
-            Some(Token::Punct('}')) => break,
-            Some(Token::Punct(',')) => index += 1,
-            Some(_) => {
-                let key = property_name(&tokens, index)
-                    .ok_or_else(|| format!("{path}: 无法识别的贡献声明"))?
-                    .to_string();
-                match key.as_str() {
-                    "namespace" => {
-                        let value = literal_value(&tokens, index)
-                            .ok_or_else(|| format!("{path}: namespace 必须是字符串字面量"))?;
-                        if namespace.replace(value).is_some() {
-                            return Err(format!("{path}: 重复声明 namespace"));
+
+    fn named_import(&self, name: &str) -> Option<(&str, &str)> {
+        top_level(&self.tokens).find_map(|tokens| {
+            let [Token::Ident(keyword), Token::Punct('{'), rest @ ..] = tokens else {
+                return None;
+            };
+            if keyword != "import" {
+                return None;
+            }
+            let end = rest.iter().position(|token| *token == Token::Punct('}'))?;
+            let [Token::Ident(from), Token::Str(module), ..] = &rest[end + 1..] else {
+                return None;
+            };
+            if from != "from" {
+                return None;
+            }
+            rest[..end]
+                .split(|token| *token == Token::Punct(','))
+                .find_map(|binding| {
+                    let original = match binding {
+                        [Token::Ident(original)] if original == name => original,
+                        [Token::Ident(original), Token::Ident(alias), Token::Ident(local)]
+                            if alias == "as" && local == name =>
+                        {
+                            original
                         }
-                        index += 3;
-                    }
-                    "pageContributions" => {
-                        if !maps_pages(&tokens, index) {
-                            return Err(format!(
-                                "{path}: pageContributions 必须由 pages 声明派生, 页面只能写在 pages.ts"
-                            ));
-                        }
-                        index = skip_value(&path, &tokens, index + 2)?;
-                    }
-                    "homeCards" | "settingsSections" => {
-                        if tokens.get(index + 2) != Some(&Token::Punct('[')) {
-                            return Err(format!("{path}: {key} 必须是数组字面量"));
-                        }
-                        let (ids, next) = array_ids(&path, &tokens, index + 2)?;
-                        let slot = if key == "homeCards" {
-                            &mut cards
-                        } else {
-                            &mut sections
-                        };
-                        if slot.replace(ids).is_some() {
-                            return Err(format!("{path}: 重复声明 {key}"));
-                        }
-                        index = next;
-                    }
-                    other => {
+                        _ => return None,
+                    };
+                    Some((module.as_str(), original.as_str()))
+                })
+        })
+    }
+
+    fn contribution_ids(&self) -> Result<(String, Vec<String>, Vec<String>), String> {
+        let path = self.path.as_str();
+        let fields = object(path, self.declaration("contribution", true)?)?;
+        let namespace = string_property(path, &fields, "namespace")?;
+        let mut cards = Vec::new();
+        let mut sections = Vec::new();
+        for (key, value) in fields {
+            match key {
+                "namespace" => {}
+                "pageContributions" => {
+                    let [Token::Ident(pages), Token::Punct('.'), Token::Ident(map), Token::Punct('('), Token::Punct('('), Token::Ident(param), Token::Punct(')'), Token::Punct('='), Token::Punct('>'), Token::Punct('('), Token::Punct('{'), Token::Punct('.'), Token::Punct('.'), Token::Punct('.'), Token::Ident(spread), rest @ ..] =
+                        value
+                    else {
                         return Err(format!(
-                            "{path}: 未知的贡献键 \"{other}\", 新增贡献种类时必须同步生成器"
+                            "{path}: pageContributions 必须从 pages 继承页面声明"
+                        ));
+                    };
+                    let rest = if rest.first() == Some(&Token::Punct(',')) {
+                        &rest[1..]
+                    } else {
+                        rest
+                    };
+                    let end = if matches!(rest, [Token::Ident(key), Token::Punct(':'), ..] if key == "component")
+                    {
+                        let mut end = skip_value(path, rest, 2)?;
+                        if rest[end] == Token::Punct(',') {
+                            end += 1;
+                        }
+                        end
+                    } else {
+                        0
+                    };
+                    if map != "map"
+                        || !matches!(
+                            self.named_import(pages),
+                            Some(("./pages" | "./pages.ts", "pages"))
+                        )
+                        || param != spread
+                        || rest[end..] != [Token::Punct('}'), Token::Punct(')'), Token::Punct(')')]
+                    {
+                        return Err(format!(
+                            "{path}: pageContributions 必须从 pages 继承页面声明, 只绑定 component"
                         ));
                     }
                 }
-            }
-            None => return Err(format!("{path}: 贡献对象没有闭合")),
-        }
-    }
-    let namespace = namespace.ok_or_else(|| format!("{path}: 缺少 namespace 声明"))?;
-    Ok((
-        namespace,
-        cards.unwrap_or_default(),
-        sections.unwrap_or_default(),
-    ))
-}
-
-/// 游戏展示 (`id`) 与预览 (`namespace`) 声明的顶层标识.
-fn top_level_literal(
-    dir: &str,
-    file: &str,
-    name: &str,
-    key: &str,
-    source: &str,
-) -> Result<String, String> {
-    let path = file_path(dir, file);
-    let tokens = declaration_tokens(&path, source, name)?;
-    if tokens.first() != Some(&Token::Punct('{')) {
-        return Err(format!("{path}: {name} 必须是对象字面量"));
-    }
-    let mut literal: Option<String> = None;
-    let mut index = 1;
-    loop {
-        match tokens.get(index) {
-            Some(Token::Punct('}')) => break,
-            Some(Token::Punct(',')) => index += 1,
-            Some(_) => {
-                let property = property_name(&tokens, index)
-                    .ok_or_else(|| format!("{path}: 无法识别的 {name} 声明"))?;
-                if property == key {
-                    let value = literal_value(&tokens, index)
-                        .ok_or_else(|| format!("{path}: {key} 必须是字符串字面量"))?;
-                    if literal.replace(value).is_some() {
-                        return Err(format!("{path}: 重复声明 {key}"));
-                    }
+                "homeCards" => cards = self.array_ids(path, value, false)?,
+                "settingsSections" => sections = self.array_ids(path, value, true)?,
+                other => {
+                    return Err(format!(
+                        "{path}: 未知的贡献键 \"{other}\", 新增贡献种类时必须同步生成器"
+                    ))
                 }
-                index = skip_value(&path, &tokens, index + 2)?;
             }
-            None => return Err(format!("{path}: {name} 对象没有闭合")),
         }
+        Ok((namespace, cards, sections))
     }
-    literal.ok_or_else(|| format!("{path}: 缺少 {key} 声明"))
-}
 
-/// 数组元素的直接 id; 元素必须是对象字面量, 嵌套对象与设置项里的 id 不计入.
-fn array_ids(path: &str, tokens: &[Token], start: usize) -> Result<(Vec<String>, usize), String> {
-    if tokens.get(start) != Some(&Token::Punct('[')) {
-        return Err(format!("{path}: 需要数组字面量"));
-    }
-    let mut ids = Vec::new();
-    let mut index = start + 1;
-    loop {
-        match tokens.get(index) {
-            Some(Token::Punct(']')) => return Ok((ids, index + 1)),
-            Some(Token::Punct(',')) => index += 1,
-            Some(Token::Punct('{')) => {
-                let (id, next) = element_id(path, tokens, index, ids.len() + 1)?;
-                ids.push(id);
-                index = next;
+    fn array_ids(
+        &self,
+        path: &str,
+        value: &[Token],
+        settings_sections: bool,
+    ) -> Result<Vec<String>, String> {
+        let items = array(path, value)?;
+        let mut ids = Vec::new();
+        for (index, item) in items.into_iter().enumerate() {
+            let location = format!("{path}: 数组第 {} 个元素", index + 1);
+            let fields = object(&location, item)?;
+            let id = string_property(&location, &fields, "id")?;
+            let location = format!("{path}: {id}");
+            let requires = fields.get("requires").ok_or_else(|| {
+                format!("{location}: 缺少 requires, 无能力依赖时请声明 requires: []")
+            })?;
+            self.requires(&format!("{location}.requires"), requires)?;
+            if settings_sections {
+                let entries = fields
+                    .get("entries")
+                    .ok_or_else(|| format!("{location}: 缺少 entries"))?;
+                self.array_ids(&location, entries, false)?;
             }
-            Some(_) => {
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
+    fn requires(&self, location: &str, value: &[Token]) -> Result<(), String> {
+        for requirement in array(location, value)? {
+            let imported;
+            let (path, value) = if let [Token::Ident(name)] = requirement {
+                if let Some((module, original)) = self.named_import(name) {
+                    if !module.starts_with("./") {
+                        return Err(format!(
+                            "{location}: 能力要求 {name} 必须从同包的相对路径导入"
+                        ));
+                    }
+                    let file = if module.ends_with(".ts") {
+                        module.to_owned()
+                    } else {
+                        format!("{module}.ts")
+                    };
+                    let source = fs::read_to_string(self.dir.join(&file))
+                        .map_err(|error| format!("{location}: 无法读取 {file}: {error}"))?;
+                    let path = format!("{}: {file}", self.path);
+                    imported = Manifest::new(&path, self.dir, &source, self.catalog)?;
+                    (
+                        format!("{location} ({file} 中的 {original})"),
+                        imported.declaration(original, true)?,
+                    )
+                } else {
+                    (
+                        format!("{location} ({name})"),
+                        self.declaration(name, false)?,
+                    )
+                }
+            } else {
+                (location.to_owned(), requirement)
+            };
+            let fields = object(&path, value)?;
+            let id = string_property(&path, &fields, "id")?;
+            let revision = match fields.get("revision").copied() {
+                Some([Token::Number(value)]) => value.parse::<u16>().ok(),
+                _ => None,
+            }
+            .ok_or_else(|| {
+                format!("{path}: 能力 \"{id}\" 的 revision 必须是 0 到 65535 的整数字面量")
+            })?;
+            let necessity = string_property(&path, &fields, "necessity")?;
+            if !matches!(necessity.as_str(), "required" | "optional") {
                 return Err(format!(
-                    "{path}: 数组第 {} 个元素必须是带 id 的对象字面量",
-                    ids.len() + 1
+                    "{path}: 能力 \"{id}\" 的 necessity 必须是 required 或 optional"
                 ));
             }
-            None => return Err(format!("{path}: 数组没有闭合")),
+            let expected = self
+                .catalog
+                .get(&id)
+                .ok_or_else(|| format!("{path}: 未知能力 \"{id}\""))?;
+            if revision != *expected {
+                return Err(format!(
+                    "{path}: 能力 \"{id}\" 的 revision 为 {revision}, 后端声明为 {expected}"
+                ));
+            }
         }
+        Ok(())
     }
 }
 
-/// 数组元素对象的直接 id; 展开语法会让 id 无法静态确定, 直接失败.
-fn element_id(
-    path: &str,
-    tokens: &[Token],
-    start: usize,
-    position: usize,
-) -> Result<(String, usize), String> {
-    let mut id: Option<String> = None;
-    let mut index = start + 1;
-    loop {
-        match tokens.get(index) {
-            Some(Token::Punct('}')) => {
-                let id = id.ok_or_else(|| format!("{path}: 数组第 {position} 个元素缺少 id"))?;
-                return Ok((id, index + 1));
-            }
-            Some(Token::Punct(',')) => index += 1,
-            Some(Token::Punct('.')) if tokens.get(index + 1) == Some(&Token::Punct('.')) => {
-                return Err(format!("{path}: 数组第 {position} 个元素不能使用展开语法"));
-            }
-            Some(_) => {
-                let key = property_name(tokens, index)
-                    .ok_or_else(|| format!("{path}: 数组第 {position} 个元素无法解析"))?;
-                if key == "id" {
-                    let value = literal_value(tokens, index).ok_or_else(|| {
-                        format!("{path}: 数组第 {position} 个元素的 id 必须是字符串字面量")
-                    })?;
-                    if id.replace(value).is_some() {
-                        return Err(format!("{path}: 数组第 {position} 个元素重复声明 id"));
-                    }
-                }
-                index = skip_value(path, tokens, index + 2)?;
-            }
-            None => return Err(format!("{path}: 数组第 {position} 个元素没有闭合")),
+fn top_level(tokens: &[Token]) -> impl Iterator<Item = &[Token]> {
+    let mut depth = 0;
+    tokens.iter().enumerate().filter_map(move |(index, token)| {
+        let at_top = depth == 0;
+        match token {
+            Token::Punct('(' | '[' | '{') => depth += 1,
+            Token::Punct(')' | ']' | '}') => depth -= 1,
+            _ => {}
         }
-    }
+        at_top.then_some(&tokens[index..])
+    })
 }
 
-/// 属性名: 标识符或字符串字面量, 且紧跟冒号.
-fn property_name(tokens: &[Token], index: usize) -> Option<&str> {
-    if tokens.get(index + 1) != Some(&Token::Punct(':')) {
-        return None;
+fn array<'a>(path: &str, tokens: &'a [Token]) -> Result<Vec<&'a [Token]>, String> {
+    if tokens.first() != Some(&Token::Punct('[')) {
+        return Err(format!("{path}: 需要数组字面量"));
     }
-    match tokens.get(index) {
-        Some(Token::Ident(name)) | Some(Token::Str(name)) => Some(name),
-        _ => None,
+    let mut values = Vec::new();
+    let mut index = 1;
+    while tokens.get(index) != Some(&Token::Punct(']')) {
+        let end = skip_value(path, tokens, index)?;
+        if end == index {
+            return Err(format!("{path}: 数组缺少元素"));
+        }
+        values.push(&tokens[index..end]);
+        index = end + usize::from(tokens[end] == Token::Punct(','));
     }
+    if index + 1 != tokens.len() {
+        return Err(format!("{path}: 需要数组字面量"));
+    }
+    Ok(values)
 }
 
-/// 属性的字符串字面量值.
-fn literal_value(tokens: &[Token], index: usize) -> Option<String> {
-    if tokens.get(index + 1) != Some(&Token::Punct(':')) {
-        return None;
+type Properties<'a> = BTreeMap<&'a str, &'a [Token]>;
+
+fn object<'a>(path: &str, tokens: &'a [Token]) -> Result<Properties<'a>, String> {
+    if tokens.first() != Some(&Token::Punct('{')) {
+        return Err(format!("{path}: 必须是对象字面量"));
     }
-    match tokens.get(index + 2) {
-        Some(Token::Str(value)) => Some(value.clone()),
-        _ => None,
+    let mut fields = BTreeMap::new();
+    let mut index = 1;
+    while tokens.get(index) != Some(&Token::Punct('}')) {
+        if tokens.get(index..index + 3)
+            == Some(&[Token::Punct('.'), Token::Punct('.'), Token::Punct('.')])
+        {
+            return Err(format!("{path}: 对象不能使用展开语法"));
+        }
+        let key = match tokens.get(index..index + 2) {
+            Some([Token::Ident(key) | Token::Str(key), Token::Punct(':')]) => key.as_str(),
+            _ => return Err(format!("{path}: 无法识别的对象属性")),
+        };
+        let end = skip_value(path, tokens, index + 2)?;
+        if fields.insert(key, &tokens[index + 2..end]).is_some() {
+            return Err(format!("{path}: 重复声明 {key}"));
+        }
+        index = end + usize::from(tokens[end] == Token::Punct(','));
     }
+    if index + 1 != tokens.len() {
+        return Err(format!("{path}: 必须是对象字面量"));
+    }
+    Ok(fields)
 }
 
-/// `pageContributions: pages.map(...)`: 页面条目只能来自 pages 声明.
-fn maps_pages(tokens: &[Token], index: usize) -> bool {
-    matches!(tokens.get(index + 2), Some(Token::Ident(name)) if name == "pages")
-        && matches!(tokens.get(index + 3), Some(Token::Punct('.')))
-        && matches!(tokens.get(index + 4), Some(Token::Ident(name)) if name == "map")
-        && matches!(tokens.get(index + 5), Some(Token::Punct('(')))
+fn string_property(path: &str, fields: &Properties<'_>, key: &str) -> Result<String, String> {
+    match fields.get(key).copied() {
+        Some([Token::Str(value)]) => Ok(value.clone()),
+        Some(_) => Err(format!("{path}: {key} 必须是字符串字面量")),
+        None => Err(format!("{path}: 缺少 {key}")),
+    }
 }
 
 /// 跳过一个属性值, 停在同层的逗号或外层对象的右括号.
@@ -322,38 +441,6 @@ fn skip_value(path: &str, tokens: &[Token], start: usize) -> Result<usize, Strin
         index += 1;
     }
     Err(format!("{path}: 声明没有闭合"))
-}
-
-/// 找到 `export const <name> =` 并把等号后面的源码交给词法扫描.
-fn declaration_tokens(path: &str, source: &str, name: &str) -> Result<Vec<Token>, String> {
-    let start = declaration_value_start(source, name)
-        .ok_or_else(|| format!("{path}: 找不到 export const {name} 声明"))?;
-    lex(&source[start..]).map_err(|message| format!("{path}: {message}"))
-}
-
-fn declaration_value_start(source: &str, name: &str) -> Option<usize> {
-    let needle = "export const ";
-    let mut offset = 0;
-    while let Some(relative) = source[offset..].find(needle) {
-        let after_keyword = offset + relative + needle.len();
-        let rest = &source[after_keyword..];
-        let ident_len = rest
-            .bytes()
-            .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'$')
-            .count();
-        if ident_len == name.len() && &rest[..ident_len] == name {
-            let tail = &rest[ident_len..];
-            let trimmed = tail.trim_start();
-            if trimmed
-                .strip_prefix('=')
-                .is_some_and(|value| !value.starts_with('='))
-            {
-                return Some(after_keyword + ident_len + tail.len() - trimmed.len() + 1);
-            }
-        }
-        offset = after_keyword;
-    }
-    None
 }
 
 fn validate(dir: &str, ids: &PackageIds) -> Result<(), String> {
@@ -430,6 +517,7 @@ enum Token {
     Ident(String),
     Str(String),
     Number(String),
+    OtherLiteral,
     Punct(char),
 }
 
@@ -468,13 +556,9 @@ fn lex(source: &str) -> Result<Vec<Token>, String> {
                 _ => {}
             }
         }
-        if byte == b'"' || byte == b'\'' {
-            let (value, next) = string_literal(source, index, byte)?;
-            tokens.push(Token::Str(value));
-            index = next;
-        } else if byte == b'`' {
-            let (value, next) = template_literal(source, index)?;
-            tokens.push(Token::Str(value));
+        if matches!(byte, b'"' | b'\'' | b'`') {
+            let (token, next) = string_literal(source, index, byte)?;
+            tokens.push(token);
             index = next;
         } else if byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$' {
             let start = index;
@@ -506,47 +590,29 @@ fn lex(source: &str) -> Result<Vec<Token>, String> {
     Ok(tokens)
 }
 
-fn string_literal(source: &str, start: usize, quote: u8) -> Result<(String, usize), String> {
+fn string_literal(source: &str, start: usize, quote: u8) -> Result<(Token, usize), String> {
     let bytes = source.as_bytes();
-    let mut value = String::new();
     let mut index = start + 1;
+    let mut plain = quote != b'`';
     while index < bytes.len() {
         match bytes[index] {
             b'\\' => {
-                let escaped = bytes.get(index + 1).ok_or("字符串没有闭合")?;
-                value.push(*escaped as char);
+                plain = false;
                 index += 2;
             }
-            byte if byte == quote => return Ok((value, index + 1)),
-            b'\n' => return Err("字符串没有闭合".into()),
-            byte => {
-                value.push(byte as char);
-                index += 1;
+            byte if byte == quote => {
+                let token = if plain {
+                    Token::Str(source[start + 1..index].to_owned())
+                } else {
+                    Token::OtherLiteral
+                };
+                return Ok((token, index + 1));
             }
+            b'\n' if quote != b'`' => break,
+            _ => index += 1,
         }
     }
     Err("字符串没有闭合".into())
-}
-
-fn template_literal(source: &str, start: usize) -> Result<(String, usize), String> {
-    let bytes = source.as_bytes();
-    let mut value = String::new();
-    let mut index = start + 1;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\\' => {
-                let escaped = bytes.get(index + 1).ok_or("模板字符串没有闭合")?;
-                value.push(*escaped as char);
-                index += 2;
-            }
-            b'`' => return Ok((value, index + 1)),
-            byte => {
-                value.push(byte as char);
-                index += 1;
-            }
-        }
-    }
-    Err("模板字符串没有闭合".into())
 }
 
 #[cfg(test)]
@@ -567,14 +633,16 @@ mod tests {
         root
     }
 
-    const CONTRIBUTION: &str = r#"export const contribution = {
+    const CONTRIBUTION: &str = r#"import { pages } from "./pages";
+export const contribution = {
   namespace: "nte",
   pageContributions: pages.map((page) => ({ ...page })),
-  homeCards: [{ id: "nte-card", order: 1 }],
+  homeCards: [{ id: "nte-card", requires: [], order: 1 }],
   settingsSections: [
     {
       id: "nte-game",
-      entries: [{ id: "distribution" }],
+      requires: [],
+      entries: [{ id: "distribution", requires: [] }],
     },
   ],
 } as const;
@@ -587,7 +655,7 @@ mod tests {
             &[
                 (
                     "pages.ts",
-                    "export const pages = [{ id: \"nte-update\" }];\n",
+                    "export const pages = [{ id: \"nte-update\", requires: [] }];\n",
                 ),
                 ("contribution.ts", CONTRIBUTION),
                 ("game.ts", "export const game = { id: \"nte\" };\n"),
@@ -597,7 +665,12 @@ mod tests {
                 ),
             ],
         );
-        let ids = read("ids-ok", &root.join("packages/ids-ok/ui/src")).expect("读取 id");
+        let ids = read(
+            "ids-ok",
+            &root.join("packages/ids-ok/ui/src"),
+            &Catalog::new(),
+        )
+        .expect("读取 id");
         assert_eq!(ids.namespace, "nte");
         assert_eq!(ids.pages, vec!["nte-update".to_string()]);
         assert_eq!(ids.cards, vec!["nte-card".to_string()]);
@@ -614,11 +687,11 @@ mod tests {
             &[
                 (
                     "pages.ts",
-                    "export const pages = [{ \"id\": \"nte-update\" }];\n",
+                    "export const pages = [{ \"id\": \"nte-update\", requires: [] }];\n",
                 ),
                 (
                     "contribution.ts",
-                    "export const contribution = {\n  \"namespace\": \"nte\",\n  \"pageContributions\": pages.map((page) => ({ ...page })),\n  \"homeCards\": [{ \"id\": \"nte-card\" }],\n  \"settingsSections\": [{ \"id\": \"nte-game\" }],\n} as const;\n",
+                    "import { pages } from \"./pages\";\nexport const contribution = {\n  \"namespace\": \"nte\",\n  \"pageContributions\": pages.map((page) => ({ ...page })),\n  \"homeCards\": [{ \"id\": \"nte-card\", requires: [] }],\n  \"settingsSections\": [{ \"id\": \"nte-game\", requires: [], entries: [] }],\n} as const;\n",
                 ),
                 ("game.ts", "export const game = { \"id\": \"nte\" };\n"),
                 (
@@ -630,6 +703,7 @@ mod tests {
         let ids = read(
             "ids-string-keys",
             &root.join("packages/ids-string-keys/ui/src"),
+            &Catalog::new(),
         )
         .expect("读取字符串键");
         assert_eq!(ids.namespace, "nte");
@@ -669,8 +743,12 @@ mod tests {
                 dir,
                 &[("pages.ts", pages), ("contribution.ts", CONTRIBUTION)],
             );
-            let error = read(dir, &root.join(format!("packages/{dir}/ui/src")))
-                .expect_err("无法确定 id 的数组元素必须失败");
+            let error = read(
+                dir,
+                &root.join(format!("packages/{dir}/ui/src")),
+                &Catalog::new(),
+            )
+            .expect_err("无法确定 id 的数组元素必须失败");
             assert!(error.contains(message), "{error}");
             fs::remove_dir_all(root).expect("清理临时目录");
         }
@@ -683,7 +761,7 @@ mod tests {
             &[
                 (
                     "pages.ts",
-                    "export const pages = [{ id: \"nte-update\" }];\n",
+                    "export const pages = [{ id: \"nte-update\", requires: [] }];\n",
                 ),
                 (
                     "contribution.ts",
@@ -694,6 +772,7 @@ mod tests {
         let error = read(
             "ids-unknown-key",
             &root.join("packages/ids-unknown-key/ui/src"),
+            &Catalog::new(),
         )
         .expect_err("未知贡献键必须失败");
         assert!(error.contains("未知的贡献键"), "{error}");
@@ -708,7 +787,7 @@ mod tests {
             &[
                 (
                     "pages.ts",
-                    "export const pages = [{ id: \"nte-update\" }];\n",
+                    "export const pages = [{ id: \"nte-update\", requires: [] }];\n",
                 ),
                 (
                     "contribution.ts",
@@ -719,9 +798,39 @@ mod tests {
         let error = read(
             "ids-page-source",
             &root.join("packages/ids-page-source/ui/src"),
+            &Catalog::new(),
         )
         .expect_err("页面来源必须限定在 pages.ts");
         assert!(error.contains("pageContributions"), "{error}");
+        fs::remove_dir_all(root).expect("清理临时目录");
+    }
+
+    #[test]
+    fn rejects_overriding_page_requirements_in_component_bindings() {
+        let root = write(
+            "ids-page-requires",
+            &[
+                (
+                    "pages.ts",
+                    r#"export const pages = [{ id: "nte-update", requires: [] }];"#,
+                ),
+                (
+                    "contribution.ts",
+                    r#"import { pages } from "./pages";
+export const contribution = {
+  namespace: "nte",
+  pageContributions: pages.map((page) => ({ ...page, requires: [] })),
+};"#,
+                ),
+            ],
+        );
+        let error = read(
+            "ids-page-requires",
+            &root.join("packages/ids-page-requires/ui/src"),
+            &Catalog::new(),
+        )
+        .expect_err("组件绑定不能覆盖页面的能力声明");
+        assert!(error.contains("只绑定 component"), "{error}");
         fs::remove_dir_all(root).expect("清理临时目录");
     }
 
@@ -732,11 +841,11 @@ mod tests {
         fs::create_dir_all(&host).expect("创建宿主目录");
         fs::write(
             host.join("pages.ts"),
-            "export const hostPageEntries = [{ id: \"home\" }, { \"id\": \"game-mode\" }] as const;\n",
+            "export const hostPageEntries = [{ id: \"home\", requires: [] }, { \"id\": \"game-mode\", requires: [] }] as const;\n",
         )
         .expect("写入宿主页面");
         assert_eq!(
-            host_page_ids(&root).expect("读取宿主页面"),
+            host_page_ids(&root, &Catalog::new()).expect("读取宿主页面"),
             vec!["home".to_string(), "game-mode".to_string()]
         );
         fs::remove_dir_all(root).expect("清理临时目录");
@@ -747,13 +856,17 @@ mod tests {
         let root = write(
             "ids-unprefixed",
             &[
-                ("pages.ts", "export const pages = [{ id: \"update\" }];\n"),
+                (
+                    "pages.ts",
+                    "export const pages = [{ id: \"update\", requires: [] }];\n",
+                ),
                 ("contribution.ts", CONTRIBUTION),
             ],
         );
         let error = read(
             "ids-unprefixed",
             &root.join("packages/ids-unprefixed/ui/src"),
+            &Catalog::new(),
         )
         .expect_err("未命名空间的 id 必须失败");
         assert!(error.contains("\"update\""), "{error}");
@@ -768,7 +881,7 @@ mod tests {
             ("ids-upper", "nte-Update"),
             ("ids-space", "nte update"),
         ] {
-            let pages = format!("export const pages = [{{ id: \"{id}\" }}];\n");
+            let pages = format!("export const pages = [{{ id: \"{id}\", requires: [] }}];\n");
             let root = write(
                 dir,
                 &[
@@ -776,8 +889,12 @@ mod tests {
                     ("contribution.ts", CONTRIBUTION),
                 ],
             );
-            let error = read(dir, &root.join(format!("packages/{dir}/ui/src")))
-                .expect_err("非 kebab 的 id 必须失败");
+            let error = read(
+                dir,
+                &root.join(format!("packages/{dir}/ui/src")),
+                &Catalog::new(),
+            )
+            .expect_err("非 kebab 的 id 必须失败");
             assert!(error.contains(id), "{error}");
             fs::remove_dir_all(root).expect("清理临时目录");
         }
@@ -802,14 +919,18 @@ mod tests {
                 &[
                     (
                         "pages.ts",
-                        "export const pages = [{ id: \"nte-update\" }];\n",
+                        "export const pages = [{ id: \"nte-update\", requires: [] }];\n",
                     ),
                     ("contribution.ts", CONTRIBUTION),
                     (file, declaration),
                 ],
             );
-            let error = read(dir, &root.join(format!("packages/{dir}/ui/src")))
-                .expect_err("与命名空间不一致的 id 必须失败");
+            let error = read(
+                dir,
+                &root.join(format!("packages/{dir}/ui/src")),
+                &Catalog::new(),
+            )
+            .expect_err("与命名空间不一致的 id 必须失败");
             assert!(error.contains("必须与包命名空间"), "{error}");
             fs::remove_dir_all(root).expect("清理临时目录");
         }
@@ -824,8 +945,12 @@ mod tests {
                 ("contribution.ts", CONTRIBUTION),
             ],
         );
-        let error = read("ids-computed", &root.join("packages/ids-computed/ui/src"))
-            .expect_err("非字面量 id 必须失败");
+        let error = read(
+            "ids-computed",
+            &root.join("packages/ids-computed/ui/src"),
+            &Catalog::new(),
+        )
+        .expect_err("非字面量 id 必须失败");
         assert!(error.contains("字符串字面量"), "{error}");
         fs::remove_dir_all(root).expect("清理临时目录");
     }

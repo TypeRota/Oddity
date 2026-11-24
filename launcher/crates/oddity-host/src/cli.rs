@@ -42,6 +42,7 @@ pub struct LaunchRequest {
     pub region: Option<ChannelId>,
     pub mode: LaunchMode,
     pub environment: Option<String>,
+    pub cross_screen_socket: Option<std::path::PathBuf>,
 }
 
 pub const USAGE: &str = "用法: oddity --launch [--game <游戏 id>] [--region <渠道 id>] [--launch-mode official|background|direct] [--environment <名称或 ID>]";
@@ -61,6 +62,7 @@ pub fn parse(args: &[OsString], registry: &Registry) -> Result<Option<LaunchRequ
     let mut region = None;
     let mut mode = None;
     let mut environment = None;
+    let mut cross_screen_socket = None;
     let mut index = 0;
     while index < args.len() {
         let raw = args[index].to_string_lossy();
@@ -85,12 +87,21 @@ pub fn parse(args: &[OsString], registry: &Registry) -> Result<Option<LaunchRequ
             set_once(&mut environment, value, "--environment")?;
             continue;
         }
+        if let Some(value) = take_value(args, &mut index, "--cross-screen-socket")? {
+            set_once(&mut cross_screen_socket, value, "--cross-screen-socket")?;
+            continue;
+        }
         // 宿主可能追加自己的参数, 未知项保持忽略.
         index += 1;
     }
 
     if !launch {
-        if game.is_some() || region.is_some() || mode.is_some() || environment.is_some() {
+        if game.is_some()
+            || region.is_some()
+            || mode.is_some()
+            || environment.is_some()
+            || cross_screen_socket.is_some()
+        {
             return Err(
                 "--game, --region, --launch-mode 和 --environment 只能与 --launch 一起使用.".into(),
             );
@@ -150,6 +161,7 @@ pub fn parse(args: &[OsString], registry: &Registry) -> Result<Option<LaunchRequ
         region,
         mode,
         environment,
+        cross_screen_socket: cross_screen_socket.map(Into::into),
     }))
 }
 
@@ -415,5 +427,23 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(request.region, Some(ChannelId::new("global")));
+    }
+    #[test]
+    fn cross_screen_socket_is_forwarded_only_with_a_launch() {
+        let request = parse(&["--launch", "--cross-screen-socket", "/tmp/stream.sock"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            request.cross_screen_socket,
+            Some(std::path::PathBuf::from("/tmp/stream.sock"))
+        );
+        assert!(parse(&["--cross-screen-socket", "/tmp/stream.sock"]).is_err());
+        assert!(parse(&["--launch", "--cross-screen-socket"]).is_err());
+        assert!(parse(&[
+            "--launch",
+            "--cross-screen-socket=a",
+            "--cross-screen-socket=b"
+        ])
+        .is_err());
     }
 }

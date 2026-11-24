@@ -9,7 +9,9 @@ import type {
   Bootstrap,
   BulletinFeed,
   CheckResult,
+  CrossScreenStatus,
   DownloadStatus,
+  EnvironmentAudit,
   GameAccount,
   GameModeStatus,
   GameModeTuning,
@@ -18,11 +20,13 @@ import type {
   GpuInfo,
   IntegrityNotice,
   LaunchResult,
+  LauncherBackgroundArchive,
   LauncherBackgroundMedia,
   LogPreview,
   MigrationPlan,
   MigrationStatus,
   PerformanceOverview,
+  PlayerStateStatus,
   PlaytimeHistory,
   ResourceCatalog,
   RuntimeSetupInfo,
@@ -36,6 +40,10 @@ import type {
 } from "../launcher";
 
 export interface Commands {
+  cross_screen_status: CrossScreenStatus;
+  cross_screen_configure: CrossScreenStatus;
+  cross_screen_install: null;
+  cross_screen_restore: null;
   runtime_setup_info: RuntimeSetupInfo;
   runtime_setup_plan: RuntimeSetupPlan;
   runtime_setup_apply: null;
@@ -43,6 +51,9 @@ export interface Commands {
   runtime_setup_dismiss: null;
   runtime_setup_environment: Bootstrap;
   game_accounts: GameAccount[];
+  game_state_status: PlayerStateStatus;
+  game_state_start: PlayerStateStatus;
+  game_state_stop: PlayerStateStatus;
   game_send_code: string;
   game_login: GameAccount;
   game_account_remove: null;
@@ -63,6 +74,9 @@ export interface Commands {
   attendance_logout: AttendanceStatus;
   attendance_keyring_check: void;
   launcher_background: LauncherBackgroundMedia;
+  launcher_background_archive: LauncherBackgroundArchive;
+  launcher_background_configure: LauncherBackgroundArchive;
+  launcher_background_select: LauncherBackgroundArchive;
   bootstrap: Bootstrap;
   integrity_acknowledge: null;
   check_update: CheckResult;
@@ -70,6 +84,10 @@ export interface Commands {
   update_settings_section: SettingsSection;
   environment_create: Bootstrap;
   environment_action: Bootstrap;
+  environment_rename: Bootstrap;
+  environment_audit: EnvironmentAudit;
+  environment_import: Bootstrap;
+  environment_orphan_delete: null;
   migration_plan: MigrationPlan;
   migration_start: MigrationStatus;
   migration_status: MigrationStatus;
@@ -124,17 +142,24 @@ export interface Commands {
 }
 
 export interface CommandArgs {
+  cross_screen_status: undefined;
+  cross_screen_configure: { enabled: boolean };
+  cross_screen_install: undefined;
+  cross_screen_restore: undefined;
   runtime_setup_info: undefined;
   runtime_setup_plan: {
     allUsers: boolean;
     proton: string | null;
-    createEnvironment: boolean;
+    environmentName: string | null;
   };
   runtime_setup_apply: undefined;
   runtime_setup_status: undefined;
   runtime_setup_dismiss: undefined;
   runtime_setup_environment: undefined;
   game_accounts: undefined;
+  game_state_status: undefined;
+  game_state_start: undefined;
+  game_state_stop: undefined;
   game_send_code: { phone: string };
   game_login: {
     phone: string;
@@ -164,20 +189,33 @@ export interface CommandArgs {
   attendance_logout: { accountId: string };
   attendance_keyring_check: undefined;
   launcher_background: undefined;
+  launcher_background_archive: undefined;
+  launcher_background_configure: {
+    archive: boolean;
+    dir: string;
+    retention: number;
+  };
+  launcher_background_select: { id: string | null };
   bootstrap: undefined;
   integrity_acknowledge: { notice: IntegrityNotice };
   check_update: { full: boolean };
   fetch_bulletins: { distribution: "cn" | "global" };
   update_settings_section: { owner: string; patch: SettingsPatch };
   environment_create: {
-    distribution: string;
     name: string;
     protonPath: string;
     sourceId: string | null;
   };
   environment_action: {
-    action: "switch" | "keep" | "discard";
+    action: "switch" | "keep" | "discard" | "rebind" | "forget";
     id: string | null;
+  };
+  environment_rename: { id: string | null; name: string };
+  environment_audit: undefined;
+  environment_import: { id: string; name: string; protonPath: string };
+  environment_orphan_delete: {
+    kind: "environment" | "logs" | "pending";
+    name: string;
   };
   migration_plan: { distribution: string; target: string };
   migration_start: { distribution: string; target: string };

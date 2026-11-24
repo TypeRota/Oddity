@@ -14,6 +14,9 @@ fn run(args: Vec<String>) -> Result<()> {
     let Some(command) = args.first().cloned() else {
         return usage(&registry());
     };
+    if command == "cross-screen" {
+        return oddity_host::cross_screen::run_cli(&args[1..]);
+    }
     if command == "recovery" {
         return recovery(&args[1..]);
     }

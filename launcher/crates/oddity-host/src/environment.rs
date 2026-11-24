@@ -11,7 +11,6 @@ use anyhow::{bail, Context, Result};
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 
-use crate::channel::ChannelId;
 use crate::identity::GameId;
 use oddity_platform::disk;
 
@@ -64,38 +63,66 @@ impl ProtonPin {
     }
 }
 
+/// 一个可复用的 Proton 前缀; 区服和安装目录都由当前设置决定.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeEnvironment {
     pub id: String,
     pub name: String,
     pub proton: ProtonPin,
+    /// 上次使用的游戏安装根目录, 用于启动前修正前缀.
     pub install_root: PathBuf,
     #[serde(default)]
     pub game: GameId,
-    pub distribution: ChannelId,
     pub created_at: u64,
 }
 
+/// 环境目录的只读健康状态.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentState {
+    Ready,
+    MissingDirectory,
+    InvalidIdentity,
+    BrokenPrefix,
+}
+
+impl EnvironmentState {
+    /// 契约中的状态字符串.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::MissingDirectory => "directory-missing",
+            Self::InvalidIdentity => "identity-invalid",
+            Self::BrokenPrefix => "prefix-missing",
+        }
+    }
+}
+
 impl RuntimeEnvironment {
-    pub fn matches(&self, game: &GameId, install_root: &Path, distribution: &ChannelId) -> bool {
+    pub fn belongs_to(&self, game: &GameId) -> bool {
         game == &self.game
-            && distribution == &self.distribution
-            && install_root
-                .canonicalize()
-                .is_ok_and(|root| root == self.install_root)
+    }
+
+    /// 记录的目标是否仍指向同一安装目录.
+    pub fn targets(&self, install_root: &Path) -> bool {
+        install_root
+            .canonicalize()
+            .is_ok_and(|root| root == self.install_root)
     }
 
     pub fn directory(&self, data: &Path) -> Result<PathBuf> {
-        if self.id.len() != 32
-            || !self
-                .id
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        {
+        if !valid_id(&self.id) {
             bail!("运行环境 ID 无效");
         }
         Ok(data.join("environments").join(&self.id))
+    }
+
+    /// 只读探测环境目录状态, 供界面与维护入口展示.
+    pub fn inspect(&self, data: &Path) -> EnvironmentState {
+        match self.directory(data) {
+            Ok(directory) => inspect_directory(&directory, &self.id),
+            Err(_) => EnvironmentState::MissingDirectory,
+        }
     }
 
     pub fn prefix(&self, data: &Path) -> Result<PathBuf> {
@@ -112,18 +139,56 @@ impl RuntimeEnvironment {
 }
 
 fn validate_owned(directory: &Path, id: &str) -> Result<()> {
-    if !fs::symlink_metadata(directory)?.is_dir()
-        || fs::read_to_string(directory.join(".oddity-environment"))? != id
-        || directory.canonicalize()?
-            != directory
-                .parent()
-                .context("环境路径无效")?
-                .canonicalize()?
-                .join(directory.file_name().context("环境路径无效")?)
-    {
+    if !owned_identity(directory, id) {
         bail!("运行环境目录身份不匹配, 拒绝操作");
     }
     Ok(())
+}
+
+/// 环境 id 与目录名: 32 位小写十六进制.
+pub(crate) fn valid_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// 目录是否仍是创建时登记的目录; 不跟随符号链接.
+pub(crate) fn owned_identity(directory: &Path, id: &str) -> bool {
+    let marker = directory.join(".oddity-environment");
+    fs::symlink_metadata(&marker).is_ok_and(|metadata| metadata.is_file())
+        && fs::read_to_string(&marker).is_ok_and(|value| value == id)
+        && directory.canonicalize().ok().is_some_and(|canonical| {
+            directory
+                .parent()
+                .and_then(|parent| parent.canonicalize().ok())
+                .zip(directory.file_name())
+                .is_some_and(|(parent, name)| canonical == parent.join(name))
+        })
+}
+
+/// prefix 是否是包含 drive_c 的真实目录.
+pub(crate) fn prefix_ready(directory: &Path) -> bool {
+    let prefix = directory.join("prefix");
+    fs::symlink_metadata(&prefix).is_ok_and(|metadata| {
+        !metadata.file_type().is_symlink() && metadata.is_dir() && prefix.join("drive_c").is_dir()
+    })
+}
+
+/// 只读分类环境目录; 未知目录按身份不符处理.
+pub(crate) fn inspect_directory(directory: &Path, id: &str) -> EnvironmentState {
+    match fs::symlink_metadata(directory) {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_dir() => {}
+        Ok(_) => return EnvironmentState::InvalidIdentity,
+        Err(_) => return EnvironmentState::MissingDirectory,
+    }
+    if !owned_identity(directory, id) {
+        return EnvironmentState::InvalidIdentity;
+    }
+    if !prefix_ready(directory) {
+        return EnvironmentState::BrokenPrefix;
+    }
+    EnvironmentState::Ready
 }
 
 /// 同时覆盖启动和复制, 目录别名共用一个锁.
@@ -186,12 +251,20 @@ impl Drop for Incomplete {
     }
 }
 
-/// 新环境要绑定的游戏目标.
+/// 新环境所属的游戏以及 prefix 内的安装链接.
 pub struct EnvironmentTarget<'a> {
     pub game: GameId,
-    pub distribution: ChannelId,
     /// 游戏安装链接在 prefix 内的相对路径; 没有链接时为 None.
     pub link_name: Option<&'a str>,
+}
+
+/// 校验并返回去掉首尾空白的名称.
+pub fn validate_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
+        bail!("环境名称应为 1-64 个字符, 且不能包含控制字符");
+    }
+    Ok(name)
 }
 
 pub fn create(
@@ -202,15 +275,8 @@ pub fn create(
     target: EnvironmentTarget<'_>,
     name: &str,
 ) -> Result<RuntimeEnvironment> {
-    let EnvironmentTarget {
-        game,
-        distribution,
-        link_name,
-    } = target;
-    let name = name.trim();
-    if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
-        bail!("环境名称应为 1-64 个字符, 且不能包含控制字符");
-    }
+    let EnvironmentTarget { game, link_name } = target;
+    let name = validate_name(name)?;
     let pin = ProtonPin::capture(proton)?;
     let install_root = install_root.canonicalize()?;
     let root = data.join("environments");
@@ -265,7 +331,6 @@ pub fn create(
         proton: pin,
         install_root,
         game,
-        distribution,
         created_at: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
     })
 }
@@ -467,7 +532,8 @@ impl CopyContext<'_> {
     }
 }
 
-fn normalize(path: &Path) -> PathBuf {
+/// 去掉路径中的 "." 与 ".." 组件, 不访问文件系统.
+pub(crate) fn normalize(path: &Path) -> PathBuf {
     let mut result = PathBuf::new();
     for component in path.components() {
         match component {
@@ -509,7 +575,6 @@ mod tests {
                 &self.0.join("install"),
                 EnvironmentTarget {
                     game: GameId::from("nte"),
-                    distribution: ChannelId::new("cn"),
                     link_name: Some(crate::testing::PREFIX_LINK_NAME),
                 },
                 "新版测试",
@@ -530,7 +595,6 @@ mod tests {
             &directory.join("install"),
             EnvironmentTarget {
                 game: GameId::from("nte"),
-                distribution: ChannelId::new("cn"),
                 link_name: None,
             },
             "legacy",
@@ -570,21 +634,10 @@ mod tests {
             dir.join("install")
         );
         assert_eq!(profile.proton.path, dir.join("proton-b"));
-        assert!(profile.matches(
-            &GameId::from("nte"),
-            &dir.join("install"),
-            &ChannelId::new("cn")
-        ));
-        assert!(!profile.matches(
-            &GameId::from("hsr"),
-            &dir.join("install"),
-            &ChannelId::new("cn")
-        ));
-        assert!(!profile.matches(
-            &GameId::from("nte"),
-            &dir.join("install"),
-            &ChannelId::new("global")
-        ));
+        assert!(profile.belongs_to(&GameId::from("nte")));
+        assert!(!profile.belongs_to(&GameId::from("hsr")));
+        assert!(profile.targets(&dir.join("install")));
+        assert!(!profile.targets(&dir.join("other")));
         discard(&dir.join("data"), &profile).unwrap();
         assert!(!prefix.exists());
         assert_eq!(dir.read_text("install/game.pak"), "shared game");
@@ -652,7 +705,6 @@ mod tests {
             &dir.join("install"),
             EnvironmentTarget {
                 game: GameId::from("nte"),
-                distribution: ChannelId::new("cn"),
                 link_name: Some(crate::testing::PREFIX_LINK_NAME),
             },
             "第二次实验",
@@ -685,7 +737,6 @@ mod tests {
             &dir.join("install"),
             EnvironmentTarget {
                 game: GameId::from("nte"),
-                distribution: ChannelId::new("cn"),
                 link_name: Some(crate::testing::PREFIX_LINK_NAME),
             },
             "B 环境克隆到 C",
@@ -700,7 +751,6 @@ mod tests {
             &dir.join("install"),
             EnvironmentTarget {
                 game: GameId::from("nte"),
-                distribution: ChannelId::new("cn"),
                 link_name: Some(crate::testing::PREFIX_LINK_NAME),
             },
             "C 再克隆到 B",
@@ -858,7 +908,6 @@ mod tests {
             &dir.join("source/drive_c/NTE"),
             EnvironmentTarget {
                 game: GameId::from("nte"),
-                distribution: ChannelId::new("cn"),
                 link_name: Some(crate::testing::PREFIX_LINK_NAME),
             },
             "游戏在前缀中",
@@ -877,6 +926,83 @@ mod tests {
     }
 
     #[test]
+    fn inspect_reports_a_ready_environment() {
+        let fixture = Fixture::new();
+        let dir = &fixture.0;
+        let profile = fixture.create().unwrap();
+        assert_eq!(profile.inspect(&dir.join("data")), EnvironmentState::Ready);
+    }
+
+    #[test]
+    fn inspect_treats_unknown_ids_and_missing_directories_as_missing() {
+        let fixture = Fixture::new();
+        let dir = &fixture.0;
+        let profile = fixture.create().unwrap();
+        let mut unknown = profile.clone();
+        unknown.id = "0".repeat(32);
+        assert_eq!(
+            unknown.inspect(&dir.join("data")),
+            EnvironmentState::MissingDirectory
+        );
+        let mut invalid = profile.clone();
+        invalid.id = "../../source".into();
+        assert_eq!(
+            invalid.inspect(&dir.join("data")),
+            EnvironmentState::MissingDirectory
+        );
+        assert_eq!(
+            profile.inspect(&dir.join("missing-data")),
+            EnvironmentState::MissingDirectory
+        );
+    }
+
+    #[test]
+    fn inspect_reports_invalid_identity_after_the_directory_is_replaced() {
+        let fixture = Fixture::new();
+        let dir = &fixture.0;
+        let profile = fixture.create().unwrap();
+        let directory = profile.directory(&dir.join("data")).unwrap();
+        fs::write(directory.join(".oddity-environment"), "other").unwrap();
+        assert_eq!(
+            profile.inspect(&dir.join("data")),
+            EnvironmentState::InvalidIdentity
+        );
+
+        fs::write(directory.join(".oddity-environment"), &profile.id).unwrap();
+        let saved = directory.with_extension("saved");
+        fs::rename(&directory, &saved).unwrap();
+        symlink(&saved, &directory).unwrap();
+        assert_eq!(
+            profile.inspect(&dir.join("data")),
+            EnvironmentState::InvalidIdentity
+        );
+    }
+
+    #[test]
+    fn inspect_reports_a_broken_prefix() {
+        let fixture = Fixture::new();
+        let dir = &fixture.0;
+        let profile = fixture.create().unwrap();
+        let directory = profile.directory(&dir.join("data")).unwrap();
+        fs::remove_dir_all(directory.join("prefix/drive_c")).unwrap();
+        assert_eq!(
+            profile.inspect(&dir.join("data")),
+            EnvironmentState::BrokenPrefix
+        );
+
+        fs::create_dir(directory.join("prefix/drive_c")).unwrap();
+        assert_eq!(profile.inspect(&dir.join("data")), EnvironmentState::Ready);
+        let prefix = directory.join("prefix");
+        let saved = directory.join("prefix-saved");
+        fs::rename(&prefix, &saved).unwrap();
+        symlink(&saved, &prefix).unwrap();
+        assert_eq!(
+            profile.inspect(&dir.join("data")),
+            EnvironmentState::BrokenPrefix
+        );
+    }
+
+    #[test]
     fn invalid_name_and_recursive_destination_are_rejected() {
         let fixture = Fixture::new();
         let dir = &fixture.0;
@@ -888,7 +1014,6 @@ mod tests {
                 &dir.join("install"),
                 EnvironmentTarget {
                     game: GameId::from("nte"),
-                    distribution: ChannelId::new("cn"),
                     link_name: None,
                 },
                 name
@@ -902,7 +1027,6 @@ mod tests {
             &dir.join("install"),
             EnvironmentTarget {
                 game: GameId::from("nte"),
-                distribution: ChannelId::new("cn"),
                 link_name: None,
             },
             "recursive"

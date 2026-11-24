@@ -11,11 +11,29 @@ pub struct GameRecord {
     pub server_name: String,
     pub stamina: Option<u32>,
     pub stamina_max: Option<u32>,
+    #[serde(default)]
+    pub stamina_backup: Option<u32>,
     pub city_stamina: Option<u32>,
     pub city_stamina_max: Option<u32>,
+    #[serde(default)]
+    pub city_stamina_backup: Option<u32>,
     pub activity: Option<u32>,
     pub weekly_remaining: Option<u32>,
+    /// 大亨计划本期已开采激励金.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incentive_obtained: Option<u64>,
+    /// 当前角色生效的激励金上限.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incentive_maximum: Option<u64>,
+    /// 结算周期天数.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incentive_period_days: Option<u32>,
+    /// 距下次结算的毫秒数, 由读数与结算时间计算.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incentive_remaining: Option<u64>,
     pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<crate::player_state::Recovery>,
 }
 
 fn text(value: &Value) -> String {
@@ -47,12 +65,23 @@ impl GameRecord {
             role_name: text(&data["rolename"]),
             server_name: text(&data["servername"]),
             stamina: number(&data["staminaValue"]),
-            stamina_max: number(&data["staminaMaxValue"]),
+            stamina_max: Some(match number(&data["staminaMaxValue"]) {
+                // 基础值不包含家具加成, 最终上限缺失时采用 360.
+                None | Some(0 | 240) => 360,
+                Some(value) => value,
+            }),
+            stamina_backup: None,
+            city_stamina_backup: None,
             city_stamina: number(&data["citystaminaValue"]),
             city_stamina_max: number(&data["citystaminaMaxValue"]),
             activity: number(&data["dayvalue"]),
             weekly_remaining: number(&data["weekcopiesremainCnt"]),
+            incentive_obtained: None,
+            incentive_maximum: None,
+            incentive_period_days: None,
+            incentive_remaining: None,
             updated_at: now(),
+            recovery: None,
         })
     }
 }

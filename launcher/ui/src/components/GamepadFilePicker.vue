@@ -4,6 +4,7 @@ import { fileRequest, type FileListing } from "../core/filePicker";
 import { invoke } from "../core/api";
 import { form } from "../core/controller";
 import { gamepadActions } from "../core/gamepadActions";
+import { notify, errorText } from "../core/notifications";
 import BaseModal from "./BaseModal.vue";
 import BaseButton from "./BaseButton.vue";
 import BaseInput from "./BaseInput.vue";
@@ -50,7 +51,7 @@ async function browse(destination?: string, initial = false) {
     path: destination ?? null,
   }).catch((cause) => {
     if (request === requestGeneration && generation === browseGeneration)
-      error.value = String(cause);
+      notify(`读取文件夹失败: ${errorText(cause)}`, "error", 6500);
     return null;
   });
   if (request !== requestGeneration) return;
@@ -165,6 +166,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="pad-files__toolbar">
         <BaseButton
+          :pad-keys="['west']"
           :disabled="!listing?.parent || busy"
           @click="browse(listing?.parent ?? undefined)"
           >上一级</BaseButton
@@ -208,16 +210,18 @@ onBeforeUnmount(() => {
         同名文件已存在, 再次确认将覆盖.
       </p>
       <div class="pad-files__toolbar">
-        <BaseButton @click="close()">取消</BaseButton
+        <BaseButton :pad-keys="['back']" @click="close()">取消</BaseButton
         ><BaseButton
           v-if="fileRequest?.directory"
           variant="primary"
+          :pad-keys="['start']"
           :disabled="!listing || busy"
           @click="close(listing?.path)"
           >选择此文件夹</BaseButton
         ><BaseButton
           v-if="fileRequest?.save"
           variant="primary"
+          :pad-keys="['start']"
           :disabled="!listing || busy"
           @click="saveFile"
           >{{ overwrite ? "覆盖文件" : "保存" }}</BaseButton

@@ -6,7 +6,7 @@ import BaseButton from "../../components/BaseButton.vue";
 import BaseModal from "../../components/BaseModal.vue";
 import { invoke, isDesktop } from "../../core/api";
 import { formatPlaytime, type PlaytimeStats } from "../../core/playtime";
-import { notify } from "../../core/notifications";
+import { notify, errorText } from "../../core/notifications";
 import { useControlMotion } from "../../composables/useControlMotion";
 
 const props = withDefaults(
@@ -30,7 +30,6 @@ const generating = ref(false);
 const saving = ref(false);
 const posterUrl = ref("");
 const savedPath = ref("");
-const error = ref("");
 let posterBlob: Blob | null = null;
 
 // 海报内容只取决于记录本身, 相同记录的再次打开直接复用上一次的结果。
@@ -51,7 +50,6 @@ watch(
       generating.value = false;
       posterUrl.value = "";
       savedPath.value = "";
-      error.value = "";
       return;
     }
     await nextTick();
@@ -96,7 +94,6 @@ async function generatePoster() {
   posterUrl.value = "";
   posterBlob = null;
   savedPath.value = "";
-  error.value = "";
   const stale = (signature: string) =>
     run !== posterRun ||
     !props.open ||
@@ -139,9 +136,11 @@ async function generatePoster() {
       return;
     }
   } catch (cause) {
-    // 旧轮次的失败不应显示在新一轮的骨架或预览旁。
+    // 旧轮次的失败与新一轮无关, 只在弹窗仍然打开时报告。
     if (run === posterRun && props.open)
-      error.value = `生成海报失败: ${String(cause)}`;
+      notify(`生成海报失败: ${errorText(cause)}`, "error", 6500, {
+        key: "playtime-poster",
+      });
   } finally {
     if (run === posterRun) generating.value = false;
   }
@@ -192,7 +191,6 @@ function close() {
 async function savePoster() {
   if (!posterUrl.value || saving.value) return;
   saving.value = true;
-  error.value = "";
   try {
     if (!isDesktop()) {
       const link = document.createElement("a");
@@ -221,8 +219,9 @@ async function savePoster() {
     });
     notify("海报已保存.", "ok", 3400, { key: "playtime-poster" });
   } catch (cause) {
-    error.value = `保存海报失败: ${String(cause)}`;
-    notify(error.value, "error", 6500, { key: "playtime-poster" });
+    notify(`保存海报失败: ${errorText(cause)}`, "error", 6500, {
+      key: "playtime-poster",
+    });
   } finally {
     saving.value = false;
   }
@@ -631,9 +630,6 @@ function pad(value: number) {
         :src="posterUrl"
         alt="游玩记录海报预览"
       />
-      <p v-if="error" class="playtime-poster__error" role="alert">
-        {{ error }}
-      </p>
       <p v-if="savedPath" class="playtime-poster__saved" role="status">
         已保存至 {{ savedPath }}
       </p>
@@ -715,12 +711,6 @@ function pad(value: number) {
   left: 8.9%;
   right: 8.9%;
   height: 18.6%;
-}
-.playtime-poster__error {
-  margin: 0;
-  color: var(--danger);
-  font-size: var(--text-sm);
-  overflow-wrap: anywhere;
 }
 .playtime-poster__actions {
   display: flex;

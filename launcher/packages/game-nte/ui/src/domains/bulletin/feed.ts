@@ -1,5 +1,5 @@
 import { computed, ref, watch } from "vue";
-import { hostFacts, invoke, notify } from "@host/api";
+import { errorText, hostFacts, invoke, notify } from "@host/api";
 import type { BulletinFeed } from "./types";
 
 const CACHE_KEY = "nte.bulletins.v3";
@@ -80,26 +80,17 @@ export function useBulletinFeed() {
       }
     } catch (error) {
       if (current !== request) return;
-      if (!feed.value) {
-        feed.value = {
-          items: [],
-          errors: [error instanceof Error ? error.message : String(error)],
-        };
-      }
+      const message = errorText(error);
+      if (!feed.value) feed.value = { items: [], errors: [message] };
       if (!silent) {
-        notify(
-          error instanceof Error ? error.message : String(error),
-          "error",
-          6000,
-          {
-            key: "bulletins",
-            primary: {
-              label: "重试",
-              icon: "i-arrows-clockwise",
-              run: () => void fetchBulletins(false, true),
-            },
+        notify(message, "error", 6000, {
+          key: "bulletins",
+          primary: {
+            label: "重试",
+            icon: "i-arrows-clockwise",
+            run: () => void fetchBulletins(false, true),
           },
-        );
+        });
       }
     } finally {
       if (current === request) loading.value = false;

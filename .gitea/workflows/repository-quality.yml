@@ -1,0 +1,48 @@
+name: 仓库检查
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "**/*.md"
+      - "docs/**"
+      - "scripts/**"
+      - ".gitignore"
+      - ".gitea/workflows/**"
+      - ".gitea/actions/**"
+      - ".github/**"
+      - "LICENSE"
+      - "launcher/Cargo.*"
+      - "launcher/ui/package.json"
+      - "launcher/ui/electron-builder.cjs"
+      - "launcher/ui/public/assets/app-icon.svg"
+      - "packaging/**"
+      - "flake.*"
+      - "nix/**"
+  schedule:
+    # 北京时间 5:00, 与每日检查汇总同一时刻启动。
+    - cron: "TZ=Asia/Shanghai 0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-quality-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 检查仓库与维护脚本
+    runs-on: heavy
+    timeout-minutes: 5
+    steps:
+      - name: 检出代码并运行检查
+        run: |
+          set -euo pipefail
+          git init -q checkout
+          cd checkout
+          git fetch --depth 1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
+          git checkout -q --detach FETCH_HEAD
+          node scripts/check-repo.mjs
+          node --test scripts/release-version.test.mjs scripts/sync-pr-labels.test.mjs scripts/reuse-ci-result.test.mjs scripts/nightly-report.test.mjs

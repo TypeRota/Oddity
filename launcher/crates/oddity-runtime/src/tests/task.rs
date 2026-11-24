@@ -4,6 +4,7 @@ use super::{block_on, TestHost};
 use crate::{CommandGroup, DispatchFuture, HostContext, Registry, TaskOutcome, TaskProgress};
 use serde_json::{json, Value};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[test]
@@ -142,7 +143,7 @@ fn progress_is_reported_through_the_event_outlet() {
 }
 
 /// 求和的测试组: 命令提交任务, 等任务结局后按命令载荷返回.
-fn sum<'a>(host: &'a dyn HostContext, _command: &'a str, payload: Value) -> DispatchFuture<'a> {
+fn sum<'a>(host: Arc<dyn HostContext>, _command: &'a str, payload: Value) -> DispatchFuture<'a> {
     Box::pin(async move {
         let total = payload["total"].as_u64().unwrap_or(0);
         let task = host.submit(Box::new(move |context| {
@@ -163,7 +164,7 @@ fn sum<'a>(host: &'a dyn HostContext, _command: &'a str, payload: Value) -> Disp
 
 #[test]
 fn registry_routes_a_command_that_submits_a_task() {
-    let host = TestHost::new();
+    let host = Arc::new(TestHost::new());
     let mut registry = Registry::new();
     registry.register(CommandGroup::for_game(
         "test",
@@ -175,7 +176,7 @@ fn registry_routes_a_command_that_submits_a_task() {
     let group = registry
         .group_for("test", "game_status")
         .expect("命令组应已登记");
-    let outcome = block_on(group.dispatch(&host, "game_status", json!({"total": 3})));
+    let outcome = block_on(group.dispatch(host.clone(), "game_status", json!({"total": 3})));
     assert_eq!(outcome, Ok(json!({"sum": 6})));
     assert_eq!(
         host.events

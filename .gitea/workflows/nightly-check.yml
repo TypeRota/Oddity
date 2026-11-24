@@ -1,0 +1,36 @@
+name: 每日检查汇总
+
+on:
+  schedule:
+    # 与各质量检查同时启动, 汇总时需要等待它们结束。
+    - cron: "TZ=Asia/Shanghai 0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nightly-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: 汇总每日检查结果
+    runs-on: self-hosted
+    timeout-minutes: 90
+    env:
+      # 定时检查可能仍在其他 runner 上执行, 先等它们结束再登记。
+      NIGHTLY_WAIT_MINUTES: "60"
+    steps:
+      - name: 检出 main
+        run: |
+          set -euo pipefail
+          git init -q checkout
+          cd checkout
+          git fetch --depth 1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" refs/heads/main
+          git checkout -q --detach FETCH_HEAD
+      - name: 汇总检查结果
+        env:
+          GITEA_TOKEN: ${{ github.token }}
+        run: node checkout/scripts/nightly-report.mjs

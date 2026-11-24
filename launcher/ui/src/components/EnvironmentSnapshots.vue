@@ -9,7 +9,7 @@ import SettingGroup from "./settings/SettingGroup.vue";
 import SettingRow from "./settings/SettingRow.vue";
 import SnapshotDiffList from "./SnapshotDiffList.vue";
 import { invoke } from "../core/api";
-import { notify } from "../core/notifications";
+import { notify, errorText } from "../core/notifications";
 import { state } from "../core/controller";
 import { channelLabel } from "../host/facts";
 import type {
@@ -47,28 +47,24 @@ const successMinutesModel = computed<string>({
   set: (value) => emit("update:successMinutes", Number(value)),
 });
 const overview = ref<SnapshotOverview | null>(null);
-const error = ref("");
+const loading = ref(true);
 let disposed = false;
 
 const compareOpen = ref(false);
 const compareTarget = ref<"baseline" | "reference">("baseline");
 const comparison = ref<SnapshotComparison | null>(null);
 const comparing = ref(false);
-const compareError = ref("");
 let compareRun = 0;
 
 const saveOpen = ref(false);
 const label = ref("");
 const saving = ref(false);
-const saveError = ref("");
 
 const deleteOpen = ref(false);
 const deleting = ref(false);
-const deleteError = ref("");
 
 const clearOpen = ref(false);
 const clearing = ref(false);
-const clearError = ref("");
 
 const showUnchanged = ref(false);
 
@@ -158,12 +154,17 @@ function groupRows(rows: SnapshotDiffRow[]): RowGroup[] {
 }
 
 async function load() {
-  error.value = "";
+  loading.value = true;
   try {
     const next = await invoke("environment_snapshot_overview");
     if (!disposed) overview.value = next;
   } catch (cause) {
-    if (!disposed) error.value = "读取环境快照失败: " + String(cause);
+    if (!disposed)
+      notify(`读取环境快照失败: ${errorText(cause)}`, "error", 6500, {
+        key: "snapshot-overview",
+      });
+  } finally {
+    if (!disposed) loading.value = false;
   }
 }
 
@@ -173,7 +174,6 @@ function openCompare(target: "baseline" | "reference") {
   compareTarget.value = target;
   compareOpen.value = true;
   comparison.value = null;
-  compareError.value = "";
   showUnchanged.value = false;
   void runCompare();
 }
@@ -182,7 +182,6 @@ function closeCompare() {
   compareOpen.value = false;
   compareRun += 1;
   comparison.value = null;
-  compareError.value = "";
 }
 
 function selectTarget(target: "baseline" | "reference") {
@@ -198,7 +197,6 @@ function selectTarget(target: "baseline" | "reference") {
 async function runCompare() {
   const run = ++compareRun;
   comparing.value = true;
-  compareError.value = "";
   try {
     const next = await invoke("environment_snapshot_compare", {
       target: compareTarget.value,
@@ -207,14 +205,15 @@ async function runCompare() {
     comparison.value = next;
   } catch (cause) {
     if (disposed || run !== compareRun) return;
-    compareError.value = "读取对比结果失败: " + String(cause);
+    notify(`读取对比结果失败: ${errorText(cause)}`, "error", 6500, {
+      key: "snapshot-compare",
+    });
   } finally {
     if (!disposed && run === compareRun) comparing.value = false;
   }
 }
 
 function openSave() {
-  saveError.value = "";
   const current = overview.value;
   if (current?.reference) {
     label.value = current.reference.label;
@@ -232,7 +231,6 @@ async function saveReference() {
   if (saving.value) return;
   const replacing = isReplacing.value;
   saving.value = true;
-  saveError.value = "";
   try {
     await invoke("environment_snapshot_save_reference", {
       label: label.value.trim() || null,
@@ -246,22 +244,21 @@ async function saveReference() {
     await load();
   } catch (cause) {
     if (disposed) return;
-    saveError.value = "保存参考快照失败: " + String(cause);
-    notify(saveError.value, "error", 6500, { key: "snapshot-reference" });
+    notify(`保存参考快照失败: ${errorText(cause)}`, "error", 6500, {
+      key: "snapshot-reference",
+    });
   } finally {
     if (!disposed) saving.value = false;
   }
 }
 
 function openDelete() {
-  deleteError.value = "";
   deleteOpen.value = true;
 }
 
 async function deleteReference() {
   if (deleting.value) return;
   deleting.value = true;
-  deleteError.value = "";
   try {
     await invoke("environment_snapshot_delete_reference");
     if (disposed) return;
@@ -270,21 +267,21 @@ async function deleteReference() {
     await load();
   } catch (cause) {
     if (disposed) return;
-    deleteError.value = "删除参考快照失败: " + String(cause);
+    notify(`删除参考快照失败: ${errorText(cause)}`, "error", 6500, {
+      key: "snapshot-reference",
+    });
   } finally {
     if (!disposed) deleting.value = false;
   }
 }
 
 function openClear() {
-  clearError.value = "";
   clearOpen.value = true;
 }
 
 async function clearHistory() {
   if (clearing.value) return;
   clearing.value = true;
-  clearError.value = "";
   try {
     await invoke("environment_snapshot_clear_history");
     if (disposed) return;
@@ -293,7 +290,9 @@ async function clearHistory() {
     await load();
   } catch (cause) {
     if (disposed) return;
-    clearError.value = "清除启动历史失败: " + String(cause);
+    notify(`清除启动历史失败: ${errorText(cause)}`, "error", 6500, {
+      key: "snapshot-reference",
+    });
   } finally {
     if (!disposed) clearing.value = false;
   }
@@ -388,10 +387,9 @@ onBeforeUnmount(() => {
           :options="successMinuteOptions"
         />
       </SettingRow>
-      <div v-show="!overview && !error" class="snapshot-state" role="status">
+      <div v-show="loading && !overview" class="snapshot-state" role="status">
         正在读取环境快照...
       </div>
-      <p v-show="error" class="field__hint" role="alert">{{ error }}</p>
       <div v-show="overview" class="snapshot-content">
         <SettingRow
           label="参考快照"
@@ -480,7 +478,6 @@ onBeforeUnmount(() => {
         <p v-if="comparing" role="status" aria-live="polite">
           正在读取对比结果...
         </p>
-        <p v-else-if="compareError" role="alert">{{ compareError }}</p>
         <template v-else-if="comparison">
           <p class="snapshot-compare__summary">
             <strong>{{ comparisonSummary }}</strong>
@@ -554,7 +551,6 @@ onBeforeUnmount(() => {
           参考快照不会随之后的启动自动变化.
         </p>
         <p v-if="isReplacing" class="field__hint">保存后原参考快照会被替换.</p>
-        <p v-if="saveError" role="alert">{{ saveError }}</p>
         <div class="snapshot-modal-actions">
           <BaseButton
             variant="ghost"
@@ -584,7 +580,6 @@ onBeforeUnmount(() => {
       <div class="snapshot-form">
         <p>确定删除“{{ overview?.reference?.label }}”? 此操作无法撤销.</p>
         <p class="field__hint">启动历史和运行环境不受影响.</p>
-        <p v-if="deleteError" role="alert">{{ deleteError }}</p>
         <div class="snapshot-modal-actions">
           <BaseButton variant="danger" :busy="deleting" @click="deleteReference"
             >确定删除</BaseButton
@@ -614,7 +609,6 @@ onBeforeUnmount(() => {
           参考快照会保留.
         </p>
         <p class="field__hint">此操作无法撤销, 不影响游戏和运行环境.</p>
-        <p v-if="clearError" role="alert">{{ clearError }}</p>
         <div class="snapshot-modal-actions">
           <BaseButton variant="danger" :busy="clearing" @click="clearHistory"
             >确定清除</BaseButton

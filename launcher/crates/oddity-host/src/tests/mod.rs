@@ -16,6 +16,7 @@ use std::thread;
 use std::time::Duration;
 
 mod bootstrap;
+mod cross_screen;
 mod download;
 mod env;
 mod external_launch;
@@ -23,6 +24,7 @@ mod install;
 mod paths;
 mod process;
 mod proton;
+mod service;
 mod session;
 mod settings;
 mod snapshots;
@@ -165,7 +167,6 @@ pub fn fake_proton(root: &Path, name: &str) -> PathBuf {
 pub fn managed_environment(
     proton: &Path,
     install: &Path,
-    distribution: crate::channel::ChannelId,
 ) -> crate::environment::RuntimeEnvironment {
     crate::environment::create(
         &crate::paths::data_dir(),
@@ -174,7 +175,6 @@ pub fn managed_environment(
         install,
         crate::environment::EnvironmentTarget {
             game: crate::identity::GameId::from("nte"),
-            distribution,
             link_name: None,
         },
         "测试环境",

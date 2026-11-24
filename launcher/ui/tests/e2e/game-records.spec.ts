@@ -79,18 +79,18 @@ test("胶囊开合、账号切换、双向无滚动和移除同步", async ({ pa
   await capsule.click();
   await expect(page.locator(".game-records__account")).toHaveCount(1);
   await expect(page.locator(".game-records__primary")).toContainText(
-    "168 / 240",
+    "168 / 360",
   );
   await expectCenteredIcons(page);
   await screenshot(page, "home-panel-light.png");
   await page.getByRole("button", { name: "下一个账号" }).click();
-  await expect(panel).toContainText("139****9000");
+  await expect(panel).toContainText("UID 100000002");
   await expect(page.locator(".game-records__primary")).toContainText(
     "周本剩余0 次",
   );
   await screenshot(page, "home-second-account-light.png");
   await page.getByRole("button", { name: "上一个账号" }).click();
-  await expect(panel).toContainText("138****8000");
+  await expect(panel).toContainText("UID 100000001");
   await page.getByRole("button", { name: "刷新游戏状态" }).click();
   await expect(panel).toHaveAttribute("aria-busy", "false");
   await page.locator('[data-page="settings"]').click();
@@ -107,7 +107,7 @@ test("胶囊开合、账号切换、双向无滚动和移除同步", async ({ pa
     .poll(async () => {
       const gap = await page.evaluate(() => {
         const stats = document
-          .querySelector(".game-records__secondary")!
+          .querySelector(".game-records__account")!
           .getBoundingClientRect();
         const footer = document
           .querySelector(".game-records__foot")!
@@ -122,7 +122,7 @@ test("胶囊开合、账号切换、双向无滚动和移除同步", async ({ pa
       .querySelector(".game-records__panel")!
       .getBoundingClientRect();
     const stats = document
-      .querySelector(".game-records__secondary")!
+      .querySelector(".game-records__account")!
       .getBoundingClientRect();
     const footer = document
       .querySelector(".game-records__foot")!
@@ -166,7 +166,7 @@ test("胶囊开合、账号切换、双向无滚动和移除同步", async ({ pa
   await screenshot(page, "home-panel-compact-dark.png");
   await page.getByRole("button", { name: "下一个账号" }).focus();
   await page.keyboard.press("ArrowRight");
-  await expect(panel).toContainText("139****9000");
+  await expect(panel).toContainText("UID 100000002");
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
   await expect(capsule).toBeFocused();
@@ -185,8 +185,8 @@ test("胶囊开合、账号切换、双向无滚动和移除同步", async ({ pa
   await page.getByRole("button", { name: "关闭弹窗" }).click();
   await page.locator('[data-page="home"]').click();
   await capsule.click();
-  await expect(panel).not.toContainText("138****8000");
-  await expect(panel).toContainText("139****9000");
+  await expect(panel).not.toContainText("UID 100000001");
+  await expect(panel).toContainText("UID 100000002");
   expect(errors).toEqual([]);
 });
 
@@ -316,4 +316,143 @@ test("玩家组件各阶段中断与窗口缩放后精确归位", async ({ page 
   await page.keyboard.press("Escape");
   await expect(root).toHaveAttribute("data-moving", "false");
   await expect(capsule).toHaveAttribute("aria-expanded", "false");
+});
+
+test("游戏同步独立于社区账号并保留停止后的角色状态", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/?playerState=capturing");
+  await expect(page.locator("#app")).toHaveClass(/is-intro-done/);
+  await page.locator(".game-records__capsule").click();
+  const panel = page.locator(".game-records__panel");
+  await expect(panel).toContainText("127 / 360");
+  await expect(panel).toContainText("190 / 700");
+  await expect(panel).toContainText("周本剩余2 次");
+  await expect(panel).toContainText("169 / 2400");
+  await expect(panel.locator(".game-records__sync")).toHaveCount(0);
+  await page.locator('[data-page="settings"]').click();
+  await settingsCategory(page, "nte-game");
+  const toggle = page.locator("#set-player-state-sync");
+  await expect(toggle).toBeChecked();
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await page.locator('[data-page="home"]').click();
+  await page.locator(".game-records__capsule").click();
+  await expect(panel).toContainText("127 / 360");
+  await page.setViewportSize({ width: 980, height: 640 });
+  const box = await panel.boundingBox();
+  expect(box!.x + box!.width).toBeLessThanOrEqual(980);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(640);
+  expect(errors).toEqual([]);
+});
+
+test("展开时外壳高度与按展开宽度排版的内容一致", async ({ page }) => {
+  await pauseClock(page);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.goto("/?playerState=capturing");
+  await page.clock.runFor(1500);
+  await expect(page.locator("#app")).toHaveClass(/is-intro-done/);
+  await page.evaluate(() => {
+    const gaps: number[] = [];
+    (window as unknown as { playerPanelGaps: number[] }).playerPanelGaps = gaps;
+    const started = performance.now();
+    function sample() {
+      const surface = document.querySelector<HTMLElement>(
+        ".game-records__surface",
+      )!;
+      const details = document.querySelector<HTMLElement>(
+        ".game-records__details",
+      );
+      if (details && surface.offsetWidth >= 279)
+        gaps.push(surface.clientHeight - 42 - details.offsetHeight);
+      if (performance.now() - started < 1200) requestAnimationFrame(sample);
+    }
+    requestAnimationFrame(sample);
+  });
+  await page.locator(".game-records__capsule").click();
+  await page.clock.runFor(1400);
+  const gaps = await page.evaluate(
+    () => (window as unknown as { playerPanelGaps: number[] }).playerPanelGaps,
+  );
+  expect(gaps.length).toBeGreaterThan(10);
+  expect(Math.max(...gaps)).toBeLessThanOrEqual(4);
+  expect(Math.min(...gaps)).toBeGreaterThanOrEqual(-4);
+});
+
+test("四项次级指标对齐且满额数值不被裁切", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/?playerState=capturing");
+  await expect(page.locator("#app")).toHaveClass(/is-intro-done/);
+  await page.locator(".game-records__capsule").click();
+  const secondary = page.locator(".game-records__secondary");
+  await secondary.evaluate((element) => {
+    const values = ["700 / 700", "100", "2400 / 2400", "1000 / 1000"];
+    [...element.children].forEach((item, index) => {
+      item.querySelector("dd")!.textContent = values[index];
+    });
+  });
+  for (const size of [12, 18]) {
+    await secondary.locator("dd").evaluateAll((values, size) => {
+      for (const value of values)
+        (value as HTMLElement).style.fontSize = `${size}px`;
+    }, size);
+    await expect
+      .poll(async () =>
+        secondary.evaluate((element) => {
+          const panel = element
+            .closest(".game-records__surface")!
+            .getBoundingClientRect();
+          return [...element.querySelectorAll("dt, dd")].every((item) => {
+            const box = item.getBoundingClientRect();
+            return (
+              item.scrollWidth <= item.clientWidth + 1 &&
+              box.left >= panel.left &&
+              box.right <= panel.right &&
+              box.bottom <= panel.bottom
+            );
+          });
+        }),
+      )
+      .toBe(true);
+    const labels = await secondary.locator("dt").evaluateAll((items) =>
+      items.map((item) => {
+        const box = item.getBoundingClientRect();
+        return { x: box.x, y: box.y };
+      }),
+    );
+    expect(labels[0].x).toBeCloseTo(labels[2].x, 1);
+    expect(labels[1].x).toBeCloseTo(labels[3].x, 1);
+    expect(labels[0].y).toBeCloseTo(labels[1].y, 1);
+    expect(labels[2].y).toBeCloseTo(labels[3].y, 1);
+  }
+});
+
+test("游戏资源跨采集状态保留, 社区刷新仅补角色名称", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/?playerState=unidentified");
+  await expect(page.locator("#app")).toHaveClass(/is-intro-done/);
+  await page.locator(".game-records__capsule").click();
+  await expect(page.locator(".game-records__name")).toHaveText("当前游戏");
+  await expect(page.locator(".game-records__primary")).toContainText(
+    "127 / 360",
+  );
+  await expect(page.locator(".game-records__identity")).not.toContainText(
+    "UID",
+  );
+  await page.goto("/?playerState=quiet");
+  await expect(page.locator("#app")).toHaveClass(/is-intro-done/);
+  await expect(page.locator(".game-records__stamina")).toContainText(
+    "体力 127 / 360",
+  );
+  await page.locator('[data-page="settings"]').click();
+  await addAccount(page, "13800138000", true);
+  await page.locator('[data-page="home"]').click();
+  await page.locator(".game-records__capsule").click();
+  await expect(page.locator(".game-records__primary")).toContainText(
+    "127 / 360",
+  );
+  await expect(page.locator(".game-records__primary")).not.toContainText(
+    "168 / 360",
+  );
 });

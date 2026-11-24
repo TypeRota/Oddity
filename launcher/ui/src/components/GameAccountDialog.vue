@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount } from "vue";
 import { invoke } from "../core/api";
+import { notify, errorText } from "../core/notifications";
 import type { GameAccount } from "../types/launcher";
 import BaseModal from "./BaseModal.vue";
 import BaseTabs from "./BaseTabs.vue";
@@ -26,7 +27,8 @@ const secret = ref("");
 const deviceId = ref("");
 const sentPhone = ref("");
 const busy = ref(false);
-const error = ref("");
+// 命令失败统一走全局通知, 仅手机号与验证码校验留在弹窗内.
+const validation = ref("");
 const cooldown = ref(0);
 let revision = 0;
 let timer: ReturnType<typeof setInterval> | undefined;
@@ -34,9 +36,12 @@ const methods = [
   { value: "sms" as const, label: "短信验证码" },
   { value: "password" as const, label: "密码" },
 ];
+function fail(cause: unknown) {
+  notify(errorText(cause), "error", 6500, { key: "game-account" });
+}
 async function refresh() {
   const current = revision;
-  error.value = "";
+  validation.value = "";
   busy.value = true;
   try {
     const result = await invoke("game_accounts");
@@ -45,8 +50,7 @@ async function refresh() {
       adding.value = result.length === 0;
     }
   } catch (cause) {
-    if (current === revision)
-      error.value = cause instanceof Error ? cause.message : String(cause);
+    if (current === revision) fail(cause);
   } finally {
     busy.value = false;
   }
@@ -58,7 +62,7 @@ watch(
     secret.value = "";
     deviceId.value = "";
     sentPhone.value = "";
-    error.value = "";
+    validation.value = "";
     confirming.value = "";
     if (open) void refresh();
   },
@@ -73,13 +77,13 @@ onBeforeUnmount(() => {
 async function send() {
   if (busy.value || cooldown.value) return;
   if (!/^1[0-9]{10}$/.test(phone.value.trim())) {
-    error.value = "请输入11位中国内地手机号码.";
+    validation.value = "请输入11位中国内地手机号码.";
     return;
   }
   const current = revision;
   const requestedPhone = phone.value.trim();
   busy.value = true;
-  error.value = "";
+  validation.value = "";
   try {
     const id = await invoke("game_send_code", { phone: requestedPhone });
     cooldown.value = 60;
@@ -92,8 +96,7 @@ async function send() {
       sentPhone.value = requestedPhone;
     }
   } catch (cause) {
-    if (current === revision)
-      error.value = cause instanceof Error ? cause.message : String(cause);
+    if (current === revision) fail(cause);
   } finally {
     busy.value = false;
   }
@@ -104,12 +107,12 @@ async function login() {
     method.value === "sms" &&
     (phone.value.trim() !== sentPhone.value || !deviceId.value)
   ) {
-    error.value = "请先为当前手机号获取验证码.";
+    validation.value = "请先为当前手机号获取验证码.";
     return;
   }
   const current = revision;
   busy.value = true;
-  error.value = "";
+  validation.value = "";
   try {
     const account = await invoke("game_login", {
       phone: phone.value.trim(),
@@ -123,9 +126,10 @@ async function login() {
     }
   } catch (cause) {
     if (current === revision) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      if (message.includes("短信验证码登录")) method.value = "sms";
-      error.value = message;
+      // 服务端要求短信验证时直接切到验证码登录, 用户不用自己找入口.
+      const text = errorText(cause);
+      if (text.includes("短信验证码登录")) method.value = "sms";
+      notify(text, "error", 6500, { key: "game-account" });
     }
   } finally {
     secret.value = "";
@@ -135,7 +139,7 @@ async function login() {
 async function remove(id: string) {
   if (busy.value) return;
   busy.value = true;
-  error.value = "";
+  validation.value = "";
   try {
     await invoke("game_account_remove", { accountId: id });
     confirming.value = "";
@@ -145,7 +149,7 @@ async function remove(id: string) {
     );
     adding.value = accounts.value.length === 0;
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause);
+    fail(cause);
   } finally {
     busy.value = false;
   }
@@ -214,7 +218,7 @@ async function remove(id: string) {
           :options="methods"
           label="游戏登录方式"
           :disabled="busy"
-          @change="error = ''"
+          @change="validation = ''"
         />
         <label class="field"
           ><span>手机号码</span>
@@ -266,7 +270,9 @@ async function remove(id: string) {
           >
         </div>
       </form>
-      <p v-if="error" role="alert" class="game-accounts__error">{{ error }}</p>
+      <p v-if="validation" role="alert" class="game-accounts__error">
+        {{ validation }}
+      </p>
     </div>
   </BaseModal>
 </template>

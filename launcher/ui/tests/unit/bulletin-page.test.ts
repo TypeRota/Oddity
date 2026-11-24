@@ -16,12 +16,14 @@ const host = vi.hoisted(() => ({
 }));
 vi.mock("@host/api", async () => {
   const { computed, reactive } = await import("vue");
+  const { errorText } = await import("../../src/core/notifications.ts");
   const state = reactive(host.state);
   host.state = state;
   return {
     invoke: host.invoke,
     openUrl: host.openUrl,
     notify: host.notify,
+    errorText,
     hostFacts: {
       game: computed(() => state.game),
       distribution: computed(() => state.distribution),
@@ -256,6 +258,7 @@ it("首次读取失败显示来源错误, 重新读取后恢复", async () => {
   host.invoke.mockRejectedValueOnce(new Error("公告读取失败"));
   await render();
   await flushPromises();
+  // 首次静默读取由来源错误行承载, 不额外弹通知.
   expect(wrapper!.get(".bulletin-source-error").text()).toContain(
     "公告读取失败",
   );

@@ -11,6 +11,10 @@ vi.mock("../../src/core/api", () => ({
   isDesktop: () => false,
 }));
 import * as c from "../../src/core/controller";
+import {
+  clearNotifications,
+  notifications,
+} from "../../src/core/notifications";
 // 签到设置属于异环包 UI, 这里直接挂载包内组件验证行为.
 import Component from "@packages/game-nte/ui/src/domains/settings/TaygedoSettings.vue";
 let wrapper: VueWrapper;
@@ -25,6 +29,7 @@ const account = (id: string): AttendanceAccount => ({
   attention: null,
 });
 beforeEach(() => {
+  clearNotifications();
   Object.assign(c.attendance, {
     status: null,
     loaded: false,
@@ -181,7 +186,15 @@ it("验证原因仅在弹窗显示, 登录失败也清空密码", async () => {
   api.invoke.mockRejectedValueOnce({ message: "登录失败" });
   await login();
   expect((el("#attendance-password") as HTMLInputElement).value).toBe("");
-  expect(el("[role=dialog] [role=alert]").textContent).toBe("登录失败");
+  // 命令失败只由宿主 controller 发一次通知, 弹窗内不重复提示.
+  expect(document.querySelector("[role=dialog] [role=alert]")).toBeNull();
+  expect(notifications).toHaveLength(1);
+  expect(notifications[0]).toMatchObject({
+    message: "登录失败",
+    kind: "error",
+    duration: 6500,
+    key: "attendance",
+  });
 });
 it("签到与轮询保留未保存偏好, 弹窗循环焦点并还原", async () => {
   status.accounts = [account("1")];
@@ -214,6 +227,15 @@ it("签到与轮询保留未保存偏好, 弹窗循环焦点并还原", async ()
   expect(document.querySelector("[role=dialog]")).toBeNull();
   expect(document.activeElement).toBe(opener);
 });
+it("设置页不展示错误域, 签到失败改由全局通知提示", async () => {
+  await boot();
+  // attendance.error 只供首页玩家卡片读取, 设置页展示全局通知.
+  c.attendance.error = "签到命令失败";
+  await flushPromises();
+  expect(wrapper.find("[role=alert]").exists()).toBe(false);
+  expect(wrapper.text()).not.toContain("签到命令失败");
+});
+
 it("设置页只显示失败汇总, 账号原因留在弹窗", async () => {
   status.accounts = [account("1")];
   status.accounts[0].failedToday = true;
@@ -272,7 +294,13 @@ it("短信登录传递设备身份, 隐藏保存密码并清空失败验证码",
   api.invoke.mockRejectedValueOnce({ message: "验证码错误" });
   await submitSms();
   expect((el("#attendance-code") as HTMLInputElement).value).toBe("");
-  expect(el("[role=dialog] [role=alert]").textContent).toBe("验证码错误");
+  expect(document.querySelector("[role=dialog] [role=alert]")).toBeNull();
+  expect(notifications).toHaveLength(1);
+  expect(notifications[0]).toMatchObject({
+    message: "验证码错误",
+    kind: "error",
+    key: "attendance",
+  });
   await input("#attendance-code", "123456");
   await submitSms();
   expect(api.invoke).toHaveBeenCalledWith("attendance_login_sms", {
@@ -281,6 +309,33 @@ it("短信登录传递设备身份, 隐藏保存密码并清空失败验证码",
     deviceId: "device-test",
   });
   expect(document.querySelectorAll(".account-row")).toHaveLength(1);
+});
+it("移除账号与发送验证码失败只发一条全局通知", async () => {
+  status.accounts = [account("1")];
+  await boot();
+  await click("#attendance-manage");
+  await button("移除");
+  api.invoke.mockRejectedValueOnce(new Error("移除失败"));
+  await button("确认移除");
+  expect(notifications).toHaveLength(1);
+  expect(notifications[0]).toMatchObject({
+    message: "移除失败",
+    kind: "error",
+    key: "attendance",
+  });
+  expect(document.querySelector("[role=dialog] [role=alert]")).toBeNull();
+  await button("添加账号");
+  await button("短信验证码");
+  await input("#attendance-phone", "13800138000");
+  api.invoke.mockRejectedValueOnce(new Error("发送失败"));
+  await button("发送验证码");
+  // 弹窗自己不再发通知, 所以总数还是 controller 那一条.
+  expect(notifications).toHaveLength(1);
+  expect(notifications[0]).toMatchObject({
+    message: "发送失败",
+    key: "attendance",
+  });
+  expect(document.querySelector("[role=dialog] [role=alert]")).toBeNull();
 });
 it("手机号变化要求重新发送, 切换登录方式清理凭据和倒计时", async () => {
   await boot();
@@ -292,9 +347,11 @@ it("手机号变化要求重新发送, 切换登录方式清理凭据和倒计�
   expect(el("[role=dialog]").textContent).not.toContain("重新发送 (");
   await input("#attendance-code", "123456");
   await submitSms();
+  // 本地校验留在弹窗内, 不发通知, 也不调用命令.
   expect(el("[role=dialog] [role=alert]").textContent).toBe(
     "请先为当前手机号获取验证码.",
   );
+  expect(notifications).toHaveLength(0);
   expect(api.invoke).not.toHaveBeenCalledWith(
     "attendance_login_sms",
     expect.anything(),

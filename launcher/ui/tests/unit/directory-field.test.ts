@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import DirectoryField from "../../src/components/DirectoryField.vue";
 
-const { open, homeDir, join } = vi.hoisted(() => ({
+const { open, homeDir, join, notify } = vi.hoisted(() => ({
   open: vi.fn(),
   homeDir: vi.fn(async () => "/home/test"),
   join: vi.fn(async (...parts: string[]) => parts.join("/")),
+  notify: vi.fn(),
 }));
 vi.mock("../../src/core/desktop", async (original) => ({
   ...(await original<typeof import("../../src/core/desktop")>()),
@@ -13,6 +14,10 @@ vi.mock("../../src/core/desktop", async (original) => ({
   homeDir,
   join,
 }));
+vi.mock("../../src/core/notifications", async () => {
+  const { errorText } = await import("../../src/core/notifications.ts");
+  return { notify, errorText };
+});
 
 function field(modelValue = "/games/old", disabled = false) {
   return mount(DirectoryField, {
@@ -22,6 +27,7 @@ function field(modelValue = "/games/old", disabled = false) {
 
 beforeEach(() => {
   open.mockReset();
+  notify.mockReset();
 });
 
 describe("目录选择", () => {
@@ -76,18 +82,24 @@ describe("目录选择", () => {
     expect(wrapper.emitted("change")).toBeUndefined();
   });
 
-  it("打开失败时显示错误并允许重试", async () => {
+  it("打开失败时发送通知并允许重试", async () => {
     open.mockRejectedValueOnce(new Error("dialog unavailable"));
     const wrapper = field();
     await wrapper.get("button").trigger("click");
     await flushPromises();
-    expect(wrapper.get('[role="alert"]').text()).toContain(
-      "dialog unavailable",
+    expect(notify).toHaveBeenCalledWith(
+      "无法打开目录选择框: dialog unavailable",
+      "error",
+      6500,
     );
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(wrapper.get("input").attributes("aria-invalid")).toBeUndefined();
     expect(wrapper.get("button").attributes("disabled")).toBeUndefined();
-    open.mockResolvedValue(null);
+    open.mockResolvedValue("/games/new");
+    notify.mockClear();
     await wrapper.get("button").trigger("click");
     await flushPromises();
-    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(notify).not.toHaveBeenCalled();
+    expect(wrapper.emitted("update:modelValue")).toEqual([["/games/new"]]);
   });
 });

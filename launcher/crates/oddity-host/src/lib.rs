@@ -6,6 +6,8 @@
 
 pub mod channel;
 pub mod cli;
+pub mod cross_screen;
+pub mod hardware;
 pub mod protocol;
 pub mod service;
 
@@ -20,6 +22,7 @@ pub(crate) mod game_mode_commands;
 pub(crate) mod gamepad_commands;
 pub(crate) mod install;
 pub(crate) mod integrity_commands;
+pub mod ipc;
 pub(crate) mod log_commands;
 pub(crate) mod migration_commands;
 pub mod paths;
@@ -30,6 +33,7 @@ pub mod session;
 pub mod snapshot_commands;
 
 pub mod environment;
+pub mod environment_inventory;
 pub mod game_mode;
 pub mod gamepad;
 pub mod identity;

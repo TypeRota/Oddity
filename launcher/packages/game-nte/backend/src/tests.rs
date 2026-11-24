@@ -5,6 +5,7 @@ use crate::testing::{block_on, EnvGuard, TempDir, TestHost};
 use oddity_contract::{Audience, COMMANDS};
 use oddity_runtime::{CapabilityId, CapabilityRevision, GamePackage, Necessity, Registry, Scope};
 use serde_json::json;
+use std::sync::Arc;
 
 fn loaded() -> Registry {
     let mut registry = Registry::new();
@@ -36,7 +37,21 @@ fn package_loads_with_its_descriptor_and_domain_groups() {
         groups,
         [
             (Some("nte"), "bulletin", vec!["fetch_bulletins"]),
-            (Some("nte"), "background", vec!["launcher_background"]),
+            (
+                Some("nte"),
+                "background",
+                vec![
+                    "launcher_background",
+                    "launcher_background_archive",
+                    "launcher_background_select",
+                    "launcher_background_configure",
+                ]
+            ),
+            (
+                Some("nte"),
+                "player_state",
+                vec!["game_state_status", "game_state_start", "game_state_stop"]
+            ),
             (
                 Some("nte"),
                 "attendance",
@@ -93,6 +108,12 @@ fn package_owns_its_domains_and_leaves_other_commands_to_the_host() {
         [
             "fetch_bulletins",
             "launcher_background",
+            "launcher_background_archive",
+            "launcher_background_select",
+            "launcher_background_configure",
+            "game_state_status",
+            "game_state_start",
+            "game_state_stop",
             "attendance_status",
             "attendance_refresh_game_records",
             "attendance_login",
@@ -164,14 +185,19 @@ fn registered_group_dispatches_bulletin_commands() {
     assert!(group.handles("fetch_bulletins"));
     assert!(!group.handles("launcher_background"));
 
-    let error = block_on(group.dispatch(&TestHost::new(None), "fetch_bulletins", json!(false)))
-        .unwrap_err();
+    let error = block_on(group.dispatch(
+        Arc::new(TestHost::new(None)),
+        "fetch_bulletins",
+        json!(false),
+    ))
+    .unwrap_err();
     assert!(
         error.as_str().unwrap().contains("expected struct Args"),
         "{error}"
     );
 
-    let error = block_on(group.dispatch(&TestHost::new(None), "unknown", json!({}))).unwrap_err();
+    let error =
+        block_on(group.dispatch(Arc::new(TestHost::new(None)), "unknown", json!({}))).unwrap_err();
     assert_eq!(error, json!("无法识别的公告命令"));
 }
 
@@ -188,8 +214,8 @@ fn registered_group_dispatches_launcher_background() {
     assert!(group.handles("launcher_background"));
     assert!(!group.handles("fetch_bulletins"));
 
-    let host = TestHost::new(Some(dir.join("launcher")));
-    let media = block_on(group.dispatch(&host, "launcher_background", json!({})))
+    let host = Arc::new(TestHost::new(Some(dir.join("launcher"))));
+    let media = block_on(group.dispatch(host.clone(), "launcher_background", json!({})))
         .expect("背景命令应返回素材");
     assert_eq!(
         media["video"],
@@ -200,8 +226,34 @@ fn registered_group_dispatches_launcher_background() {
     );
     assert!(media["image"].is_null());
 
-    let error = block_on(group.dispatch(&host, "unknown", json!({}))).unwrap_err();
+    let error = block_on(group.dispatch(host.clone(), "unknown", json!({}))).unwrap_err();
     assert_eq!(error, json!("无法识别的背景命令"));
+}
+
+#[test]
+fn registered_group_dispatches_player_state_commands() {
+    let registry = loaded();
+    let group = registry
+        .group_for("nte", "game_state_status")
+        .expect("角色同步组应接管状态命令");
+    assert!(group.handles("game_state_stop"));
+    assert!(!group.handles("attendance_status"));
+
+    let host = Arc::new(TestHost::new(None));
+    let status = block_on(group.dispatch(host.clone(), "game_state_status", json!({})))
+        .expect("状态查询应经命令组返回");
+    assert!(status["state"].is_string());
+
+    let error = block_on(group.dispatch(
+        Arc::new(TestHost::with_settings("nte", "global")),
+        "game_state_start",
+        json!({}),
+    ))
+    .unwrap_err();
+    assert_eq!(error, json!("游戏内同步暂不支持当前区服."));
+
+    let error = block_on(group.dispatch(host.clone(), "unknown", json!({}))).unwrap_err();
+    assert_eq!(error, json!("无法识别的角色同步命令."));
 }
 
 #[test]
@@ -218,12 +270,17 @@ fn registered_group_dispatches_attendance_commands() {
     assert!(group.handles("attendance_run"));
     assert!(!group.handles("launcher_background"));
 
-    let status = block_on(group.dispatch(&TestHost::new(None), "attendance_status", json!({})))
-        .expect("状态查询应经命令组返回");
+    let status = block_on(group.dispatch(
+        Arc::new(TestHost::new(None)),
+        "attendance_status",
+        json!({}),
+    ))
+    .expect("状态查询应经命令组返回");
     assert_eq!(status["accounts"], json!([]));
     assert_eq!(status["preferences"]["trigger"], json!("off"));
 
-    let error = block_on(group.dispatch(&TestHost::new(None), "unknown", json!({}))).unwrap_err();
+    let error =
+        block_on(group.dispatch(Arc::new(TestHost::new(None)), "unknown", json!({}))).unwrap_err();
     assert_eq!(error, json!("无法识别的签到命令"));
 }
 
@@ -237,7 +294,7 @@ fn registered_group_dispatches_game_account_commands() {
     assert!(!group.handles("attendance_run"));
 
     let error = block_on(group.dispatch(
-        &TestHost::with_settings("nte", "global"),
+        Arc::new(TestHost::with_settings("nte", "global")),
         "game_accounts",
         json!({}),
     ))
@@ -245,14 +302,15 @@ fn registered_group_dispatches_game_account_commands() {
     assert_eq!(error["kind"], json!("unsupported"));
 
     let error = block_on(group.dispatch(
-        &TestHost::with_settings("nte", "cn"),
+        Arc::new(TestHost::with_settings("nte", "cn")),
         "game_send_code",
         json!({}),
     ))
     .unwrap_err();
     assert_eq!(error, json!("游戏账号请求参数无效"));
 
-    let error = block_on(group.dispatch(&TestHost::new(None), "unknown", json!({}))).unwrap_err();
+    let error =
+        block_on(group.dispatch(Arc::new(TestHost::new(None)), "unknown", json!({}))).unwrap_err();
     assert_eq!(error, json!("无法识别的游戏账号命令"));
 }
 

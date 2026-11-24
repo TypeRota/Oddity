@@ -11,6 +11,7 @@ import type {
   Bootstrap,
   CheckResult,
   GameStatus,
+  GameHangScene,
   LaunchProgress,
   LaunchStage,
   DownloadStatus,
@@ -31,12 +32,21 @@ import type {
   SnapshotReference,
   SnapshotSummary,
   IntegrityStatus,
+  ChannelView,
   GameId,
   GameSettings,
+  Settings,
   RuntimeSetupPlan,
   RuntimeSetupStatus,
+  EnvironmentAudit,
 } from "../types/launcher";
-import { activeGame, gameSettings } from "./game";
+import {
+  activeEnvironmentId,
+  activeGame,
+  channelKey,
+  environmentInUse,
+  gameSettings,
+} from "./game";
 import type { UiCommand } from "./generated/command-ids";
 export { isDesktop };
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -67,6 +77,13 @@ function readQueryPreview() {
     if (value && value.trim()) query[key] = value.trim();
   }
   return query;
+}
+
+// 预览用 ?hang=1 打开崩溃演示, ?hang=Crash 可换崩溃类型; 普通预览与演示站不受影响.
+function previewHangRequested() {
+  const value = new URLSearchParams(window.location.search).get("hang");
+  if (!value || value === "0") return null;
+  return value === "1" ? "Hang" : value;
 }
 
 // 预览路径按查询参数、本地存储、窗口配置的顺序覆盖默认值。
@@ -251,8 +268,8 @@ const mock: Bootstrap = {
           limitBytesPerSecond: 0,
           window: null,
         },
-        activeEnvironment: null,
-        stableEnvironment: null,
+        activeEnvironments: {},
+        stableEnvironments: {},
       },
     },
     gamepad: defaultGamepadOptions(),
@@ -324,11 +341,7 @@ let previewSnapshotReference: SnapshotReference | null = {
 };
 
 function previewSnapshotEnvironment() {
-  const active = mock.settings.runtimeEnvironments.find(
-    (environment) =>
-      environment.id === gameSettings(mock.settings).activeEnvironment,
-  );
-  return active?.name ?? null;
+  return selectedEnvironment()?.name ?? null;
 }
 
 function previewSnapshotProton() {
@@ -356,8 +369,8 @@ function previewSnapshotComparison(
       key: "launcher.version",
       section: "启动器",
       label: "Oddity 版本",
-      baseline: "0.2.0-alpha.2",
-      current: "0.2.0-alpha.2",
+      baseline: "0.2.0-alpha.3",
+      current: "0.2.0-alpha.3",
       status: "same",
     },
     {
@@ -459,6 +472,29 @@ function updateGameSettings(patch: Partial<GameSettings>) {
   mock.settings.games[game] = { ...gameSettings(mock.settings), ...patch };
 }
 
+/** 当前区服记住的运行环境; 没有选择时为 null. */
+function selectedEnvironment(
+  settings: Settings = mock.settings,
+  channels: readonly ChannelView[] = mock.channels,
+) {
+  const id = activeEnvironmentId(settings, channels);
+  return id
+    ? (settings.runtimeEnvironments.find((entry) => entry.id === id) ?? null)
+    : null;
+}
+
+/** 把当前区服的运行环境槽位改成该 id; 传 null 表示清除该区服的选择. */
+function setEnvironmentSlot(
+  field: "activeEnvironments" | "stableEnvironments",
+  id: string | null,
+) {
+  const key = channelKey(mock.channels);
+  const slots = { ...(gameSettings(mock.settings)[field] ?? {}) };
+  if (id) slots[key] = id;
+  else delete slots[key];
+  updateGameSettings({ [field]: slots });
+}
+
 /** 演示数据按安装根键取目录; 未知键回落到当前安装. */
 function demoInstallRoot(
   game: GameSettings,
@@ -474,8 +510,42 @@ function applyPreviewDistribution() {
     gameSettings(mock.settings).distribution === "cn"
       ? "available"
       : "unsupported";
-  mock.capabilities = previewCapabilities.map((fact) => ({ ...fact, state }));
+  // 宿主能力与本机硬件无关的部分在预览里按开关与显卡写死.
+  const gameMode = Boolean(gameSettings(mock.settings).gameMode?.performance);
+  mock.capabilities = [
+    ...previewCapabilities.map((fact) => ({
+      ...fact,
+      state: state as Bootstrap["capabilities"][number]["state"],
+    })),
+    {
+      id: "oddity.tuning.cpu",
+      revision: 1,
+      state: (gameMode
+        ? "available"
+        : "unsupported") as Bootstrap["capabilities"][number]["state"],
+      code: null,
+      message: null,
+    },
+    {
+      id: "oddity.tuning.gpu",
+      revision: 1,
+      state: (gameMode
+        ? "available"
+        : "unsupported") as Bootstrap["capabilities"][number]["state"],
+      code: null,
+      message: null,
+    },
+  ];
   const game = gameSettings(mock.settings);
+  // 渠道的 active 标记跟随设置里的地区, 与宿主返回的 bootstrap 同形.
+  const selected =
+    game.distribution ??
+    mock.channels.find((channel) => channel.default)?.id ??
+    "cn";
+  mock.channels = mock.channels.map((channel) => ({
+    ...channel,
+    active: channel.id === selected,
+  }));
   if (game.distribution === "global")
     mock.installRoot =
       demoInstallRoot(game, "global") || previewInstallRoot("global");
@@ -510,12 +580,10 @@ function applyPreviewDistribution() {
   mockCheck.installRoot = mock.installRoot;
 }
 
-function selectPreviewEnvironment(
+/** 让预览的 prefix 与 Proton 指向该环境; 不改动任何区服的记忆. */
+function applyPreviewEnvironment(
   profile: Bootstrap["settings"]["runtimeEnvironments"][number],
 ) {
-  updateGameSettings({ distribution: profile.distribution });
-  applyPreviewDistribution();
-  updateGameSettings({ activeEnvironment: profile.id });
   mock.prefix = joinPath(
     preview.prefix.replace(/\/prefix$/, ""),
     "environments",
@@ -529,6 +597,30 @@ function selectPreviewEnvironment(
   mock.error = null;
   mock.checks[3] = { label: "Proton", ok: true, detail: mock.protonName };
   mock.checks[4] = { label: "Wine prefix", ok: true, detail: mock.prefix };
+}
+
+/** 把环境的 prefix 设为当前区服记住的环境, 用于地区切换后同步预览状态. */
+function recallPreviewEnvironment() {
+  const environment = selectedEnvironment();
+  if (environment) applyPreviewEnvironment(environment);
+  else {
+    mock.prefix = "";
+    mock.prefixExists = false;
+    mock.protonPath = "";
+    mock.protonName = "";
+    mock.ok = false;
+    mock.error = "请先在设置中创建并选择 Proton 运行环境";
+    mock.checks[3] = { label: "Proton", ok: false, detail: "未选择运行环境" };
+    mock.checks[4] = { label: "Wine prefix", ok: false, detail: "" };
+  }
+}
+
+function selectPreviewEnvironment(
+  profile: Bootstrap["settings"]["runtimeEnvironments"][number],
+) {
+  setEnvironmentSlot("activeEnvironments", profile.id);
+  applyPreviewDistribution();
+  applyPreviewEnvironment(profile);
 }
 
 const mockCheck: CheckResult = {
@@ -557,6 +649,7 @@ const previewGame = {
   exe: preview.gameExe,
   log: "",
   launch: null as LaunchProgress | null,
+  hang: null as GameHangScene | null,
 };
 const previewGameListeners = new Set<(status: GameStatus) => void>();
 let previewLaunchTimers: number[] = [];
@@ -575,6 +668,10 @@ function clearPreviewLaunchTimers() {
   previewLaunchTimers = [];
 }
 
+// 崩溃现场跟随一次启动会话: 本轮启动读取的新现场在启动阶段写入.
+// 取值为待注入的 CrashType, 空串表示本轮不注入.
+let previewHangPending = "";
+
 function startPreviewLaunch() {
   clearPreviewLaunchTimers();
   const startedAt = Date.now();
@@ -583,6 +680,8 @@ function startPreviewLaunch() {
   previewGame.pid = 23140;
   previewGame.startedAt = startedAt;
   previewGame.launch = { stage: "preparing", startedAt, cancelling: false };
+  previewGame.hang = null;
+  previewHangPending = previewHangRequested() ?? "";
   emitPreviewGameStatus();
   const stages: { stage: LaunchStage; delay: number }[] = [
     { stage: "helper", delay: 600 },
@@ -594,6 +693,19 @@ function startPreviewLaunch() {
       window.setTimeout(() => {
         if (!previewGame.launch || previewGame.launch.cancelling) return;
         previewGame.launch = { ...previewGame.launch, stage: item.stage };
+        // 演示用 ?hang=1 在启动阶段注入崩溃现场, 复现健康游戏页之前的异常退出.
+        if (item.stage === "game" && previewHangPending) {
+          previewGame.hang = {
+            crashType: previewHangPending,
+            errorMessage:
+              previewHangPending === "Hang"
+                ? "GameThread timed out waiting for RenderThread after 120.00 seconds"
+                : "Fatal error: [File:Unknown] [Line: 1125] Unhandled exception",
+            site: "UECC-Windows-6A2F1C0E_0000",
+            detectedAt: Date.now(),
+          };
+          previewHangPending = "";
+        }
         emitPreviewGameStatus();
       }, item.delay),
     );
@@ -1027,8 +1139,59 @@ let previewSetupStatus: RuntimeSetupStatus = {
   done: false,
 };
 let previewSetupProton: string | null = null;
-let previewSetupCreate = false;
+let previewSetupEnvironmentName: string | null = null;
 let previewSystemUmu = false;
+
+/** 当前预览区服. */
+function previewChannel(): ChannelView | null {
+  return (
+    mock.channels.find((channel) => channel.active) ??
+    mock.channels.find((channel) => channel.default) ??
+    null
+  );
+}
+
+/** 当前区服的安装记录. */
+function previewInstallation() {
+  const distribution = gameSettings(mock.settings).distribution;
+  return (
+    mock.runtimeInstallations.find(
+      (installation) => installation.distribution === distribution,
+    ) ?? null
+  );
+}
+
+/** 运行环境是否已具备启动条件; 预览不模拟 Proton 校验失败. */
+function previewEnvironmentReady(
+  environment: Bootstrap["settings"]["runtimeEnvironments"][number] | null,
+) {
+  return !!environment && mock.prefixExists;
+}
+
+/** 预览使用固定的示例名称; 宿主按游戏显示名生成 suggestedName, 预览不模拟该规则. */
+function previewSuggestedEnvironmentName(): string {
+  const names = new Set(
+    mock.settings.runtimeEnvironments.map((environment) => environment.name),
+  );
+  if (!names.has("默认运行环境")) return "默认运行环境";
+  let index = 2;
+  while (names.has(`运行环境 ${index}`)) index += 1;
+  return `运行环境 ${index}`;
+}
+
+/** 预览环境健康状态; 未登记目录在预览中不产生数据. */
+function previewEnvironmentAudit(): EnvironmentAudit {
+  return {
+    environments: mock.settings.runtimeEnvironments.map((environment) => ({
+      id: environment.id,
+      name: environment.name,
+      state: "ready" as const,
+      installRoot: environment.installRoot,
+      installRootCurrent: mock.installRoot,
+    })),
+    orphans: [],
+  };
+}
 
 async function previewInvoke(
   command: UiCommand,
@@ -1040,28 +1203,53 @@ async function previewInvoke(
   return hostPreviewInvoke(command as HostPreviewCommand, args);
 }
 
+/** 按宿主的 environment::validate_name 规则校验并返回去掉首尾空白的名称. */
+function validateRuntimeEnvironmentName(name: string): string {
+  const value = name.trim();
+  if (!value || [...value].length > 64 || /\p{Cc}/u.test(value))
+    throw new Error("环境名称应为 1-64 个字符, 且不能包含控制字符");
+  return value;
+}
+
 async function hostPreviewInvoke(
   command: HostPreviewCommand,
   args?: CommandArgs[UiCommand],
 ): Promise<Commands[UiCommand]> {
   switch (command) {
-    case "runtime_setup_info":
+    case "cross_screen_status":
+      return {
+        enabled: false,
+        supported: false,
+        needsRestore: false,
+        missing: [],
+        message: "请在桌面版 Oddity 中开启跨屏游玩",
+      };
+    case "cross_screen_configure":
+    case "cross_screen_install":
+    case "cross_screen_restore":
+      throw new Error("请在桌面版 Oddity 中设置跨屏游玩");
+
+    case "runtime_setup_info": {
+      const environment = selectedEnvironment();
+      const installation = previewInstallation();
       return {
         needsSetup: false,
-        environment:
-          mock.settings.runtimeEnvironments.find(
-            (entry) =>
-              entry.id === gameSettings(mock.settings).activeEnvironment,
-          ) ?? null,
+        environment,
+        ready: previewEnvironmentReady(environment),
+        installed: !!installation?.installed,
+        channel: previewChannel()?.label ?? "",
+        installRoot: mock.installRoot,
+        suggestedName: previewSuggestedEnvironmentName(),
         umu: mock.umuAvailable ? "/usr/bin/umu-run" : null,
         proton: previewSetupProton,
         protonDirectory: joinPath(preview.steamRoot, "compatibilitytools.d"),
         systemUmu: previewSystemUmu,
       };
+    }
     case "runtime_setup_plan": {
-      const { allUsers, proton, createEnvironment } =
+      const { allUsers, proton, environmentName } =
         args as CommandArgs["runtime_setup_plan"];
-      previewSetupCreate = createEnvironment;
+      previewSetupEnvironmentName = environmentName?.trim() || null;
       previewSetupPlan = {
         umu: allUsers
           ? "/usr/bin/umu-run"
@@ -1116,38 +1304,41 @@ async function hostPreviewInvoke(
         error: null,
         done: true,
       };
-      if (
-        previewSetupCreate ||
-        !mock.settings.runtimeEnvironments.some(
-          (entry) =>
-            entry.game === activeGame(mock.settings) &&
-            entry.distribution === gameSettings(mock.settings).distribution,
-        )
-      ) {
+      const environmentName = previewSetupEnvironmentName;
+      previewSetupEnvironmentName = null;
+      // 只在用户确认名称后创建环境, 自动流程到此为止.
+      if (environmentName) {
         await previewInvoke("environment_create", {
-          name: mock.settings.runtimeEnvironments.length
-            ? `运行环境 ${mock.settings.runtimeEnvironments.length + 1}`
-            : "默认运行环境",
+          name: environmentName,
           protonPath: previewSetupProton,
           sourceId: null,
-          distribution: gameSettings(mock.settings).distribution ?? "cn",
         });
+        const profile = mock.settings.runtimeEnvironments.at(-1);
+        if (profile) {
+          await previewInvoke("environment_action", {
+            action: "switch",
+            id: profile.id,
+          });
+          // 首个环境在创建时已同时设为稳定, 后续创建不改变稳定标记, 与宿主一致.
+          // 环境创建后模拟初始化 prefix.
+          mock.prefixExists = true;
+        }
       }
-      const created = mock.settings.runtimeEnvironments.at(-1);
-      if (previewSetupCreate && created)
-        await previewInvoke("environment_action", {
-          action: "switch",
-          id: created.id,
-        });
       previewSetupPlan = null;
       return null;
     case "runtime_setup_status":
       return clone(previewSetupStatus);
     case "runtime_setup_dismiss":
       return null;
-    case "runtime_setup_environment":
-      if (!mock.prefixExists) throw new Error("请先配置启动环境");
+    case "runtime_setup_environment": {
+      const environment = selectedEnvironment();
+      if (!environment)
+        throw new Error("请先在设置中创建并选择 Proton 运行环境");
+      // 只修复当前环境的 prefix, 不创建环境.
+      mock.prefixExists = true;
+      applyPreviewEnvironment(environment);
       return clone(mock);
+    }
     case "game_accounts":
       return [];
     case "game_send_code":
@@ -1157,19 +1348,34 @@ async function hostPreviewInvoke(
       return null;
     case "launcher_background":
       return { video: null, image: null };
+    case "launcher_background_archive":
+    case "launcher_background_select":
+    case "launcher_background_configure":
+      return {
+        available: true,
+        entries: [],
+        selected: null,
+        current: null,
+        migration: { state: "idle", moved: 0, reason: null },
+        archive: false,
+        dir: "",
+        retention: 3,
+      };
     case "bootstrap":
       return clone(mock);
     case "environment_create": {
-      const { name, protonPath, sourceId, distribution } =
+      const { name, protonPath, sourceId } =
         args as CommandArgs["environment_create"];
       const source = mock.settings.runtimeEnvironments.find(
         (profile) => profile.id === sourceId,
       );
       if (sourceId && !source) throw new Error("源运行环境不存在");
+      // 新环境绑定当前游戏地区的安装目录.
       const target = mock.runtimeInstallations.find(
-        (entry) => entry.distribution === distribution,
+        (entry) =>
+          entry.distribution === gameSettings(mock.settings).distribution,
       );
-      if (!target?.installed) throw new Error("尚未安装所选区服, 请先安装游戏");
+      if (!target?.installed) throw new Error("尚未安装当前地区的游戏");
       if (!name.trim() || !protonPath.trim())
         throw new Error("请填写环境名称和 Proton 目录");
       if (
@@ -1187,12 +1393,11 @@ async function hostPreviewInvoke(
         proton: { path: protonPath.trim(), identity: "browser-preview" },
         installRoot: target.installRoot,
         game: activeGame(mock.settings),
-        distribution,
         createdAt: Math.floor(Date.now() / 1000),
       };
       mock.settings.runtimeEnvironments.push(profile);
-      if (!gameSettings(mock.settings).activeEnvironment) {
-        updateGameSettings({ stableEnvironment: profile.id });
+      if (!activeEnvironmentId(mock.settings, mock.channels)) {
+        setEnvironmentSlot("stableEnvironments", profile.id);
         selectPreviewEnvironment(profile);
       }
       return clone(mock);
@@ -1204,25 +1409,93 @@ async function hostPreviewInvoke(
       );
       if (!profile) throw new Error("运行环境不存在");
       if (action === "switch") {
-        const target = mock.runtimeInstallations.find(
-          (entry) => entry.distribution === profile.distribution,
-        );
-        if (target?.installRoot !== profile.installRoot)
-          throw new Error("运行环境与绑定的游戏目录不匹配");
         selectPreviewEnvironment(profile);
       } else if (action === "keep") {
-        updateGameSettings({ stableEnvironment: id });
+        setEnvironmentSlot("stableEnvironments", id);
+      } else if (action === "rebind") {
+        profile.installRoot =
+          previewInstallation()?.installRoot ?? mock.installRoot;
+      } else if (action === "forget") {
+        if (!id) throw new Error("运行环境不存在");
+        mock.settings.runtimeEnvironments =
+          mock.settings.runtimeEnvironments.filter((entry) => entry.id !== id);
+        // 清空所有区服对该环境的当前与稳定记忆.
+        for (const game of Object.values(mock.settings.games)) {
+          if (!game) continue;
+          for (const field of [
+            "activeEnvironments",
+            "stableEnvironments",
+          ] as const) {
+            const slots = game[field] ?? {};
+            for (const [key, value] of Object.entries(slots)) {
+              if (value === id) delete slots[key];
+            }
+            game[field] = slots;
+          }
+        }
+        recallPreviewEnvironment();
       } else {
-        if (
-          !id ||
-          id === gameSettings(mock.settings).activeEnvironment ||
-          id === gameSettings(mock.settings).stableEnvironment
-        )
+        if (!id || environmentInUse(mock.settings, id))
           throw new Error("不能删除当前环境或稳定环境");
         mock.settings.runtimeEnvironments =
           mock.settings.runtimeEnvironments.filter((entry) => entry.id !== id);
       }
       return clone(mock);
+    }
+    case "environment_rename": {
+      const { id, name } = args as CommandArgs["environment_rename"];
+      const next = validateRuntimeEnvironmentName(name);
+      const profile = mock.settings.runtimeEnvironments.find(
+        (entry) => entry.id === id,
+      );
+      if (!profile) throw new Error("运行环境不存在");
+      if (
+        mock.settings.runtimeEnvironments.some(
+          (entry) => entry.id !== id && entry.name === next,
+        )
+      )
+        throw new Error("运行环境名称已存在");
+      profile.name = next;
+      return clone(mock);
+    }
+    case "environment_audit":
+      return previewEnvironmentAudit();
+    case "environment_import": {
+      const { id, name, protonPath } =
+        args as CommandArgs["environment_import"];
+      const target = previewInstallation();
+      if (!target?.installed) throw new Error("尚未安装当前地区的游戏");
+      if (!name.trim() || !protonPath.trim())
+        throw new Error("请填写环境名称和 Proton 目录");
+      if (mock.settings.runtimeEnvironments.some((entry) => entry.id === id))
+        throw new Error("运行环境已登记");
+      if (
+        mock.settings.runtimeEnvironments.some(
+          (entry) => entry.name === name.trim(),
+        )
+      )
+        throw new Error("运行环境名称已存在");
+      const profile = {
+        id,
+        name: name.trim(),
+        proton: { path: protonPath.trim(), identity: "browser-preview" },
+        installRoot: target.installRoot,
+        game: activeGame(mock.settings),
+        createdAt: Math.floor(Date.now() / 1000),
+      };
+      mock.settings.runtimeEnvironments.push(profile);
+      if (!activeEnvironmentId(mock.settings, mock.channels)) {
+        setEnvironmentSlot("stableEnvironments", profile.id);
+        selectPreviewEnvironment(profile);
+      }
+      return clone(mock);
+    }
+    case "environment_orphan_delete": {
+      const { kind, name } = args as CommandArgs["environment_orphan_delete"];
+      if (!["environment", "logs", "pending"].includes(kind))
+        throw new Error("未登记目录类型无效");
+      if (!name.trim()) throw new Error("未登记目录名称无效");
+      return null;
     }
     case "check_update":
       await new Promise((resolve) => setTimeout(resolve, 620));
@@ -1254,7 +1527,11 @@ async function hostPreviewInvoke(
         Object.assign(mock.settings, fields);
         const view: Record<string, unknown> = { ...mock.settings };
         delete view.games;
-        return clone({ owner, fields: view });
+        return clone({
+          owner,
+          fields: view,
+          capabilities: mock.capabilities,
+        });
       }
       if (!owner.startsWith("game:")) {
         throw new Error(`无法识别的设置 owner: ${owner}`);
@@ -1271,8 +1548,8 @@ async function hostPreviewInvoke(
         "gameAccountId",
         "gameMode",
         "updates",
-        "activeEnvironment",
-        "stableEnvironment",
+        "activeEnvironments",
+        "stableEnvironments",
       ];
       for (const key of Object.keys(fields)) {
         if (!allowed.includes(key))
@@ -1294,8 +1571,14 @@ async function hostPreviewInvoke(
         },
       ];
       applyPreviewDistribution();
+      // 切换地区后, 预览回到该区服记住的运行环境.
+      recallPreviewEnvironment();
       const view: Record<string, unknown> = { ...game };
-      return clone({ owner, fields: view });
+      return clone({
+        owner,
+        fields: view,
+        capabilities: mock.capabilities,
+      });
     }
     case "gamepad_poll":
       return {
@@ -1419,7 +1702,7 @@ async function hostPreviewInvoke(
           .filter(
             (profile) =>
               profile.game === activeGame(mock.settings) &&
-              profile.distribution === distribution,
+              profile.installRoot === source,
           )
           .map((profile) => ({
             id: profile.id,
@@ -1585,8 +1868,7 @@ async function hostPreviewInvoke(
     case "open_directory":
       throw new Error("请在 Oddity 桌面应用中导出日志");
     case "launch_official":
-      if (!gameSettings(mock.settings).activeEnvironment)
-        throw new Error("请先创建 Proton 运行环境");
+      if (!selectedEnvironment()) throw new Error("请先创建 Proton 运行环境");
       startPreviewLaunch();
       return {
         mode: "background",
@@ -1694,6 +1976,7 @@ async function hostPreviewInvoke(
     }
     case "close_game":
       clearPreviewLaunchTimers();
+      previewHangPending = "";
       previewGame.closing = true;
       previewGame.launch = null;
       emitPreviewGameStatus();

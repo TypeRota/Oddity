@@ -2,6 +2,7 @@ use crate::HostContext;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// 命令组的分发结果; 失败载荷同样是 JSON.
 pub type DispatchOutcome = Result<Value, Value>;
@@ -10,7 +11,7 @@ pub type DispatchOutcome = Result<Value, Value>;
 pub type DispatchFuture<'a> = Pin<Box<dyn Future<Output = DispatchOutcome> + Send + 'a>>;
 
 /// 组内分发函数.
-pub type CommandDispatch = for<'a> fn(&'a dyn HostContext, &'a str, Value) -> DispatchFuture<'a>;
+pub type CommandDispatch = for<'a> fn(Arc<dyn HostContext>, &'a str, Value) -> DispatchFuture<'a>;
 
 /// 游戏包声明的一组命令.
 ///
@@ -77,7 +78,7 @@ impl CommandGroup {
     /// 组内分发; 调用方负责提供宿主能力与命令载荷.
     pub async fn dispatch(
         &self,
-        host: &dyn HostContext,
+        host: Arc<dyn HostContext>,
         command: &str,
         payload: Value,
     ) -> DispatchOutcome {

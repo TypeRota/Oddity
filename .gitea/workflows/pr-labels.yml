@@ -1,0 +1,34 @@
+name: 同步 PR 范围标签
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr-labels-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: 按改动路径同步标签
+    runs-on: self-hosted
+    timeout-minutes: 5
+    steps:
+      - name: 检出目标分支脚本
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git init -q checkout
+          cd checkout
+          git fetch --depth 1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$BASE_SHA"
+          git checkout -q --detach FETCH_HEAD
+      - name: 同步标签
+        env:
+          GITEA_TOKEN: ${{ github.token }}
+        run: node checkout/scripts/pr-labels.mjs

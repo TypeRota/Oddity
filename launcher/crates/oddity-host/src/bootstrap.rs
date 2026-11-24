@@ -30,16 +30,16 @@ pub(crate) struct CheckItem {
 /// 能力在当前上下文下的状态.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum CapabilityState {
+pub enum CapabilityState {
     Available,
     Unsupported,
     Unavailable,
 }
 
-/// bootstrap 投影的一条能力事实.
+/// 一条能力事实; bootstrap 与设置写入后的重新求值共用同一形状.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct CapabilityFact {
+pub struct CapabilityFact {
     pub(crate) id: &'static str,
     pub(crate) revision: u16,
     pub(crate) state: CapabilityState,
@@ -140,8 +140,8 @@ pub(crate) fn proton_install(path: &Path) -> Option<ProtonInstall> {
     Some(ProtonInstall { name, root })
 }
 
-pub(crate) fn detect_proton(settings: &Settings) -> Option<ProtonInstall> {
-    environment_commands::proton_path(settings).and_then(proton_install)
+pub(crate) fn detect_proton(registry: &Registry, settings: &Settings) -> Option<ProtonInstall> {
+    environment_commands::proton_path(registry, settings).and_then(proton_install)
 }
 
 pub(crate) fn bootstrap_impl(registry: &Registry, settings: &Settings) -> Bootstrap {
@@ -202,10 +202,10 @@ fn bootstrap_impl_with_activity(
         .and_then(|p| crate::install::sdk_dir(registry, game, p))
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    if let Err(message) = environment_commands::verify_proton(settings) {
+    if let Err(message) = environment_commands::verify_proton(registry, settings) {
         error.get_or_insert(message);
     }
-    let proton = detect_proton(settings);
+    let proton = detect_proton(registry, settings);
     let umu = crate::runtime_setup::umu(&paths::data_dir());
     let official_exe = launcher_root
         .as_ref()
@@ -377,18 +377,23 @@ fn settings_schema_facts(registry: &Registry, settings: &Settings) -> Vec<Settin
         .collect()
 }
 
-/// 当前游戏的能力 sheet 按上下文求值; 没有能力声明的游戏返回空表.
-fn capability_facts(
+/// 宿主能力与当前游戏的能力 sheet 按同一份上下文求值.
+///
+/// 宿主能力在前, 与游戏无关; 游戏自己的能力在后. 没有能力声明的游戏仍然
+/// 拿到宿主能力.
+pub(crate) fn capability_facts(
     registry: &Registry,
     settings: &Settings,
     activity: &ActivitySnapshot,
 ) -> Vec<CapabilityFact> {
-    let Some(capabilities) = registry.capabilities(settings.active_game.as_str()) else {
-        return Vec::new();
-    };
     let context = crate::host::build_capability_context(registry, settings, activity);
-    capabilities
+    let game = registry
+        .capabilities(settings.active_game.as_str())
+        .unwrap_or(&[]);
+    registry
+        .host_capabilities()
         .iter()
+        .chain(game)
         .map(|capability| {
             let descriptor = capability.descriptor;
             let (state, code, message) = match capability.availability(&context) {

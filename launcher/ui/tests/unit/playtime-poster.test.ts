@@ -14,7 +14,10 @@ vi.mock("../../src/core/api", () => ({
   invoke: backend.invoke,
   isDesktop: backend.isDesktop,
 }));
-vi.mock("../../src/core/notifications", () => ({ notify: backend.notify }));
+vi.mock("../../src/core/notifications", async () => {
+  const { errorText } = await import("../../src/core/notifications.ts");
+  return { notify: backend.notify, errorText };
+});
 
 const now = new Date(2026, 9, 28, 12).getTime();
 const stats = buildPlaytimeStats(
@@ -200,7 +203,7 @@ it("官方壁纸失败时使用内置壁纸, 全部失败时仍生成海报", as
   await flushPromises();
   expect(wrapper.find("img").exists()).toBe(true);
   expect(context.drawImage).not.toHaveBeenCalled();
-  expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+  expect(backend.notify).not.toHaveBeenCalled();
 });
 
 it("背景查询失败时继续使用内置壁纸", async () => {
@@ -262,7 +265,7 @@ it("取消保存对话框不导出数据或提示成功, 可再次保存", async
 });
 
 it.each(["dialog", "export"])(
-  "%s 失败显示错误, 重试后清除错误",
+  "%s 失败使用全局通知, 重试后完成保存",
   async (stage) => {
     await generate();
     if (stage === "dialog")
@@ -270,19 +273,20 @@ it.each(["dialog", "export"])(
     else backend.invoke.mockRejectedValueOnce(new Error("disk unavailable"));
     await saveButton().trigger("click");
     await flushPromises();
-    expect(wrapper.get('[role="alert"]').text()).toContain(
-      "保存海报失败: Error: disk unavailable",
-    );
     expect(backend.notify).toHaveBeenCalledWith(
-      expect.stringContaining("disk unavailable"),
+      "保存海报失败: disk unavailable",
       "error",
       6500,
       { key: "playtime-poster" },
     );
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
     expect(saveButton().attributes("disabled")).toBeUndefined();
+    backend.notify.mockClear();
     await saveButton().trigger("click");
     await flushPromises();
-    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(backend.notify).toHaveBeenCalledWith("海报已保存.", "ok", 3400, {
+      key: "playtime-poster",
+    });
     expect(wrapper.find(".playtime-poster__saved").exists()).toBe(true);
   },
 );
@@ -333,10 +337,16 @@ it("浏览器预览通过下载链接保存并清理链接", async () => {
   );
 });
 
-it("无法创建画布时显示生成错误且保持保存禁用", async () => {
+it("无法创建画布时用全局通知报告且保持保存禁用", async () => {
   vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue(null);
   await generate();
-  expect(wrapper.get('[role="alert"]').text()).toContain("无法创建画布");
+  expect(backend.notify).toHaveBeenCalledWith(
+    "生成海报失败: 无法创建画布",
+    "error",
+    6500,
+    { key: "playtime-poster" },
+  );
+  expect(wrapper.find('[role="alert"]').exists()).toBe(false);
   expect(saveButton().attributes()).toHaveProperty("disabled");
   expect(wrapper.find("img").exists()).toBe(false);
 });

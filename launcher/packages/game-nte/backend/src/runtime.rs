@@ -32,6 +32,7 @@ impl PackageRuntime for NteRuntime {
         if let Ok(mut slot) = self.stop.lock() {
             *slot = Some(Arc::clone(&stop));
         }
+        crate::player_state::initialize(host.as_ref());
         update::auto::start(host, stop);
     }
 
@@ -42,6 +43,7 @@ impl PackageRuntime for NteRuntime {
         }
         // 与关闭顺序一致: 调度线程停止后再取消当前下载.
         update::cancel_download();
+        crate::player_state::stop();
     }
 
     fn busy(&self) -> bool {

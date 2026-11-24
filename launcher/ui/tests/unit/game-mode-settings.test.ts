@@ -17,7 +17,10 @@ const { invoke, notify } = vi.hoisted(() => ({
   notify: vi.fn(),
 }));
 vi.mock("../../src/core/api", () => ({ invoke }));
-vi.mock("../../src/core/notifications", () => ({ notify }));
+vi.mock("../../src/core/notifications", async () => {
+  const { errorText } = await import("../../src/core/notifications.ts");
+  return { notify, errorText };
+});
 vi.mock("../../src/core/controller", async () => {
   const { reactive } = await import("vue");
   const { defaultGamescope } = await import("../../src/core/gameMode");
@@ -80,7 +83,6 @@ beforeEach(() => {
 
 it("CPU 与优先级经确认后应用, 单个核心编号不与布尔开关混淆", async () => {
   wrapper = mount(CpuSettings, {
-    props: { available: true },
     global: { stubs: { BaseModal: modal } },
   });
   await flushPromises();
@@ -110,7 +112,6 @@ it("CPU 与优先级经确认后应用, 单个核心编号不与布尔开关混�
 it("CPU 配置失败使用统一通知, 未授权或游戏运行时保留设置", async () => {
   invoke.mockRejectedValueOnce(new Error("读取 CPU 配置失败"));
   wrapper = mount(CpuSettings, {
-    props: { available: true },
     global: { stubs: { BaseModal: modal } },
   });
   await flushPromises();
@@ -132,10 +133,8 @@ it("CPU 配置失败使用统一通知, 未授权或游戏运行时保留设置"
   await flushPromises();
   expect(button("应用配置").attributes("disabled")).toBeDefined();
   state.game = "idle";
-  await wrapper.setProps({ available: false });
-  expect(wrapper.get(".game-mode-system").classes()).toContain(
-    "is-unavailable",
-  );
+  form.gameMode.performance = false;
+  await flushPromises();
   expect(wrapper.get("fieldset").attributes("disabled")).toBeDefined();
 });
 afterEach(() => wrapper?.unmount());
@@ -172,7 +171,6 @@ it("Gamescope 保存窗口、分辨率、帧率和缩放选项", async () => {
 
 it("GPU 配置只有确认后才申请授权", async () => {
   wrapper = mount(GpuSettings, {
-    props: { available: true },
     global: { stubs: { BaseModal: modal } },
   });
   await flushPromises();
@@ -199,7 +197,6 @@ it("GPU 配置只有确认后才申请授权", async () => {
 it("GPU 读取或授权失败通过统一通知报告, 保留修改供重试", async () => {
   invoke.mockRejectedValueOnce(new Error("读取配置失败"));
   wrapper = mount(GpuSettings, {
-    props: { available: true },
     global: { stubs: { BaseModal: modal } },
   });
   await flushPromises();
@@ -223,7 +220,6 @@ it("GPU 读取或授权失败通过统一通知报告, 保留修改供重试", a
 
 it("选择 AMD 显卡只显示性能等级, 运行游戏时阻止修改", async () => {
   wrapper = mount(GpuSettings, {
-    props: { available: true },
     global: { stubs: { BaseModal: modal } },
   });
   await flushPromises();
@@ -240,21 +236,16 @@ it("选择 AMD 显卡只显示性能等级, 运行游戏时阻止修改", async 
   );
 });
 
-it("GameMode 关闭时 CPU 和 GPU 整体禁用, 重新开启保留配置", async () => {
+it("GameMode 关闭时 CPU 和 GPU 不可编辑, 重新开启保留配置", async () => {
   form.gameMode.performance = false;
   tuning.renice = 10;
   info.config.enabled = true;
   info.config.coreOffset = 75;
   wrapper = mount({
     components: { CpuSettings, GpuSettings },
-    template:
-      '<div><CpuSettings :available="true"/><GpuSettings :available="true"/></div>',
+    template: "<div><CpuSettings /><GpuSettings /></div>",
   });
   await flushPromises();
-  expect(wrapper.get(".game-mode-system").classes()).toContain(
-    "is-unavailable",
-  );
-  expect(wrapper.get(".game-mode-gpu").classes()).toContain("is-unavailable");
   for (const fieldset of wrapper.findAll("fieldset"))
     expect(fieldset.attributes("disabled")).toBeDefined();
   expect(wrapper.get<HTMLInputElement>("#gpu-enabled").element.disabled).toBe(
@@ -264,16 +255,7 @@ it("GameMode 关闭时 CPU 和 GPU 整体禁用, 重新开启保留配置", asyn
   await flushPromises();
   expect(wrapper.get("#gpu-core").element).toHaveProperty("value", "75");
   expect(wrapper.get("#cpu-renice-trigger").text()).toContain("10");
-  expect(wrapper.get(".game-mode-system").classes()).not.toContain(
-    "is-unavailable",
-  );
-  expect(wrapper.get(".game-mode-gpu").classes()).not.toContain(
-    "is-unavailable",
-  );
-  form.gameMode.performance = false;
-  await flushPromises();
-  for (const fieldset of wrapper.findAll("fieldset"))
-    expect(fieldset.attributes("disabled")).toBeDefined();
+  expect(wrapper.get("fieldset").attributes("disabled")).toBeUndefined();
   expect(
     invoke.mock.calls.every(([command]) => command.endsWith("_info")),
   ).toBe(true);

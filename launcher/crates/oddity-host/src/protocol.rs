@@ -3,6 +3,7 @@ use crate::identity::GameId;
 use crate::service::ServiceHandle;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::Arc;
 #[derive(Deserialize)]
 pub struct Request {
     pub id: u64,
@@ -32,19 +33,12 @@ fn ensure_known_channel(
 }
 
 /// 当前游戏校验: 非发现类命令要求请求的游戏与当前游戏一致.
-fn ensure_current_game(app: &ServiceHandle, game: &GameId) -> Result<(), Value> {
-    let current = app
-        .state
-        .settings
-        .lock()
-        .map_err(|error| json!(error.to_string()))?
-        .active_game
-        .clone();
-    if game != &current {
+fn ensure_current_game(app: &ServiceHandle, game: &GameId, current: &GameId) -> Result<(), Value> {
+    if game != current {
         return Err(json!(format!(
             "请求的游戏是《{}》, 当前游戏是《{}》. 请刷新界面后重试.",
             crate::install::display_name(&app.state.packages, game),
-            crate::install::display_name(&app.state.packages, &current)
+            crate::install::display_name(&app.state.packages, current)
         )));
     }
     Ok(())
@@ -75,9 +69,64 @@ pub async fn dispatch(
     let packages = std::sync::Arc::clone(&app.state.packages);
     let group = packages.group_for(game.as_str(), &command);
     if group.is_none() && oddity_contract::requires_current_game(&command) {
-        ensure_current_game(&app, &game)?;
+        let settings = app
+            .state
+            .settings
+            .lock()
+            .map_err(|error| json!(error.to_string()))?;
+        ensure_current_game(&app, &game, &settings.active_game)?;
     }
     match command.as_str() {
+        "cross_screen_status" => {
+            crate::service::spawn_blocking(move || crate::cross_screen::status(&app))
+                .await
+                .map_err(|e| json!(e.to_string()))?
+                .map_err(|e| json!(e.to_string()))
+                .and_then(|v| serde_json::to_value(v).map_err(|e| json!(e.to_string())))
+        }
+        "cross_screen_configure" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args {
+                enabled: bool,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            crate::service::spawn_blocking(move || {
+                crate::cross_screen::configure(&app, args.enabled)
+            })
+            .await
+            .map_err(|e| json!(e.to_string()))?
+            .map_err(|e| json!(e.to_string()))
+            .and_then(|v| serde_json::to_value(v).map_err(|e| json!(e.to_string())))
+        }
+        "cross_screen_install" => {
+            crate::service::spawn_blocking(crate::cross_screen::install)
+                .await
+                .map_err(|e| json!(e.to_string()))?
+                .map_err(|e| json!(e.to_string()))?;
+            Ok(Value::Null)
+        }
+        "cross_screen_restore" => {
+            if crate::session::game_status(&app.state).running
+                || app
+                    .state
+                    .game
+                    .lock()
+                    .map_err(|e| json!(e.to_string()))?
+                    .starting
+            {
+                return Err(json!("请先结束游戏再恢复显示设置"));
+            }
+
+            crate::service::spawn_blocking(move || {
+                crate::cross_screen::run_cli(&["restore".into()])
+            })
+            .await
+            .map_err(|e| json!(e.to_string()))?
+            .map_err(|e| json!(e.to_string()))?;
+            Ok(Value::Null)
+        }
+
         "runtime_setup_info" => {
             serde_json::to_value(crate::runtime_setup_commands::info(&app).map_err(|e| json!(e))?)
                 .map_err(|e| json!(e.to_string()))
@@ -96,7 +145,7 @@ pub async fn dispatch(
             struct Args {
                 all_users: bool,
                 proton: Option<String>,
-                create_environment: bool,
+                environment_name: Option<String>,
             }
             let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
             crate::service::spawn_blocking(move || {
@@ -104,7 +153,7 @@ pub async fn dispatch(
                     &app,
                     args.all_users,
                     args.proton,
-                    args.create_environment,
+                    args.environment_name,
                 )
             })
             .await
@@ -131,17 +180,14 @@ pub async fn dispatch(
                 name: String,
                 proton_path: String,
                 source_id: Option<String>,
-                distribution: crate::channel::ChannelId,
             }
             let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
-            ensure_known_channel(&app, &args.distribution)?;
             serde_json::to_value(
                 crate::environment_commands::environment_create(
                     app.clone(),
                     args.name,
                     args.proton_path,
                     args.source_id,
-                    args.distribution,
                 )
                 .await
                 .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,
@@ -223,6 +269,67 @@ pub async fn dispatch(
                     .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,
             )
             .map_err(|e| json!(e.to_string()))
+        }
+        "environment_rename" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                id: Option<String>,
+                name: String,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            serde_json::to_value(
+                crate::environment_commands::environment_rename(app.clone(), args.name, args.id)
+                    .await
+                    .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,
+            )
+            .map_err(|e| json!(e.to_string()))
+        }
+        "environment_audit" => {
+            crate::service::spawn_blocking(move || crate::environment_commands::audit(&app.state))
+                .await
+                .map_err(|e| json!(e.to_string()))?
+                .map_err(|e| json!(e))
+                .and_then(|audit| serde_json::to_value(audit).map_err(|e| json!(e.to_string())))
+        }
+        "environment_import" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                id: String,
+                name: String,
+                proton_path: String,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            serde_json::to_value(
+                crate::environment_commands::environment_import(
+                    app.clone(),
+                    args.id,
+                    args.name,
+                    args.proton_path,
+                )
+                .await
+                .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,
+            )
+            .map_err(|e| json!(e.to_string()))
+        }
+        "environment_orphan_delete" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                kind: String,
+                name: String,
+            }
+            let args: Args = serde_json::from_value(args).map_err(|e| json!(e.to_string()))?;
+            crate::service::spawn_blocking(move || {
+                crate::environment_commands::environment_orphan_delete(
+                    &app.state, &args.kind, &args.name,
+                )
+            })
+            .await
+            .map_err(|e| json!(e.to_string()))?
+            .map_err(|e| json!(e))?;
+            Ok(Value::Null)
         }
         "browse_files" => {
             #[derive(Deserialize)]
@@ -345,7 +452,7 @@ pub async fn dispatch(
         )
         .map_err(|e| json!(e.to_string())),
         "prepare_log_export" => serde_json::to_value(
-            crate::log_commands::prepare_log_export(&app.exports)
+            crate::log_commands::prepare_log_export(&app)
                 .await
                 .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,
         )
@@ -440,12 +547,16 @@ pub async fn dispatch(
             )
             .map_err(|e| json!(e.to_string()))
         }
-        "launch_official" => serde_json::to_value(
-            crate::session::launch_official(app.clone(), &app.state)
-                .await
-                .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))?,
-        )
-        .map_err(|e| json!(e.to_string())),
+        "launch_official" => {
+            let mut settings = crate::session::launch_settings(&app.state).map_err(|e| json!(e))?;
+            settings.active_game = game;
+            serde_json::to_value(
+                crate::session::start_launch(app, settings)
+                    .await
+                    .map_err(|e| json!(e))?,
+            )
+            .map_err(|e| json!(e.to_string()))
+        }
         "audio_status" => {
             serde_json::to_value(app.audio.status()).map_err(|e| json!(e.to_string()))
         }
@@ -642,11 +753,18 @@ async fn dispatch_to_group(
     command: &str,
     args: Value,
 ) -> Result<Value, Value> {
+    let mut settings = app
+        .state
+        .settings
+        .lock()
+        .map_err(|error| json!(error.to_string()))?
+        .clone();
     if oddity_contract::requires_current_game(command) {
-        ensure_current_game(&app, &game)?;
+        ensure_current_game(&app, &game, &settings.active_game)?;
     }
-    let host = crate::host::HostHandle(app);
-    group.dispatch(&host, command, args).await
+    settings.active_game = game;
+    let host = Arc::new(crate::host::HostHandle::for_command(app, settings));
+    group.dispatch(host, command, args).await
 }
 
 /// 宿主 dispatch 覆盖的命令 id.
@@ -824,7 +942,7 @@ mod tests {
                 registry.register(oddity_runtime::CommandGroup::for_game(
                     "nte",
                     "account",
-                    &["attendance_status", "attendance_run"],
+                    &["attendance_status", "attendance_run", "fetch_bulletins"],
                     route as oddity_runtime::CommandDispatch,
                 ));
                 registry.register(oddity_runtime::CommandGroup::for_game(
@@ -917,7 +1035,7 @@ mod tests {
             settings: crate::settings::Settings::default(),
             data_dir: directory.path().to_path_buf(),
             registry: std::sync::Arc::new(registry),
-            events,
+            events: crate::service::EventBus::Channel(events),
             input,
         });
         (service, directory)
@@ -1027,17 +1145,58 @@ mod tests {
     }
 
     fn route<'a>(
-        _: &'a dyn oddity_runtime::HostContext,
+        host: Arc<dyn oddity_runtime::HostContext>,
         command: &'a str,
         payload: Value,
     ) -> oddity_runtime::DispatchFuture<'a> {
         Box::pin(async move {
+            if payload.get("readSettings").is_some() {
+                tokio::task::yield_now().await;
+                let settings = host.settings().map_err(|error| json!(error))?;
+                return Ok(json!({"game": settings.game, "distribution": settings.distribution}));
+            }
             if command == "check_update" {
                 Err(payload)
             } else {
                 Ok(payload)
             }
         })
+    }
+
+    #[test]
+    fn a_suspended_command_keeps_its_game_and_channel() {
+        let (app, _directory) = group_service();
+        {
+            let mut settings = app.state.settings.lock().unwrap();
+            settings.current_mut().distribution = Some(crate::channel::ChannelId::new("global"));
+        }
+        let mut request = std::pin::pin!(dispatch(
+            app.clone(),
+            "fetch_bulletins".into(),
+            Some("nte".into()),
+            json!({"readSettings": true}),
+        ));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(request.as_mut(), &mut context).is_pending());
+        {
+            let mut settings = app.state.settings.lock().unwrap();
+            settings.current_mut().distribution = Some(crate::channel::ChannelId::new("cn"));
+            settings.active_game = GameId::from("second");
+        }
+        assert_eq!(
+            crate::service::block_on(request).unwrap(),
+            json!({"game": "nte", "distribution": "global"}),
+        );
+        assert_eq!(
+            crate::service::block_on(dispatch(
+                app,
+                "attendance_status".into(),
+                Some("nte".into()),
+                json!({"readSettings": true})
+            ))
+            .unwrap(),
+            json!({"game": "nte", "distribution": "cn"}),
+        );
     }
 
     #[test]
@@ -1087,6 +1246,56 @@ mod tests {
             error.as_str().unwrap().contains("当前游戏是《hsr》"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn cross_screen_commands_report_the_current_environment() {
+        let app = crate::service::test_service();
+        let status = crate::service::block_on(dispatch(
+            app.clone(),
+            "cross_screen_status".into(),
+            None,
+            json!({}),
+        ))
+        .unwrap();
+        assert_eq!(status["enabled"], false);
+        assert!(status["message"].is_string(), "{status}");
+
+        // 缺少必填字段时按负载错误拒绝, 不会误关掉已有登记.
+        let error = crate::service::block_on(dispatch(
+            app.clone(),
+            "cross_screen_configure".into(),
+            None,
+            json!({ "username": "player" }),
+        ))
+        .unwrap_err();
+        assert!(error.is_string(), "{error}");
+    }
+
+    #[test]
+    fn cross_screen_restore_is_refused_while_a_session_runs() {
+        let app = crate::service::test_service();
+        {
+            let mut game = app.state.game.lock().unwrap();
+            game.starting = true;
+        }
+        let error = crate::service::block_on(dispatch(
+            app,
+            "cross_screen_restore".into(),
+            None,
+            json!({}),
+        ))
+        .unwrap_err();
+        assert_eq!(error, json!("请先结束游戏再恢复显示设置"));
+    }
+
+    #[test]
+    fn runtime_setup_plan_rejects_a_payload_without_its_fields() {
+        let app = crate::service::test_service();
+        let error =
+            crate::service::block_on(dispatch(app, "runtime_setup_plan".into(), None, json!({})))
+                .unwrap_err();
+        assert!(error.is_string(), "{error}");
     }
 
     #[test]

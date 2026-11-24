@@ -99,8 +99,8 @@ vi.mock("@host/api", async () => {
         launchMode: "",
         gameAccountId: null,
         gameMode: {},
-        activeEnvironment: null,
-        stableEnvironment: null,
+        activeEnvironments: {},
+        stableEnvironments: {},
       }),
       factsFrom: () => ({
         activeGame: "nte",

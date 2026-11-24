@@ -24,6 +24,9 @@ describe("包预览注册表", () => {
       "attendance_send_code",
       "attendance_status",
       "fetch_bulletins",
+      "game_state_start",
+      "game_state_status",
+      "game_state_stop",
     ]);
     expect(commandsOf("fixture")).toEqual([
       "fetch_bulletins",

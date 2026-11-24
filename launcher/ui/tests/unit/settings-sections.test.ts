@@ -12,10 +12,12 @@ import {
 } from "../../src/host/settings";
 import SettingsPage from "../../src/pages/SettingsPage.vue";
 import { factsFrom } from "../../src/host/facts";
+import { launchModeAvailable } from "../../src/host/pages";
 import {
   bootstrap,
   capabilities,
   settings as defaultSettings,
+  withGame,
 } from "./fixtures";
 
 const mounted: VueWrapper[] = [];
@@ -58,6 +60,7 @@ describe("设置分区贡献表", () => {
       "appearance",
       "audio",
       "gamepad",
+      "cross-screen",
       "nte-game",
       "runtime",
       "nte-account",
@@ -81,7 +84,7 @@ describe("设置分区贡献表", () => {
       expect(section.entries.length).toBeGreaterThan(0);
     }
     const entries = settingsSearchEntries(facts());
-    expect(entries).toHaveLength(26);
+    expect(entries).toHaveLength(29);
     expect(
       entries
         .filter((entry) => entry.category === "nte-game")
@@ -92,7 +95,9 @@ describe("设置分区贡献表", () => {
       "global-install",
       "migration",
       "launch",
+      "background",
       "game-account",
+      "player-state",
       "preload-dir",
       "updates",
     ]);
@@ -113,11 +118,12 @@ describe("设置分区贡献表", () => {
       "appearance",
       "audio",
       "gamepad",
+      "cross-screen",
       "runtime",
       "maintenance",
     ]);
     const entries = settingsSearchEntries(facts());
-    expect(entries).toHaveLength(17);
+    expect(entries).toHaveLength(18);
     expect(
       entries.some((entry) =>
         ["nte-game", "nte-account"].includes(entry.category),
@@ -135,6 +141,7 @@ describe("设置分区贡献表", () => {
         order: 9,
         component,
         entries: [],
+        requires: [],
         visible: () => true,
       },
       {
@@ -144,6 +151,7 @@ describe("设置分区贡献表", () => {
         order: 2,
         component,
         entries: [],
+        requires: [],
         visible: () => false,
       },
     ];
@@ -158,11 +166,12 @@ describe("设置分区贡献表", () => {
       "appearance",
       "audio",
       "gamepad",
+      "cross-screen",
       "runtime",
       "maintenance",
       "account",
     ]);
-    expect(settingsSearchEntries(facts(), contributions)).toHaveLength(17);
+    expect(settingsSearchEntries(facts(), contributions)).toHaveLength(18);
   });
 });
 
@@ -176,6 +185,7 @@ describe("设置页分区渲染", () => {
       "appearance",
       "audio",
       "gamepad",
+      "cross-screen",
       "nte-game",
       "runtime",
       "nte-account",
@@ -204,12 +214,67 @@ describe("设置页分区渲染", () => {
       "appearance",
       "audio",
       "gamepad",
+      "cross-screen",
       "runtime",
       "maintenance",
     ]);
     expect(wrapper.find("#settings-panel-nte-game").exists()).toBe(false);
     expect(wrapper.find('[data-category="nte-account"]').exists()).toBe(false);
     expect(settingsNavigation.category).toBe("appearance");
+  });
+
+  it("异环切换区服时同步更新账号、游戏内同步、直接启动和设置搜索", async () => {
+    const nte = bootstrap({
+      capabilities: capabilities.filter(
+        (fact) => fact.id !== "oddity.fixture.settings",
+      ),
+    });
+    c.state.bootstrap = nte;
+    c.state.page = "settings";
+    settingsNavigation.category = "nte-game";
+    const wrapper = renderSettings();
+
+    for (const distribution of ["cn", "global", "cn"] as const) {
+      const supportsAccounts = distribution === "cn";
+      c.state.bootstrap = {
+        ...nte,
+        settings: withGame({ distribution }, nte.settings),
+        channels: nte.channels.map((channel) => ({
+          ...channel,
+          active: channel.id === distribution,
+        })),
+        capabilities: nte.capabilities.map((fact) =>
+          !supportsAccounts &&
+          (fact.id === "oddity.account.game" ||
+            fact.id === "oddity.profile.player")
+            ? { ...fact, state: "unsupported" }
+            : fact,
+        ),
+      };
+      await nextTick();
+
+      const indexed = settingsSearchEntries(facts());
+      expect(categoryIds(wrapper)).toContain("nte-game");
+      expect(categoryIds(wrapper).includes("nte-account")).toBe(
+        supportsAccounts,
+      );
+      expect(wrapper.find('[data-setting="distribution"]').exists()).toBe(true);
+      for (const id of ["game-account", "player-state"]) {
+        expect(wrapper.find(`[data-setting="${id}"]`).exists()).toBe(
+          supportsAccounts,
+        );
+        expect(
+          indexed.some(
+            (entry) => entry.category === "nte-game" && entry.id === id,
+          ),
+        ).toBe(supportsAccounts);
+      }
+      expect(indexed.some((entry) => entry.category === "nte-account")).toBe(
+        supportsAccounts,
+      );
+      expect(launchModeAvailable("direct", facts())).toBe(supportsAccounts);
+      expect(launchModeAvailable("background", facts())).toBe(true);
+    }
   });
 
   it("fixture 设置分区按声明字段渲染通用表单", async () => {

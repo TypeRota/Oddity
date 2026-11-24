@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import {
   attendance,
+  errorText,
   form,
   loginAttendance,
   loginAttendanceSms,
@@ -141,17 +142,12 @@ async function sendCode() {
         timer = undefined;
       }
     }, 1000);
-  } catch (cause) {
-    if (current === session) error.value = errorMessage(cause);
+  } catch {
+    // 命令失败由宿主 controller 统一通知, 弹窗不再重复提示.
   } finally {
     code.value = "";
     sending.value = false;
   }
-}
-function errorMessage(cause: unknown) {
-  return cause && typeof cause === "object" && "message" in cause
-    ? String(cause.message)
-    : String(cause);
 }
 const error = ref("");
 const message = ref("");
@@ -212,26 +208,33 @@ async function login() {
   const current = session;
   error.value = "";
   message.value = "";
-  try {
-    if (loginMode.value === "sms") {
-      if (!deviceId.value || sentPhone.value !== phone.value.trim())
-        throw new Error("请先为当前手机号获取验证码.");
-      if (!/^[0-9]{4,8}$/.test(code.value.trim()))
-        throw new Error("请输入 6 位短信验证码.");
-      await loginAttendanceSms(phone.value, code.value, deviceId.value);
-    } else {
-      await loginAttendance(phone.value, password.value, remember.value);
+  // 输入校验留在弹窗内, 命令失败走全局通知.
+  if (loginMode.value === "sms") {
+    if (!deviceId.value || sentPhone.value !== phone.value.trim()) {
+      error.value = "请先为当前手机号获取验证码.";
+      return;
     }
+    if (!/^[0-9]{4,8}$/.test(code.value.trim())) {
+      error.value = "请输入 6 位短信验证码.";
+      return;
+    }
+  }
+  try {
+    if (loginMode.value === "sms")
+      await loginAttendanceSms(phone.value, code.value, deviceId.value);
+    else await loginAttendance(phone.value, password.value, remember.value);
     if (current !== session || !props.open) return;
     clear();
     message.value = "账号已添加.";
     mode.value = accounts.value.length ? "list" : "add";
   } catch (cause) {
-    if (current === session)
-      error.value =
-        cause && typeof cause === "object" && "message" in cause
-          ? String(cause.message)
-          : String(cause);
+    // 命令失败由宿主 controller 统一通知, 这里只处理登录方式的切换.
+    if (current !== session) return;
+    if (
+      loginMode.value === "password" &&
+      errorText(cause).includes("短信验证码登录")
+    )
+      switchLogin("sms");
   } finally {
     code.value = "";
     password.value = "";
@@ -242,11 +245,8 @@ async function remove(id: string) {
   try {
     await logoutAttendance(id);
     confirming.value = "";
-  } catch (cause) {
-    error.value =
-      cause && typeof cause === "object" && "message" in cause
-        ? String(cause.message)
-        : String(cause);
+  } catch {
+    // 命令失败由宿主 controller 统一通知, 弹窗不再重复提示.
   }
 }
 </script>

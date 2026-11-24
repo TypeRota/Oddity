@@ -112,17 +112,22 @@ test("真实 Rust 命令、窗口、导航、手柄与退出", async ({}, info) 
         ),
       )
       .toBe(true);
-    const mainPid = await app.evaluate(() => process.pid);
-    const children = execFileSync("pgrep", ["-a", "-P", String(mainPid)], {
+    // 会话服务独立于界面进程: 它不是 Electron 的子进程, 靠入口文件找到它.
+    const socket = join(temporary, "data/oddity/ipc-path");
+    const servicePids = execFileSync("pgrep", ["-f", "oddity-backend --ipc"], {
       encoding: "utf8",
-    });
-    backendPid = Number(
-      children
-        .split("\n")
-        .find((line) => line.includes("oddity-backend"))!
-        .split(" ")[0],
-    );
+      env: {
+        ...process.env,
+        HOME: temporary,
+        XDG_DATA_HOME: join(temporary, "data"),
+      },
+    })
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    backendPid = Number(servicePids[0] ?? 0);
     expect(backendPid).toBeGreaterThan(0);
+    expect(existsSync(socket)).toBe(true);
     const install = join(temporary, "异环 Test");
     const background = join(
       install,
@@ -277,6 +282,7 @@ test("真实 Rust 命令、窗口、导航、手柄与退出", async ({}, info) 
       body: stderr.join(""),
       contentType: "text/plain",
     });
+    // 没有会话时服务在界面断开后自行退出.
     if (backendPid)
       await expect.poll(() => existsSync(`/proc/${backendPid}`)).toBe(false);
     await rm(temporary, { recursive: true, force: true });

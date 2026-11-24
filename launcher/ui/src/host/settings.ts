@@ -1,6 +1,10 @@
 import type { Component } from "vue";
 import { settingsCategories, settingsEntries } from "../core/settingsCatalog";
-import { contributionVisible, type CapabilityRequirement } from "./capability";
+import {
+  contributionActive,
+  contributionVisible,
+  type CapabilityRequirement,
+} from "./capability";
 import type { HostFacts } from "./facts";
 import { settingsSectionContributions, sortByOrderAndId } from "./registry";
 
@@ -10,6 +14,8 @@ export interface SettingsEntryDeclaration {
   readonly label: string;
   readonly description: string;
   readonly keywords: string;
+  /** 设置项所需能力; required 不满足时该项不进入搜索索引, 与所在分区内的可见性一致. */
+  readonly requires: readonly CapabilityRequirement[];
 }
 
 /** 设置分区贡献: 分区内容、顺序与可见条件由声明方提供, 宿主只负责外壳与导航. */
@@ -22,7 +28,7 @@ export interface SettingsSectionContribution {
   /** 分区内设置项的检索索引, 与分区同源. */
   readonly entries: readonly SettingsEntryDeclaration[];
   /** 分区所需能力; required 不满足时分区不挂载. */
-  readonly requires?: readonly CapabilityRequirement[];
+  readonly requires: readonly CapabilityRequirement[];
   /** 可见条件; 条件不成立的分区不进入导航、搜索与渲染. */
   readonly visible: (facts: HostFacts) => boolean;
 }
@@ -78,7 +84,9 @@ export function settingsSearchEntries(
   return [
     ...settingsEntries,
     ...selectSettingsSections(facts, contributions).flatMap((section) =>
-      section.entries.map((entry) => ({ ...entry, category: section.id })),
+      section.entries
+        .filter((entry) => contributionActive(entry.requires, facts))
+        .map((entry) => ({ ...entry, category: section.id })),
     ),
   ];
 }

@@ -92,7 +92,7 @@
 }
 .gamepad-button-hint {
   display: inline-flex;
-  width: 24px;
+  gap: 2px;
   margin-left: 8px;
   /* 先隐藏, 由动效按选中状态淡入; 避免按钮重建时闪一下提示. */
   opacity: 0;
@@ -252,6 +252,10 @@
   border-radius: 9px;
   color: var(--bone);
   background: var(--ghost-bg);
+}
+.pad-keyboard__row:not(.pad-keyboard__actions) > button {
+  flex: 0 0 38px;
+  padding-inline: 0;
 }
 .pad-keyboard__actions {
   margin-top: 12px;

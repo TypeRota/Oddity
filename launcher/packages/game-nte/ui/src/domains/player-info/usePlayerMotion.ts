@@ -49,6 +49,10 @@ export function usePlayerMotion(
     if (!mounted || run !== generation || !surface.value) return;
     observer?.disconnect();
     if (details.value) observer?.observe(details.value);
+    // 按展开宽度测量, 避免胶囊宽度下的换行把外壳撑高.
+    const measured = details.value;
+    if (measured && open.value)
+      measured.style.width = `${Math.min(expandedWidth, surface.value.parentElement!.clientWidth) - 2}px`;
     const expandedHeight = height();
     if (reduced.value) {
       utils.set(surface.value, {
@@ -58,6 +62,7 @@ export function usePlayerMotion(
         y: 0,
         borderRadius: open.value ? 20 : 14,
       });
+      if (measured) measured.style.width = "";
       detailsReady.value = open.value;
       summaryReady.value = true;
       moving.value = false;
@@ -73,6 +78,7 @@ export function usePlayerMotion(
     timeline = createTimeline({
       onComplete: () => {
         if (run !== generation) return;
+        if (measured) measured.style.width = "";
         moving.value = false;
         reveal();
         if (entering && Math.abs(surface.value!.offsetHeight - height()) > 1)

@@ -11,7 +11,7 @@ mod assembly;
 fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let registry = assembly::build();
-    for runtime in registry.runtimes() {
+    for (_, runtime) in registry.runtimes() {
         if let Some(code) = runtime.headless_entry(&args) {
             std::process::exit(code);
         }
@@ -32,6 +32,6 @@ fn main() {
         eprintln!("能力装配校验失败: {error}");
         std::process::exit(1);
     }
-    let compatible = args.iter().any(|arg| arg == "--recovery-compatible");
-    oddity_host::service::run(Arc::new(registry), compatible);
+    // 兼容模式只影响窗口表现, 由界面自己处理; 常驻服务不保存这类进程级覆盖.
+    oddity_host::service::run(Arc::new(registry));
 }
